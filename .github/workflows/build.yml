@@ -150,4 +150,24 @@ jobs:
             $failed += 'GRASS23x000TMS gradient placement check'
           }
 
+          # Complex Water: every water surface pixel shader is compiled from ComplexWater.pso.hlsl with
+          # the defines WaterShaders::Templates gives it; the plain compile above is only WATER000.
+          $water = Join-Path $shaders 'ComplexWater.pso.hlsl'
+          $waterKinds = [ordered]@{
+            'WATER017' = '/D WATER_WADING=1'; 'WATER001' = '/D WATER_PLACED=1'; 'WATER018' = '/D WATER_PLACED=1 /D WATER_WADING=1';
+            'WATER008' = '/D WATER_INTERIOR=1'; 'WATER025' = '/D WATER_INTERIOR=1 /D WATER_WADING=1'; 'WATER033' = '/D WATER_LOD=1'; 'WATER016' = '/D WATER_BELOW=1' }
+          foreach ($kind in $waterKinds.Keys) {
+            $kindOk = $true
+            foreach ($variant in $variants) {
+              $defines = ($waterKinds[$kind] + ' ' + $variant) -split ' '
+              $out = & $fxc.FullName /nologo /T ps_3_0 /E main /I $shaders /D REVERSED_DEPTH=1 @defines /Fo "$env:RUNNER_TEMP\$kind.cso" $water 2>&1
+              if ($LASTEXITCODE -ne 0) {
+                $kindOk = $false
+                Write-Host "::error file=$water::$kind.pso (Complex Water) failed to compile with $variant"
+                $out | ForEach-Object { Write-Host "    $_" }
+              }
+            }
+            if ($kindOk) { Write-Host "ok    Shaders/$kind.pso (Complex Water)" } else { $failed += "$kind.pso (Complex Water)" }
+          }
+
           if ($failed.Count -gt 0) { Write-Host "Failed: $($failed -join ', ')"; exit 1 }

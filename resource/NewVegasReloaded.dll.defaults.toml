@@ -1046,30 +1046,27 @@ SimpleFogBlend = 0.2                # General strength of the impact of simple f
 [_Shaders.VolumetricFog.Status]
 Enabled = true                      # Volumetric fog shader tinted by the sun. Rendered after shadows and other effects for more accurate effect.
 
-[_Shaders.Water.Main]
-SunShadows = 1.0                     # [0.0-1.0] How much the sun shadow takes off the water where something shades it: the sun glint, the glow through wave crests and the sunlit water colour. The reflection stays. Needs ForwardShadows ([Shaders.ShadowsExteriors.Main]). 0 off.
-Absorption = 1.0                     # [0.0-1.0] Depth absorption: light through the water loses red first, then green, blue last, as in real water, so the shallows are clear and the bed fades through blue-green with depth while the water's own colour takes over. 0 is the old water colour; 1 fully the new.
+[_Shaders.Water.ComplexWater]
 ScatterColorR = 0.02                 # [0.0-2.0] The colour the water body glows with where the bed has faded out (linear; the default is a clear turquoise). Set all three to 0 to use each water's own colour from the game, which is much darker.
 ScatterColorG = 0.2
 ScatterColorB = 0.18
-AbsorptionColorR = 1.0               # [0.0-5.0] How fast the water absorbs each colour with depth: the colour absorbed fastest disappears first, so the bed seen through the water takes the other colours. Red high and green and blue low gives the turquoise of clear water.
+WaterColorBrightness = 1.0           # [0.1-5.0] Brightness of the water body's glow. Does not change the bed seen through shallow water.
+AbsorptionColorR = 1.0               # [0.0-5.0] How fast the water absorbs each colour with depth: the colour absorbed fastest disappears first, so the bed seen through the water takes the others. Red high and green and blue low is the turquoise of clear water.
 AbsorptionColorG = 0.25
 AbsorptionColorB = 0.3
+AbsorptionDepth = 1.0                # [0.1-5.0] How fast light is absorbed over the real depth of water the view passes through. At 1, 5 m of water still shows the bed clearly, 20 m barely. Higher is murkier, lower clearer.
 Caustics = 0.8                       # [0.0-3.0] Sunlight focused by the waves into bright rippling lines on the bed in shallow water. 0 off.
-CausticsScale = 350.0                # [50-3000] Size of the caustic pattern on the bed, in game units.
+CausticsScale = 350.0                # [50-3000] Size of the caustic pattern on the bed, in game units (about 70 to a metre).
+SunShadows = 1.0                     # [0.0-1.0] How much the sun shadow takes off the water where something shades it: the sun glint, the caustics, the glow through the waves and the sunlit water colour. The reflection stays. Needs ForwardShadows ([Shaders.ShadowsExteriors.Main]). 0 off.
 SunGlitter = 1.0                     # [0.0-3.0] A broad sun path on the water full of sharp sparkles, as sunlit water seen toward the sun has. 0 is a single soft glint.
-WaterColorBrightness = 1.0           # [0.1-5.0] Brightness of the water's own colour: what deep water shows where the bed has faded out, and the murk over it. The game's water colours are very dark, so deep water can look near black; raise this to lift it. Does not change the bed seen through shallow water. 1 as before.
-AbsorptionDepth = 1.0                # [0.1-5.0] How fast light is absorbed with depth, from the real depth of water the view passes through. At 1, 5 m of water still shows the bed clearly, 20 m barely. Higher is murkier, lower clearer.
+SpecularAA = 1.0                     # [0.0-1.0] Widens the sun and light glints where the waves are finer than a pixel, so distant water stops crawling. 0 is the sharp glint everywhere.
 WaveScattering = 0.6                 # [0.0-3.0] Sunlight glowing through the tops and sides of the waves, in the water's colour, when looking toward a low sun. 0 off.
-SpecularAA = 1.0                     # [0.0-1.0] Widens the sun and light glints where the waves are finer than a pixel, so distant water stops sparkling and crawling. 0 is the old sharp glint.
-PointLights = 1.0                    # [0.0-3.0] Glints of lamps, campfires and other point lights on the water, outdoors as well as indoors. 0 off.
-WaveDetail = 1.0                     # [0.0-1.0] Waves by distance without visible tiling: each wave layer turned to its own angle so the texture repeat never lines up, a broad swell under them, fine ripples only up close (far off they only shimmered), and rougher and calmer patches drifting across the water. 0 is the old waves. The wave settings in Default, Interiors and Placed still apply.
-Foam = 0.8                           # [0.0-1.0] Foam where the water meets the shore and around anything standing in it (rocks, piers, legs): solid at the edge, breaking into drifting patches further out. 0 off.
-FoamWidth = 15.0                     # [2-400] How far out from the edge the foam reaches: the distance the view passes through the water there (game units, about 70 to a metre).
-ShoreFadeWidth = 20.0                # [0-300] The water fades out softly over this much depth at the shoreline, lapping gently in and out (shoreMovement sets the speed). 0 is the old shoreline fade, a chequered sine pattern.
+PointLights = 1.0                    # [0.0-3.0] Glints of lamps, campfires and other point lights on the water. 0 off.
 ReflectionBlur = 0.5                 # [0.0-3.0] Blurs the reflection where the water is choppy; calm water stays mirror-sharp. 0 off.
-PhysicalFresnel = 1.0                # [0.0-1.0] Reflection strength by viewing angle as real water has it: clear looking down, a mirror at low angles. 0 is the old blend, which showed bright sky even looking straight down. reflectivity still scales it.
-DebugView = 0                        # [0-11] Shows one term of the water lighting on its own. 1 sun shadow on the surface (black in shadow). 2 absorption: what still shows through, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white fully widened). 6 point-light glints. 7 how far the view travels through the water to the bed, what the absorption works from (black 0, white 20 m). 8 the water's depth straight down (black 0, white 20 m). 9 foam. 10 shoreline fade (black see-through, white solid). 11 caustics. 0 off.
+Foam = 0.8                           # [0.0-1.0] Foam where the water meets the shore and around anything standing in it: solid at the edge, breaking into drifting patches further out. 0 off.
+FoamWidth = 15.0                     # [2-400] How far out from the edge the foam reaches: the distance the view passes through the water there (game units, about 70 to a metre).
+ShoreFadeWidth = 20.0                # [0-300] The water fades out softly over this much depth at the shoreline, lapping gently in and out (shoreMovement sets the speed). 0: no fade.
+DebugView = 0                        # [0-11] Shows one term on its own. 1 sun shadow on the surface (black in shadow). 2 what still shows through the water, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white widened). 6 point-light glints. 7 the path the view takes through the water (black 0, white 20 m). 8 the depth below the surface (black 0, white 20 m). 9 foam. 10 shoreline fade (black see-through, white solid). 11 caustics. 0 off.
 
 [_Shaders.Water.Default]
 causticsStrength = 3.0              # Caustic strength underwater. Caustics seen from above water not currently supported
