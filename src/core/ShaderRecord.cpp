@@ -15,6 +15,8 @@ ShaderProgram::~ShaderProgram() {
 }
 
 
+bool ShaderRecord::WorldDepthResolved = false;
+
 ShaderRecord::ShaderRecord() {
 
 	HasRenderedBuffer = false;
@@ -503,9 +505,14 @@ void ShaderFloatValue::GetValueFromConstantTable() {
 void ShaderRecord::SetCT() {
 
 	if (HasRenderedBuffer) TheRenderManager->device->StretchRect(TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface, NULL, TheTextureManager->RenderedSurface, NULL, D3DTEXF_NONE);
-	if (HasDepthBuffer) {
+	// The world depth buffer is resolved once per world render, by the first shader that reads it:
+	// the water, which reads what lies behind it, is drawn in several pieces (a quad per cell, in
+	// several shader variants), and a resolve each time its shader came back would hold the pieces
+	// already drawn -- where they meet, the next piece would see the water itself as the bed.
+	if (HasDepthBuffer && !WorldDepthResolved) {
 		//Logger::Log("Resolving depth buffer for shader %s", Name);
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
+		WorldDepthResolved = true;
 	}
 
 	// reset samplers

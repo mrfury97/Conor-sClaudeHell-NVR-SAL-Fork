@@ -123,7 +123,10 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	TAAEffect* TAA = TheShaderManager->Effects.TAA;
 	if (TAA) TAA->BeginJitter();
 
+	// The first shader reading the world depth buffer during this render resolves it (ShaderRecord::SetCT).
+	ShaderRecord::WorldDepthResolved = false;
 	(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+	ShaderRecord::WorldDepthResolved = false;
 
 	// Re-light nearby statics inside the flashlight cone. This has to happen here, before
 	// the viewmodel depth handling below clears the Z buffer: the pass draws with depth
