@@ -234,13 +234,18 @@ float4 getWaterBody(float4 color, float3 refractedDepth, float4 shallowColor, fl
 // and flanks of the waves and lights them up in the water's colour -- the turquoise glow on backlit
 // waves. Where the surface is tilted (wave flanks and crests), with the sun ahead of the camera,
 // stronger the lower the sun. The shallow colour's hue, at the sun's colour and brightness.
+// Both measured flat, across the water: the wave normals lean only a little off vertical (a tilt of
+// 0.05-0.3), so 1 - N.z barely left zero, and the view ray down onto the water is well off the sun
+// even with the sun straight ahead, so the full 3D angle between them killed it too.
 // eyeDirection points from the surface to the camera, sunDirection to the sun.
 float3 getWaveScattering(float3 surfaceNormal, float3 eyeDirection, float3 sunDirection, float3 sunColor, float4 shallowColor, float shadow){
-    float crest = saturate((1.0f - surfaceNormal.z) * 3.0f);
-    float towardSun = pow(saturate(dot(-eyeDirection, sunDirection)), 4.0f);
+    float crest = saturate(length(surfaceNormal.xy) / max(length(surfaceNormal), 1e-4f) * 5.0f);
+    float2 viewFlat = -eyeDirection.xy * rsqrt(max(dot(eyeDirection.xy, eyeDirection.xy), 1e-6f));
+    float2 sunFlat = sunDirection.xy * rsqrt(max(dot(sunDirection.xy, sunDirection.xy), 1e-6f));
+    float towardSun = pow(saturate(dot(viewFlat, sunFlat)), 3.0f);
     float lowSun = 1.0f - saturate(sunDirection.z);
-    float3 hue = shallowColor.rgb / max(max(shallowColor.r, max(shallowColor.g, shallowColor.b)), 1e-4f);
-    return hue * sunColor * crest * towardSun * (0.5f + 0.5f * lowSun) * shadow * TESR_WaterLighting.w;
+    float3 hue = shallowColor.rgb / max(max(shallowColor.r, max(shallowColor.g, shallowColor.b)), 1e-6f);
+    return hue * sunColor * crest * towardSun * lowSun * shadow * TESR_WaterLighting.w;
 }
 
 #ifdef WATER_SUN_SHADOWS
