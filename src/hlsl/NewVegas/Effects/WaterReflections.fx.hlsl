@@ -9,9 +9,17 @@
 // TESR_WaterReflectionsData  x: Strength  y: MaxDistance (units)  z: Distortion (0-1, how much the
 //                            waves bend the reflection)  w: DebugView
 //   DebugView 1: water mask (white where the effect runs)
-//             2: hits (green = hit, weighted by confidence; red = ray marched, nothing found)
+//             2: the search: green hit (brighter the more trusted); blue a hit thrown out as the
+//                first-person weapon; yellow the ray went behind something, but by more than the
+//                thickness allowed (passed behind it); dark red never behind anything; black not
+//                searched
 //             3: the reflected colour alone
 //             4: the reflection amount (Fresnel * confidence * Strength)
+//             5: the frame 1.5 m above each water point, through the effect's own projection:
+//                posts and the pier show on the water a little below where they stand (magenta
+//                off the screen) -- checks the projection on its own
+//             6: the ray's first step that went behind something: its distance behind, over the
+//                thickness allowed (green within, red beyond; black never behind)
 
 float4 TESR_ReciprocalResolution;
 float4 TESR_GameTime;
@@ -146,6 +154,10 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	bool water = depth < farZ * 0.99f && surface.z < 0.0f && isWaterHeight(worldPos.z, depth);
 	if (debugView == 1) return water ? white : black;
 	if (!water) return color;
+	if (debugView == 5) {
+		float3 above = toScreen(surface + float3(0.0f, 0.0f, 105.0f));
+		return all(above.xy == saturate(above.xy)) ? tex2Dlod(TESR_SourceBuffer, float4(above.xy, 0.0f, 0.0f)) : magenta;
+	}
 
 	// The normal of the waves, and the view ray turned off it. Kept pointing up: a ray turned into
 	// the water would have nothing to reflect.
@@ -178,6 +190,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	float status = 0.0f;                                        // 0 not marched, 1 nothing found, 2 hit
 	float hitT = 0.0f;
 	float confidence = 0.0f;
+	float firstBehind = -1.0f;                                  // DebugView 2 and 6: behind / thickness at the first step behind anything
 	if (rayLength > 1.0f && max(pixels.x, pixels.y) > 2.0f && directionFade > 0.0f) {
 		status = 1.0f;
 		float k0 = 1.0f / start.z;
@@ -195,6 +208,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 			float sceneZ = readDepthLod(rayUV);
 			float thickness = max(abs(rayZ - beforeZ) * 1.5f, 30.0f + rayZ * 0.01f);
 			float behind = rayZ - sceneZ;
+			if (firstBehind < 0.0f && behind > 0.0f) firstBehind = behind / thickness;
 			// Behind what the screen shows there, but not so far that the ray passed behind it; and
 			// not the water itself (it cannot reflect itself).
 			if (behind > 0.0f && behind < thickness && !isWaterHeight(TESR_CameraPosition.z + toWorld(rayUV).z * sceneZ, sceneZ)) {
@@ -216,6 +230,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 			}
 			hitT = after;
 			float2 hitUV = lerp(start.xy, end.xy, hitT);
+			status = 3.0f;                                      // thrown out as the weapon, unless:
 			if (!isViewModel(hitUV)) {
 				status = 2.0f;
 				float hitZ = 1.0f / lerp(k0, k1, hitT);
@@ -228,7 +243,13 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 		}
 	}
 
-	if (debugView == 2) return status == 2.0f ? float4(0.0f, confidence, 0.0f, 1.0f) : (status == 1.0f ? float4(0.3f, 0.0f, 0.0f, 1.0f) : black);
+	if (debugView == 2) {
+		if (status == 2.0f) return float4(0.0f, max(confidence, 0.2f), 0.0f, 1.0f);
+		if (status == 3.0f) return blue;
+		if (status == 1.0f) return firstBehind > 0.0f ? yellow : float4(0.3f, 0.0f, 0.0f, 1.0f);
+		return black;
+	}
+	if (debugView == 6) return firstBehind < 0.0f ? black : (firstBehind <= 1.0f ? float4(0.0f, 1.0f - firstBehind * 0.7f, 0.0f, 1.0f) : float4(saturate(firstBehind / 10.0f) * 0.7f + 0.3f, 0.0f, 0.0f, 1.0f));
 	if (confidence <= 0.0f) return debugView >= 3 ? black : color;
 
 	float2 reflectedUV = lerp(start.xy, end.xy, hitT);

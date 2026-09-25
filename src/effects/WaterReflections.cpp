@@ -7,7 +7,7 @@ void WaterReflectionsEffect::UpdateSettings() {
 	Constants.Data.x = TheSettingManager->GetSettingF("Shaders.WaterReflections.Main", "Strength");
 	Constants.Data.y = max(TheSettingManager->GetSettingF("Shaders.WaterReflections.Main", "MaxDistance"), 100.0f);
 	Constants.Data.z = TheSettingManager->GetSettingF("Shaders.WaterReflections.Main", "Distortion");
-	Constants.Data.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.WaterReflections.Main", "DebugView"), 0, 4);
+	Constants.Data.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.WaterReflections.Main", "DebugView"), 0, 6);
 }
 
 void WaterReflectionsEffect::RegisterConstants() {
