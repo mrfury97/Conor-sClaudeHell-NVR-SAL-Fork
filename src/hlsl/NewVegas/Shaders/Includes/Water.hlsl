@@ -181,7 +181,15 @@ float4 getLightTravel(float3 refractedDepth, float4 shallowColor, float4 deepCol
     return float4(result, 1);
 }
 
-float4 getTurbidityFog(float3 refractedDepth, float4 shallowColor, float4 waterVolume, float sunLuma, float4 color){
+// fogScale: 1 is the old fog. With Absorption on, the water body already fades the bed out by its
+// real depth, while this fog runs on the depth map's depth, which is flat a few metres off the shore
+// -- left at full it laid the same murk over shallows and deep water alike and hid the bed that the
+// absorption shows. getTurbidityScale keeps it for water as deep as the absorption says it is.
+float getTurbidityScale(float3 transmittance){
+    return lerp(1.0f, 1.0f - saturate(dot(transmittance, 1.0f / 3.0f)), saturate(TESR_WaterLighting.y));
+}
+
+float4 getTurbidityFog(float3 refractedDepth, float4 shallowColor, float4 waterVolume, float sunLuma, float4 color, float fogScale){
     float turbidity = waterVolume.z;
 
     float depth = pows(refractedDepth.x, turbidity);
@@ -189,7 +197,7 @@ float4 getTurbidityFog(float3 refractedDepth, float4 shallowColor, float4 waterV
     float fogCoeff = 1 - saturate((FogParam.z - (refractedDepth.x * FogParam.z)) / FogParam.w);
     float3 fog = shallowColor.rgb * sunLuma;
 
-    float3 result = lerp(color.rgb, fog.rgb, saturate(fogCoeff * FogColor.a * turbidity));
+    float3 result = lerp(color.rgb, fog.rgb, saturate(fogCoeff * FogColor.a * turbidity) * fogScale);
 
     // return float4(1 - refractedDepth.yyy, 1);
     return float4(result, 1);
@@ -278,7 +286,7 @@ float4 getWaterBody(float4 color, float3 refractedDepth, float pathLength, float
 // Wave scattering (WaveScattering): looking toward a low sun, sunlight shines through the thin tops
 // and flanks of the waves and lights them up in the water's colour -- the turquoise glow on backlit
 // waves. Where the surface is tilted (wave flanks and crests), with the sun ahead of the camera,
-// stronger the lower the sun. The shallow colour's hue, at the sun's colour and brightness.
+// stronger the lower the sun, down to the horizon. The shallow colour's hue, at the sun's colour.
 // Both measured flat, across the water: the wave normals lean only a little off vertical (a tilt of
 // 0.05-0.3), so 1 - N.z barely left zero, and the view ray down onto the water is well off the sun
 // even with the sun straight ahead, so the full 3D angle between them killed it too.
@@ -288,7 +296,8 @@ float3 getWaveScattering(float3 surfaceNormal, float3 eyeDirection, float3 sunDi
     float2 viewFlat = -eyeDirection.xy * rsqrt(max(dot(eyeDirection.xy, eyeDirection.xy), 1e-6f));
     float2 sunFlat = sunDirection.xy * rsqrt(max(dot(sunDirection.xy, sunDirection.xy), 1e-6f));
     float towardSun = pow(saturate(dot(viewFlat, sunFlat)), 3.0f);
-    float lowSun = 1.0f - saturate(sunDirection.z);
+    // Low sun strongest, gone once it is under the horizon (placed water has no day/night factor).
+    float lowSun = (1.0f - saturate(sunDirection.z)) * saturate(sunDirection.z * 20.0f);
     float3 hue = shallowColor.rgb / max(max(shallowColor.r, max(shallowColor.g, shallowColor.b)), 1e-6f);
     return hue * sunColor * crest * towardSun * lowSun * shadow * TESR_WaterLighting.w;
 }

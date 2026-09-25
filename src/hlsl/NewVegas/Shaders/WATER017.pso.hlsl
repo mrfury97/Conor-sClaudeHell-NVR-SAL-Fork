@@ -95,7 +95,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
     color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, sunLuma, TESR_WaterSettings, sunLuma * lerp(0.4f, 1.0f, shadow), transmittance);
-    color = lerp(getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color), linearize(TESR_WaterLODColor) * sunLuma, LODfade); // fade to full fog to hide LOD seam
+    color = lerp(getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color, getTurbidityScale(transmittance)), linearize(TESR_WaterLODColor) * sunLuma, LODfade); // fade to full fog to hide LOD seam
     // color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color); // fade to full fog to hide LOD seam
     // color = lerp(getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linHorizonColor, color), linShallowColor,LODfade);
     float3 scattering = getWaveScattering(surfaceNormal, eyeDirection, TESR_SunDirection.xyz, linSunColor.rgb * isDayTime, linShallowColor, shadow) * (1.0f - LODfade);

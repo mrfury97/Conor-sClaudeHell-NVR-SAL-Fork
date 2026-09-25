@@ -87,7 +87,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
     color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, 0.5, TESR_WaterSettings, 0.5f, transmittance);
-    color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color);
+    color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color, getTurbidityScale(transmittance));
     //color = getDiffuse(surfaceNormal, lightDir, eyeDirection, distance, linFogColor, color);
     float fresnel = getFresnelAmount(surfaceNormal, eyeDirection, linFogColor, TESR_WaveParams.w, color);
     color.rgb = lerp(color.rgb, linFogColor.rgb, fresnel);

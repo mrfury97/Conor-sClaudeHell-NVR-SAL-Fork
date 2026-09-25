@@ -93,7 +93,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
     color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, sunLuma, TESR_PlacedWaterSettings, sunLuma * lerp(0.4f, 1.0f, shadow), transmittance);
-    color = getTurbidityFog(refractedDepth, linShallowColor, TESR_PlacedWaterVolume, sunLuma, color);
+    color = getTurbidityFog(refractedDepth, linShallowColor, TESR_PlacedWaterVolume, sunLuma, color, getTurbidityScale(transmittance));
     //color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linShallowColor, color);
     float3 scattering = getWaveScattering(surfaceNormal, eyeDirection, TESR_SunDirection.xyz, linSunColor.rgb, linShallowColor, shadow);
     color.rgb += scattering;
