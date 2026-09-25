@@ -111,5 +111,5 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting2.x = std::clamp(TheSettingManager->GetSettingF(Section, "SpecularAA"), 0.0f, 1.0f);
 	Constants.Lighting2.y = std::clamp(TheSettingManager->GetSettingF(Section, "PointLights"), 0.0f, 3.0f);
 	Constants.Lighting2.z = std::clamp(TheSettingManager->GetSettingF(Section, "PhysicalFresnel"), 0.0f, 1.0f);
-	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 6);
+	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 8);
 }

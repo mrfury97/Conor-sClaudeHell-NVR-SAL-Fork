@@ -209,20 +209,21 @@ float4 getSunSpecular(float3 surfaceNormal, float3 lightDir, float3 eyeDirection
 }
 
 // Depth absorption (Absorption, AbsorptionDepth). Light through water loses each colour at its own
-// rate (Beer-Lambert), so what shows through goes from clear in the shallows to the water's own
-// colour in the deep, one channel at a time. The rates come from the water form's deep colour: a
-// channel it has little of is absorbed fastest, so blue water loses red first and turns blue-green,
-// green swamp water loses blue first and turns murky yellow-green -- each water keeps its own look.
-// What absorption takes away is replaced by light scattered back out of the water body: the
-// shallow-to-deep colour, lit by inscatterLight. opticalDepth is the depth map's 0-1 depth, already
-// scaled for the kind of water; depthMix the same 0-1 the old colour ramp used.
+// rate (Beer-Lambert) as real water absorbs it: red first, then green, blue last, so the bed goes
+// from clear in the shallows through blue-green to gone. The water's own colour -- the water form's
+// shallow-to-deep colour -- comes in as the light scattered back out of the water body, lit by
+// inscatterLight, in place of what absorption takes away, so every water still keeps its look.
+// (Rates taken from the deep colour instead turned near-black deep colours -- most of the game's,
+// once linear -- into water that swallowed every channel within a few metres, and tinted the
+// shallows with whatever channel the deep colour happened to favour.) refractedDepth.x is the depth
+// map's 0-1 depth, already scaled for the kind of water; .y the same 0-1 the old colour ramp used.
 // Absorption 0 is the old getLightTravel, exactly.
+#define WATER_ABSORPTION float3(1.0f, 0.3f, 0.15f)
+
 float4 getWaterBody(float4 color, float3 refractedDepth, float4 shallowColor, float4 deepColor, float sunLuma, float4 waterSettings, float inscatterLight, out float3 transmittance){
     float4 legacy = getLightTravel(refractedDepth, shallowColor, deepColor, sunLuma, waterSettings, color);
 
-    float3 hue = deepColor.rgb / max(max(deepColor.r, max(deepColor.g, deepColor.b)), 1e-4f);
-    float3 absorption = -log(clamp(hue, 0.02f, 1.0f)) + 0.3f;   // + 0.3: every channel goes in the end
-    transmittance = exp(-absorption * saturate(refractedDepth.x) * 3.0f * TESR_WaterLighting.z);
+    transmittance = exp(-WATER_ABSORPTION * saturate(refractedDepth.x) * 2.5f * TESR_WaterLighting.z);
 
     float3 waterColor = lerp(shallowColor.rgb, deepColor.rgb, saturate(refractedDepth.y));
     float3 physical = color.rgb * transmittance + waterColor * inscatterLight * (1.0f - transmittance);
@@ -306,13 +307,17 @@ float3 getPointLightsSpecular(float3 surfaceNormal, float3 pixelFromCamera, floa
 //   1 sun shadow on the surface (black in shadow)       2 absorption: what still shows through, per colour
 //   3 reflection amount (Fresnel), black none to white  4 wave scattering
 //   5 glint roughness: black calm, white fully widened  6 point-light glints
-float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights){
+//   7 the depth map's depth under the pixel (x): black at the surface, white at its deepest -- what
+//     Absorption and AbsorptionDepth work from      8 the depth map's second depth (y), the colour ramp
+float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights, float3 refractedDepth){
     float3 result = shadow;
     result = view > 1.5f ? transmittance : result;
     result = view > 2.5f ? fresnel : result;
     result = view > 3.5f ? saturate(scattering) : result;
     result = view > 4.5f ? saturate((roughness - WATER_ROUGHNESS) / 0.4f) : result;
     result = view > 5.5f ? saturate(pointLights) : result;
+    result = view > 6.5f ? saturate(refractedDepth.x) : result;
+    result = view > 7.5f ? saturate(refractedDepth.y) : result;
     return result;
 }
 
