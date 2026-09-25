@@ -851,41 +851,18 @@ float getWaterSunShadow(float3 surfaceFromCamera){
 //  16 screen-space reflections: what they found, weighted by how far they are trusted (black: the
 //     reflection map, sky or room is used there)
 // ---------------------------------------------------------------------------------------------
-struct WaterDebug {
-    float shadow;
-    float3 transmittance;
-    float fresnel;
-    float3 scattering;
-    float roughness;
-    float3 pointLights;
-    float2 path;
-    float foam;
-    float alpha;
-    float caustics;
-    float waveHeight;
-    float depthCalibration;
-    float straightDepth;
-    float sceneEmpty;
-    float3 depthCopies;
-    float3 screenReflection;
-};
-
-float3 getWaterDebugView(float view, WaterDebug d){
-    float3 result = d.shadow;
-    result = view > 1.5f ? d.transmittance : result;
-    result = view > 2.5f ? d.fresnel : result;
-    result = view > 3.5f ? saturate(d.scattering) : result;
-    result = view > 4.5f ? saturate((d.roughness - WATER_ROUGHNESS) / 0.4f) : result;
-    result = view > 5.5f ? saturate(d.pointLights) : result;
-    result = view > 6.5f ? saturate(d.path.x / (20.0f * WATER_UNITS_PER_METRE)) : result;
-    result = view > 7.5f ? saturate(d.path.y / (20.0f * WATER_UNITS_PER_METRE)) : result;
-    result = view > 8.5f ? d.foam : result;
-    result = view > 9.5f ? saturate(d.alpha) : result;
-    result = view > 10.5f ? saturate(d.caustics) : result;
-    result = view > 11.5f ? d.waveHeight * 0.5f + 0.5f : result;
-    result = view > 12.5f ? saturate(d.depthCalibration * 0.5f) : result;
-    result = view > 13.5f ? (d.sceneEmpty > 0.5f ? float3(1.0f, 0.0f, 0.0f) : saturate(d.straightDepth / (100.0f * WATER_UNITS_PER_METRE)).xxx) : result;
-    result = view > 14.5f ? float3(saturate(d.depthCopies.xy / (20.0f * WATER_UNITS_PER_METRE)), d.depthCopies.z) : result;
-    result = view > 15.5f ? saturate(d.screenReflection) : result;
-    return result;
+// Sets debugColor to value when DebugView is view. Picked as each term is worked out, so no term
+// has to be kept until the end: the pixel shader's registers are few.
+void setDebug(inout float3 debugColor, float view, float3 value){
+    debugColor = abs(TESR_WaterLighting2.w - view) < 0.5f ? value : debugColor;
 }
+
+#if !WATER_LOD && !WATER_BELOW
+// DebugViews 13-15, the depth diagnostics.
+void setDepthDebug(inout float3 debugColor, WaterScreenMap map, float3 surfaceFromCamera, float2 uv, float straightDepth){
+    setDebug(debugColor, 13.0f, saturate(getDepthCalibration(map) * 0.5f));
+    setDebug(debugColor, 14.0f, getSceneEmpty(map, uv) > 0.5f ? float3(1.0f, 0.0f, 0.0f) : saturate(straightDepth / (100.0f * WATER_UNITS_PER_METRE)).xxx);
+    float3 copies = getDepthCopies(map, surfaceFromCamera, uv);
+    setDebug(debugColor, 15.0f, float3(saturate(copies.xy / (20.0f * WATER_UNITS_PER_METRE)), copies.z));
+}
+#endif
