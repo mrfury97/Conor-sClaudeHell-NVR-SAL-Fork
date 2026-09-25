@@ -321,54 +321,56 @@ float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, Wate
 // Where the ray leaves the screen, passes behind everything, or heads back toward the camera, the
 // reflection map (or sky, or room) takes over, faded in so there is no edge.
 //
-// Points along the ray are projected with the water's own projection (the vertex shader's four
-// rows, which work in the water mesh's own space): a world offset turns into a mesh offset by the
-// water's scale, and horizontally by how the two change from pixel to pixel (a placed water may be
-// turned against the world).
+// Points along the ray are projected without any matrix: the water's own screen position (x, y and
+// w, the distance along the view axis, from the vertex shader's projection rows) is linear in the
+// camera-relative world position, with no constant term since the camera sits at the origin. How it
+// changes from pixel to pixel across the flat water gives its change per world x and y; the pixel's
+// own position then gives its change per world z. Nothing about the water mesh's own space or scale
+// is assumed (a water quad scaled only sideways would otherwise flatten every ray).
 // ---------------------------------------------------------------------------------------------
 #if !WATER_LOD && !WATER_BELOW
 // MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
 sampler2D TESR_RenderedBuffer : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 
 struct WaterProjector {
-    float4 toMeshXY;    // mesh offset per world x (xy) and per world y (zw)
-    float toMeshZ;      // mesh offset per world z
+    float3 origin;              // the pixel's screen position: x, y (texture space, times w) and w
+    float3 perX, perY, perZ;    // its change per unit of camera-relative world x, y and z
 };
 
-// Top level only (derivatives).
-WaterProjector getWaterProjector(PS_INPUT IN){
+// screenPos: getStraightScreenPos. surfaceFromCamera: the pixel's camera-relative position. Top
+// level only (derivatives).
+WaterProjector getWaterProjector(float4 screenPos, float3 surfaceFromCamera){
     WaterProjector projector;
-    float2 wx = ddx(IN.LTEXCOORD_0.xy);
-    float2 wy = ddy(IN.LTEXCOORD_0.xy);
-    float2 lx = ddx(IN.LTEXCOORD_1.xy);
-    float2 ly = ddy(IN.LTEXCOORD_1.xy);
+    projector.origin = float3(screenPos.x, screenPos.y, screenPos.w);
+    float3 sx = ddx(projector.origin);
+    float3 sy = ddy(projector.origin);
+    float2 wx = ddx(surfaceFromCamera.xy);
+    float2 wy = ddy(surfaceFromCamera.xy);
     float det = wx.x * wy.y - wy.x * wx.y;
-    float invScale = 1.0f / max(IN.LTEXCOORD_0.w, 1e-4f);
-    projector.toMeshXY = abs(det) > 1e-8f ? float4((lx * wy.y - ly * wx.y) / det, (ly * wx.x - lx * wy.x) / det)
-                                          : float4(invScale, 0.0f, 0.0f, invScale);
-    projector.toMeshZ = invScale;
+    det = abs(det) > 1e-8f ? det : 1e-8f;
+    projector.perX = (sx * wy.y - sy * wx.y) / det;
+    projector.perY = (sy * wx.x - sx * wy.x) / det;
+    // origin = perX * x + perY * y + perZ * z at the pixel itself (no constant term).
+    float height = abs(surfaceFromCamera.z) > 1.0f ? surfaceFromCamera.z : (surfaceFromCamera.z < 0.0f ? -1.0f : 1.0f);
+    projector.perZ = (projector.origin - projector.perX * surfaceFromCamera.x - projector.perY * surfaceFromCamera.y) / height;
     return projector;
 }
 
 // Screen position (xy) and distance along the view axis (z) of the point worldOffset away from the pixel.
-float3 projectFromWater(PS_INPUT IN, WaterProjector projector, float3 worldOffset){
-    float3 mesh = float3(projector.toMeshXY.xy * worldOffset.x + projector.toMeshXY.zw * worldOffset.y, worldOffset.z * projector.toMeshZ);
-    float4 p = float4(IN.LTEXCOORD_1.xyz + mesh, 1.0f);
-    float w = dot(IN.LTEXCOORD_5, p);
-    float x = dot(IN.LTEXCOORD_2, p);
-    float y = w - dot(IN.LTEXCOORD_3, p);
-    return float3(float2(x, y) / max(w, 1e-3f), w);
+float3 projectFromWater(WaterProjector projector, float3 worldOffset){
+    float3 s = projector.origin + projector.perX * worldOffset.x + projector.perY * worldOffset.y + projector.perZ * worldOffset.z;
+    return float3(s.xy / max(s.z, 1e-3f), s.z);
 }
 
 // The reflection along R from the water pixel, and how far it can be trusted (confidence, 0-1).
 // status, for DebugView 17: 0 not traced (off, or the ray heads back toward the camera), 1 traced
 // and found nothing, 2 found something.
-float3 getScreenSpaceReflection(PS_INPUT IN, WaterProjector projector, WaterScreenMap map, float3 R, out float confidence, out float status){
+float3 getScreenSpaceReflection(WaterProjector projector, WaterScreenMap map, float3 R, out float confidence, out float status){
     const float maxDistance = 4000.0f;
     confidence = 0.0f;
     status = 0.0f;
     // Rays heading back toward the camera find the backs of things, which are not on the screen.
-    float towardScreen = (projectFromWater(IN, projector, R * 100.0f).z - map.viewZ) / 100.0f;
+    float towardScreen = (projectFromWater(projector, R * 100.0f).z - map.viewZ) / 100.0f;
     float directionFade = saturate(towardScreen * 4.0f + 1.0f);
     if (TESR_WaterLighting4.w <= 0.0f || directionFade <= 0.0f) return 0.0f;
     status = 1.0f;
@@ -379,7 +381,7 @@ float3 getScreenSpaceReflection(PS_INPUT IN, WaterProjector projector, WaterScre
     [loop]
     for (int i = 1; i <= 24; i++) {
         float t = maxDistance * (i * i) / 576.0f;   // finer steps near the surface
-        float3 ray = projectFromWater(IN, projector, R * t);
+        float3 ray = projectFromWater(projector, R * t);
         if (ray.z <= 1.0f || any(ray.xy != saturate(ray.xy))) break;
         float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(ray.xy, 0.0f, 0.0f)).x);
         // Behind what is on the screen there, but by no more than this step could have carried it
@@ -398,12 +400,12 @@ float3 getScreenSpaceReflection(PS_INPUT IN, WaterProjector projector, WaterScre
     [loop]
     for (int j = 0; j < 5; j++) {
         float t = 0.5f * (before + after);
-        float3 ray = projectFromWater(IN, projector, R * t);
+        float3 ray = projectFromWater(projector, R * t);
         float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(ray.xy, 0.0f, 0.0f)).x);
         if (ray.z > sceneZ) after = t;
         else before = t;
     }
-    float3 hitPoint = projectFromWater(IN, projector, R * after);
+    float3 hitPoint = projectFromWater(projector, R * after);
     float2 edge = min(hitPoint.xy, 1.0f - hitPoint.xy);
     float edgeFade = saturate(min(edge.x, edge.y) * 10.0f);
     float distanceFade = 1.0f - smoothstep(0.6f, 1.0f, after / maxDistance);

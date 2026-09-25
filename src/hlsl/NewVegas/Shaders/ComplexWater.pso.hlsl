@@ -241,12 +241,12 @@ PS_OUTPUT main(PS_INPUT IN) {
                                                      : getSkyReflection(reflect(-eyeDirection, N), skyLight);
 #endif
     // What the screen itself shows along the reflected ray, where it can be found there.
-    WaterProjector projector = getWaterProjector(IN);   // derivatives: top level
+    WaterProjector projector = getWaterProjector(straightPos, surface);   // derivatives: top level
     float3 reflectedRay = reflect(-eyeDirection, N);
     reflectedRay = normalize(float3(reflectedRay.xy, max(reflectedRay.z, 0.02f)));
     float screenReflectionAmount;
     float screenReflectionStatus;
-    float3 screenReflection = getScreenSpaceReflection(IN, projector, screenMap, reflectedRay, screenReflectionAmount, screenReflectionStatus);
+    float3 screenReflection = getScreenSpaceReflection(projector, screenMap, reflectedRay, screenReflectionAmount, screenReflectionStatus);
     reflection = lerp(reflection, screenReflection, screenReflectionAmount);
     WATER_DEBUG(16, saturate(screenReflection * screenReflectionAmount));
     WATER_DEBUG(17, screenReflectionStatus < 0.5f ? float3(1.0f, 0.0f, 0.0f) : (screenReflectionStatus < 1.5f ? 0.0f : max(screenReflectionAmount, 0.3f)).xxx);
