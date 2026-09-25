@@ -104,6 +104,9 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float foam = getFoamMask(IN.LTEXCOORD_7, straightPath.x, TESR_WaveParams);
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
+    // Caustics on the sunlit bed, before the water absorbs the light coming back up from it.
+    float caustics = getCaustics(getBedFromCamera(refractionPos), waterPath.y, TESR_WaveParams) * shadow * saturate(TESR_SunDirection.z * 5.0f) * isDayTime;
+    color.rgb *= 1.0f + caustics * luma(linSunColor);
     color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, sunLuma, TESR_WaterSettings, sunLuma * lerp(0.4f, 1.0f, shadow), transmittance);
     color = lerp(getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color, getTurbidityScale(transmittance)), linearize(TESR_WaterLODColor) * sunLuma, LODfade); // fade to full fog to hide LOD seam
     //color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linHorizonColor, color);
@@ -130,7 +133,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     // DebugView ([Shaders.Water.Main]): one term of the water lighting on its own.
     [branch]
     if (TESR_WaterLighting2.w > 0.5f)
-        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath, foam, color.a), 1.0f);
+        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath, foam, color.a, caustics), 1.0f);
 
     return OUT;
 };

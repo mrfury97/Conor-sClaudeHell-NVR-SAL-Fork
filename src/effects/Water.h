@@ -24,6 +24,9 @@ public:
 		D3DXVECTOR4		Lighting2;		// TESR_WaterLighting2: x specular AA, y point lights, z physical Fresnel, w debug view
 		D3DXVECTOR4		Lighting3;		// TESR_WaterLighting3: x water colour brightness, y wave detail, z foam, w foam width
 		D3DXVECTOR4		Lighting4;		// TESR_WaterLighting4: x shore fade width, y reflection blur
+		D3DXVECTOR4		ScatterColor;	// TESR_WaterScatterColor: rgb water body colour, w 1 when set
+		D3DXVECTOR4		Absorption;		// TESR_WaterAbsorption: rgb absorption rates
+		D3DXVECTOR4		Lighting5;		// TESR_WaterLighting5: x caustics, y caustics scale, z sun glitter
 	};
 	WaterConstants		Constants;
 

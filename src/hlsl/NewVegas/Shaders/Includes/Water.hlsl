@@ -66,13 +66,29 @@ struct PS_OUTPUT {
 //                        w: FoamWidth       how far out from the edge the foam reaches (units, never 0)
 //   TESR_WaterLighting4  x: ShoreFadeWidth  0 the old shoreline fade, else a soft fade over this depth
 //                        y: ReflectionBlur  blurs the reflection on choppy water
-// c190-c191 and c202-c203: clear of every water shader's own constants (up to c70), of Shadow.hlsl
+//   TESR_WaterScatterColor rgb: the colour the water body glows with (ScatterColor), w: 1 when set,
+//                        0 to take the water form's own shallow-to-deep colour
+//   TESR_WaterAbsorption rgb: how fast the water absorbs each colour with depth (AbsorptionColor)
+//   TESR_WaterLighting5  x: Caustics        light rippling on the bed in shallow water
+//                        y: CausticsScale   size of the caustic pattern (units, never 0)
+//                        z: SunGlitter      a broad, sparkling sun path on the water
+// c190-c191 and c202-c206: clear of every water shader's own constants (up to c70), of Shadow.hlsl
 // (c100-c133) and of the scene-depth constants below (c192-c201).
 // ---------------------------------------------------------------------------------------------
 float4 TESR_WaterLighting  : register(c190);
 float4 TESR_WaterLighting2 : register(c191);
 float4 TESR_WaterLighting3 : register(c202);
 float4 TESR_WaterLighting4 : register(c203);
+float4 TESR_WaterScatterColor : register(c204);
+float4 TESR_WaterAbsorption : register(c205);
+float4 TESR_WaterLighting5 : register(c206);
+
+// A texture coordinate turned by angle (radians): wave layers, foam and caustics each at their own.
+float2 rotateWaveUV(float2 uv, float angle){
+    float s = sin(angle);
+    float c = cos(angle);
+    return float2(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
+}
 
 #ifdef WATER_SCENE_DEPTH
 // ---------------------------------------------------------------------------------------------
@@ -120,6 +136,30 @@ float2 getWaterPath(float4 screenPos, float3 surfaceFromCamera){
                   max(surfaceFromCamera.z - bedFromCamera.z, 0.0f));
 }
 
+// Camera-relative position of what lies behind the water at projective screen position screenPos.
+float3 getBedFromCamera(float4 screenPos){
+    float2 uv = screenPos.xy / screenPos.w;
+    return getWaterViewRay(uv) * getSceneViewZ(uv);
+}
+
+// Caustics (Caustics, CausticsScale): sunlight focused by the waves into bright rippling lines on
+// the bed, seen from above through shallow water. Two layers of the wave texture drift across the
+// bed's world position in different directions; where their slopes cancel, the light converges.
+// None at the waterline, where there is no water to focus the light yet, strongest a little
+// deeper, fading out in deep water. A factor for the sunlit bed: 0 none, higher brighter.
+// Needs TESR_CameraPosition declared. tex2Dlod with a level from the distance: legal anywhere.
+float getCaustics(float3 bedFromCamera, float waterDepth, float4 waveParams){
+    float speed = TESR_GameTime.x * 0.002f * waveParams.z;
+    float2 world = (bedFromCamera.xy + TESR_CameraPosition.xy) / TESR_WaterLighting5.y;
+    float lod = log2(max(length(bedFromCamera) / (TESR_WaterLighting5.y * 2.0f), 1.0f));
+    float2 a = expand(tex2Dlod(TESR_samplerWater, float4(world + float2(0.8f, 0.6f) * speed * 3.0f, 0.0f, lod))).xy;
+    float2 b = expand(tex2Dlod(TESR_samplerWater, float4(rotateWaveUV(world * 1.37f, 1.1f) - float2(0.3f, 0.95f) * speed * 3.0f, 0.0f, lod))).xy;
+    float focus = saturate(1.0f - length(a + b) * 1.8f);
+    focus = focus * focus * focus * 3.0f;
+    float depthFade = saturate(waterDepth / 20.0f) * exp(-waterDepth / 500.0f);
+    return focus * depthFade * TESR_WaterLighting5.x;
+}
+
 // Refraction without the leak. The refraction is read from the screen offset by the wave normal,
 // and where the offset lands on something in FRONT of the water -- a pier post, the player's legs,
 // the shore -- that thing showed up smeared into the water around it. Where the scene at the
@@ -154,12 +194,6 @@ float4 getScreenpos(PS_INPUT IN){
 // distance (where they only shimmered) while the swell carries the far water, and a very large,
 // slow pattern varies the wave strength across the water into rougher and calmer patches.
 // Same texture, same wave settings (choppiness, waveWidth, waveSpeed). tex2D: top level only.
-float2 rotateWaveUV(float2 uv, float angle){
-    float s = sin(angle);
-    float c = cos(angle);
-    return float2(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
-}
-
 float3 getDetailedWaveTexture(float2 texPos, float distance, float4 waveParams){
     float waveWidth = waveParams.y;
     float speed = TESR_GameTime.x * 0.002 * waveParams.z;
@@ -342,9 +376,19 @@ float getSpecularRoughness(float3 surfaceNormal, float distance){
     return lerp(WATER_ROUGHNESS, antiAliased, saturate(TESR_WaterLighting2.x));
 }
 
+// Sun glint, with SunGlitter: sunlit water seen toward the sun is a broad path of light full of
+// tiny sharp sparkles, one per wave facet that happens to face the sun just right. A broad, soft
+// lobe draws the path; the sharp, un-anti-aliased glint of each facet, kept inside that path and
+// capped so a single facet cannot blow out, draws the sparkles on it.
 float4 getSunSpecular(float3 surfaceNormal, float3 lightDir, float3 eyeDirection, float3 specColor, float roughness, float4 color){
     float specularBoost = 10;
-    return float4(color.rgb + getGlint(normalize(surfaceNormal), lightDir, eyeDirection, roughness) * specColor * specularBoost, color.a);
+    float3 N = normalize(surfaceNormal);
+    float3 glint = getGlint(N, lightDir, eyeDirection, roughness);
+    float glitter = TESR_WaterLighting5.z;
+    float3 path = getGlint(N, lightDir, eyeDirection, 0.3f);
+    float3 sparkle = min(getGlint(N, lightDir, eyeDirection, WATER_ROUGHNESS), 40.0f);
+    glint += (sparkle * (path / (path + 1.0f)) * 0.15f + path * 0.1f) * glitter;
+    return float4(color.rgb + glint * specColor * specularBoost, color.a);
 }
 
 // Depth absorption (Absorption, AbsorptionDepth). Light through water loses each colour at its own
@@ -359,14 +403,18 @@ float4 getSunSpecular(float3 surfaceNormal, float3 lightDir, float3 eyeDirection
 // AbsorptionDepth 1, 5 m of water (350 units) lets through about 30% red, 65% green, 75% blue, and
 // 20 m next to no red and a third of the blue. refractedDepth: the depth map's 0-1 depths, still
 // what the old colour ramp and getLightTravel use. Absorption 0 is the old getLightTravel, exactly.
-#define WATER_ABSORPTION float3(1.0f, 0.4f, 0.25f)
+// The absorption rates: TESR_WaterAbsorption (AbsorptionColor), red fastest as in real water.
+#define WATER_ABSORPTION TESR_WaterAbsorption.rgb
 
 float4 getWaterBody(float4 color, float3 refractedDepth, float pathLength, float4 shallowColor, float4 deepColor, float sunLuma, float4 waterSettings, float inscatterLight, out float3 transmittance){
     float4 legacy = getLightTravel(refractedDepth, shallowColor, deepColor, sunLuma, waterSettings, color);
 
     transmittance = exp(-WATER_ABSORPTION * pathLength * (TESR_WaterLighting.z / 300.0f));
 
-    float3 waterColor = lerp(shallowColor.rgb, deepColor.rgb, saturate(refractedDepth.y));
+    // ScatterColor, when set, in place of the water form's colours: those are very dark once linear,
+    // and clear water lit by the sun glows with a luminous colour of its own.
+    float3 waterColor = TESR_WaterScatterColor.w > 0.5f ? TESR_WaterScatterColor.rgb
+                                                         : lerp(shallowColor.rgb, deepColor.rgb, saturate(refractedDepth.y));
     // WaterColorBrightness: the water form's colours are very dark once linear, so deep water can
     // read near black; this lifts the colour the water body gives off, not the bed seen through it.
     float3 physical = color.rgb * transmittance + waterColor * inscatterLight * TESR_WaterLighting3.x * (1.0f - transmittance);
@@ -460,7 +508,8 @@ float3 getPointLightsSpecular(float3 surfaceNormal, float3 pixelFromCamera, floa
 //     what Absorption and AbsorptionDepth work from
 //   8 the water's depth straight down, black 0 to white 20 m
 //   9 foam                                               10 shoreline fade: black see-through, white solid
-float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights, float2 waterPath, float foam, float shoreAlpha){
+//  11 caustics on the bed
+float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights, float2 waterPath, float foam, float shoreAlpha, float caustics){
     float3 result = shadow;
     result = view > 1.5f ? transmittance : result;
     result = view > 2.5f ? fresnel : result;
@@ -471,6 +520,7 @@ float3 waterDebugView(float view, float shadow, float3 transmittance, float fres
     result = view > 7.5f ? saturate(waterPath.y / 1400.0f) : result;
     result = view > 8.5f ? foam : result;
     result = view > 9.5f ? saturate(shoreAlpha) : result;
+    result = view > 10.5f ? saturate(caustics) : result;
     return result;
 }
 

@@ -21,6 +21,9 @@ void WaterShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WaterLighting2", &Constants.Lighting2);
 	TheShaderManager->RegisterConstant("TESR_WaterLighting3", &Constants.Lighting3);
 	TheShaderManager->RegisterConstant("TESR_WaterLighting4", &Constants.Lighting4);
+	TheShaderManager->RegisterConstant("TESR_WaterScatterColor", &Constants.ScatterColor);
+	TheShaderManager->RegisterConstant("TESR_WaterAbsorption", &Constants.Absorption);
+	TheShaderManager->RegisterConstant("TESR_WaterLighting5", &Constants.Lighting5);
 }
 
 
@@ -113,7 +116,7 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting2.x = std::clamp(TheSettingManager->GetSettingF(Section, "SpecularAA"), 0.0f, 1.0f);
 	Constants.Lighting2.y = std::clamp(TheSettingManager->GetSettingF(Section, "PointLights"), 0.0f, 3.0f);
 	Constants.Lighting2.z = std::clamp(TheSettingManager->GetSettingF(Section, "PhysicalFresnel"), 0.0f, 1.0f);
-	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 10);
+	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 11);
 	// Brightness of the water's own colour. A missing key reads 0, which would blacken it: it means 1.
 	float colorBrightness = TheSettingManager->GetSettingF(Section, "WaterColorBrightness");
 	Constants.Lighting3.x = colorBrightness > 0.0f ? std::clamp(colorBrightness, 0.1f, 5.0f) : 1.0f;
@@ -125,4 +128,20 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting3.w = foamWidth > 0.0f ? std::clamp(foamWidth, 2.0f, 400.0f) : 15.0f;
 	Constants.Lighting4.x = std::clamp(TheSettingManager->GetSettingF(Section, "ShoreFadeWidth"), 0.0f, 300.0f);
 	Constants.Lighting4.y = std::clamp(TheSettingManager->GetSettingF(Section, "ReflectionBlur"), 0.0f, 3.0f);
+
+	// The water body's own glow colour. All three missing (0) means the water form's colours, as before.
+	D3DXVECTOR4 scatter(std::clamp(TheSettingManager->GetSettingF(Section, "ScatterColorR"), 0.0f, 2.0f),
+		std::clamp(TheSettingManager->GetSettingF(Section, "ScatterColorG"), 0.0f, 2.0f),
+		std::clamp(TheSettingManager->GetSettingF(Section, "ScatterColorB"), 0.0f, 2.0f), 1.0f);
+	Constants.ScatterColor = (scatter.x + scatter.y + scatter.z > 0.0f) ? scatter : D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	// Absorption rates per colour. All three missing means real water's, red fastest.
+	D3DXVECTOR4 absorption(std::clamp(TheSettingManager->GetSettingF(Section, "AbsorptionColorR"), 0.0f, 5.0f),
+		std::clamp(TheSettingManager->GetSettingF(Section, "AbsorptionColorG"), 0.0f, 5.0f),
+		std::clamp(TheSettingManager->GetSettingF(Section, "AbsorptionColorB"), 0.0f, 5.0f), 0.0f);
+	Constants.Absorption = (absorption.x + absorption.y + absorption.z > 0.0f) ? absorption : D3DXVECTOR4(1.0f, 0.4f, 0.25f, 0.0f);
+	// Caustics and sun glitter: off at 0 (also a missing key); a missing caustics scale means 350 units.
+	Constants.Lighting5.x = std::clamp(TheSettingManager->GetSettingF(Section, "Caustics"), 0.0f, 3.0f);
+	float causticsScale = TheSettingManager->GetSettingF(Section, "CausticsScale");
+	Constants.Lighting5.y = causticsScale > 0.0f ? std::clamp(causticsScale, 50.0f, 3000.0f) : 350.0f;
+	Constants.Lighting5.z = std::clamp(TheSettingManager->GetSettingF(Section, "SunGlitter"), 0.0f, 3.0f);
 }

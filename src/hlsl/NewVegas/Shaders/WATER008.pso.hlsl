@@ -88,6 +88,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float3 scattering = 0.0f;
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
+    float caustics = 0.0f;   // no sun indoors
     color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, 0.5, TESR_WaterSettings, 0.5f, transmittance);
    	color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color, getTurbidityScale(transmittance));
     float fresnel = getFresnelAmount(surfaceNormal, eyeDirection, linFogColor, TESR_WaveParams.w, color);
@@ -112,7 +113,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     // DebugView ([Shaders.Water.Main]): one term of the water lighting on its own.
     [branch]
     if (TESR_WaterLighting2.w > 0.5f)
-        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath, foam, color.a), 1.0f);
+        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath, foam, color.a, caustics), 1.0f);
 
     return OUT;
 };
