@@ -19,6 +19,7 @@ void WaterShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PlacedWaterShorelineParams", &Constants.Placed.shorelineParams);
 	TheShaderManager->RegisterConstant("TESR_WaterLighting", &Constants.Lighting);
 	TheShaderManager->RegisterConstant("TESR_WaterLighting2", &Constants.Lighting2);
+	TheShaderManager->RegisterConstant("TESR_WaterLighting3", &Constants.Lighting3);
 }
 
 
@@ -112,4 +113,7 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting2.y = std::clamp(TheSettingManager->GetSettingF(Section, "PointLights"), 0.0f, 3.0f);
 	Constants.Lighting2.z = std::clamp(TheSettingManager->GetSettingF(Section, "PhysicalFresnel"), 0.0f, 1.0f);
 	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 8);
+	// Brightness of the water's own colour. A missing key reads 0, which would blacken it: it means 1.
+	float colorBrightness = TheSettingManager->GetSettingF(Section, "WaterColorBrightness");
+	Constants.Lighting3.x = colorBrightness > 0.0f ? std::clamp(colorBrightness, 0.1f, 5.0f) : 1.0f;
 }

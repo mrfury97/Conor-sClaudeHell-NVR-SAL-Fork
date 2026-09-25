@@ -60,10 +60,13 @@ struct PS_OUTPUT {
 //                        y: PointLights     point-light glints (campfires, lamps); 0 skips the loop
 //                        z: PhysicalFresnel 0 the old reflection strength, 1 water's real reflectance
 //                        w: DebugView       0 off, see waterDebugView
-// c190/c191: clear of every water shader's own constants (up to c70) and of Shadow.hlsl (c100-c133).
+//   TESR_WaterLighting3  x: WaterColorBrightness  brightness of the water's own colour (never 0)
+// c190-c191 and c202: clear of every water shader's own constants (up to c70), of Shadow.hlsl
+// (c100-c133) and of the scene-depth constants below (c192-c201).
 // ---------------------------------------------------------------------------------------------
 float4 TESR_WaterLighting  : register(c190);
 float4 TESR_WaterLighting2 : register(c191);
+float4 TESR_WaterLighting3 : register(c202);
 
 #ifdef WATER_SCENE_DEPTH
 // ---------------------------------------------------------------------------------------------
@@ -195,7 +198,7 @@ float4 getTurbidityFog(float3 refractedDepth, float4 shallowColor, float4 waterV
     float depth = pows(refractedDepth.x, turbidity);
 
     float fogCoeff = 1 - saturate((FogParam.z - (refractedDepth.x * FogParam.z)) / FogParam.w);
-    float3 fog = shallowColor.rgb * sunLuma;
+    float3 fog = shallowColor.rgb * sunLuma * TESR_WaterLighting3.x;   // WaterColorBrightness
 
     float3 result = lerp(color.rgb, fog.rgb, saturate(fogCoeff * FogColor.a * turbidity) * fogScale);
 
@@ -279,7 +282,9 @@ float4 getWaterBody(float4 color, float3 refractedDepth, float pathLength, float
     transmittance = exp(-WATER_ABSORPTION * pathLength * (TESR_WaterLighting.z / 300.0f));
 
     float3 waterColor = lerp(shallowColor.rgb, deepColor.rgb, saturate(refractedDepth.y));
-    float3 physical = color.rgb * transmittance + waterColor * inscatterLight * (1.0f - transmittance);
+    // WaterColorBrightness: the water form's colours are very dark once linear, so deep water can
+    // read near black; this lifts the colour the water body gives off, not the bed seen through it.
+    float3 physical = color.rgb * transmittance + waterColor * inscatterLight * TESR_WaterLighting3.x * (1.0f - transmittance);
     return float4(lerp(legacy.rgb, physical, saturate(TESR_WaterLighting.y)), 1.0f);
 }
 
