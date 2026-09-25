@@ -1069,43 +1069,38 @@ ShoreFadeWidth = 20.0                # [0-300] The water fades out softly over t
 DebugView = 0                        # [0-11] Shows one term on its own. 1 sun shadow on the surface (black in shadow). 2 what still shows through the water, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white widened). 6 point-light glints. 7 the path the view takes through the water (black 0, white 20 m). 8 the depth below the surface (black 0, white 20 m). 9 foam. 10 shoreline fade (black see-through, white solid). 11 caustics. 0 off.
 
 [_Shaders.Water.Default]
-causticsStrength = 3.0              # Caustic strength underwater. Caustics seen from above water not currently supported
-causticsStrengthS = 0.2             # Godrays intensity underwater.
-choppiness = 0.7                    # Exponent for the waves normals. A higher value will create more defined wave crests.
-depthDarkness = 1.0                 # How much light reaches the bottom of the water.
-inExtCoeff_B = 1.0                  # Underwater fog color tint (blue component).
-inExtCoeff_G = 1.0                  # Underwater fog color tint (green component).
-inExtCoeff_R = 1.0                  # Underwater fog color tint (red component).
-inScattCoeff = 1.0                  # Underwater scattering modifier, higher values lead to less brightness.
-reflectivity = 1.0                  # Multiplier for the strength of reflections on the surface.
-shoreFactor = 6.0                   # Size of the shore fading area on shallow slope areas.
-shoreMovement = 0.3                 # Speed of wave movement in the shore.
-turbidity = 3.0                     # Water murkiness.
-waveSpeed = 0.7                     # Speed multiplier for waves animation.
-waveWidth = 0.8                     # Multiplier for the wave texture size.
-refractionPower = 0.2               # Multiplier for the refraction.
+choppiness = 0.7                    # Outdoor water. Wave steepness: higher gives more defined wave crests.
+waveWidth = 0.8                     # Size of the waves.
+waveSpeed = 0.7                     # Speed of the waves.
+reflectivity = 1.0                  # Strength of reflections on the surface.
+refractionPower = 0.2               # How much the waves bend the view of the bed through the water.
+shoreMovement = 0.3                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
+causticsStrength = 3.0              # Underwater view: caustics on the bed around you when your head is underwater (from above: Caustics in ComplexWater).
+causticsStrengthS = 0.2             # Underwater view: god rays.
+turbidity = 3.0                     # Underwater view: how murky the water is.
+depthDarkness = 1.0                 # Underwater view: how much the light fades with depth.
+inExtCoeff_R = 1.0                  # Underwater view: fog tint, red.
+inExtCoeff_G = 1.0                  # Underwater view: fog tint, green.
+inExtCoeff_B = 1.0                  # Underwater view: fog tint, blue.
+inScattCoeff = 1.0                  # Underwater view: scattering; higher is darker.
 
 [_Shaders.Water.Interiors]
-choppiness = 0.5                    # Exponent for the waves normals. A higher value will create more defined wave crests.
-depthDarkness = 10.0                # How much light reaches the bottom of the water.
-reflectivity = 0.0                  # Multiplier for the strength of reflections on the surface.
-shoreFactor = 6.0                   # Size of the shore fading area on shallow slope areas.
-shoreMovement = 0.6                 # Speed of wave movement in the shore.
-turbidity = 1.0                     # Water murkiness.
-waveSpeed = 0.7                     # Speed multiplier for waves animation.
-waveWidth = 0.8                     # Multiplier for the wave texture size.
-refractionPower = 0.2               # Multiplier for the refraction.
+choppiness = 0.5                    # Interior water. Wave steepness: higher gives more defined wave crests.
+waveWidth = 0.8                     # Size of the waves.
+waveSpeed = 0.7                     # Speed of the waves.
+reflectivity = 0.0                  # Strength of reflections on the surface.
+refractionPower = 0.2               # How much the waves bend the view of the bed through the water.
+shoreMovement = 0.6                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
+turbidity = 1.0                     # Underwater view: how murky the water is.
+depthDarkness = 10.0                # Underwater view: how much the light fades with depth.
 
 [_Shaders.Water.Placed]
-choppiness = 0.5                    # Exponent for the waves normals. A higher value will create more defined wave crests.
-depthDarkness = 10.0                # How much light reaches the bottom of the water.
-reflectivity = 0.0                  # Multiplier for the strength of reflections on the surface.
-shoreFactor = 6.0                   # Size of the shore fading area on shallow slope areas.
-shoreMovement = 0.6                 # Speed of wave movement in the shore.
-turbidity = 1.0                     # Water murkiness.
-waveSpeed = 0.7                     # Speed multiplier for waves animation.
-waveWidth = 0.8                     # Multiplier for the wave texture size.
-refractionPower = 0.2               # Multiplier for the refraction.
+choppiness = 0.5                    # Placed water (pools, some ponds). Wave steepness: higher gives more defined wave crests.
+waveWidth = 0.8                     # Size of the waves.
+waveSpeed = 0.7                     # Speed of the waves.
+reflectivity = 0.0                  # Strength of reflections on the surface.
+refractionPower = 0.2               # How much the waves bend the view of the bed through the water.
+shoreMovement = 0.6                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
 
 [_Shaders.Water.Status]
 Enabled = true                      # Replaces water shaders with a custom shader.
