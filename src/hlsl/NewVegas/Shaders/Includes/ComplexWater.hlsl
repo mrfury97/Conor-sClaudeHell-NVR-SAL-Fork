@@ -95,41 +95,96 @@ float4 flipToRefraction(float4 reflectionPos){
 // is drawn (ShaderRecord::SetCT, for any game shader reading TESR_DepthBufferWorld), still holds
 // what lies under and behind the water, so the real depth of water the view passes through is
 // known everywhere: the game's own water depth map only grades the first few metres off the shore.
+//
+// The depth buffer is read against the water's own depth, not the DLL's copy of the camera's near
+// plane: the water's vertex shader hands over the projection it was drawn with, so each pixel knows
+// exactly the depth value the water itself has there and how far along the view axis it lies. For
+// any perspective projection, the depth value's distance from the far end of its range (0 on a
+// reversed buffer, 1 on a standard one) falls off as 1/viewZ, with a scale set by the near plane;
+// that scale comes from the water itself. A near plane that does not match the one the game drew
+// with (a camera mod, a changed fNearDistance) would otherwise scale every depth read by the
+// mismatch. Which way the buffer runs also comes from the water: anything past twice the near
+// plane has a depth value under 0.5 on a reversed buffer and over 0.5 on a standard one.
 // ---------------------------------------------------------------------------------------------
 // MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
 sampler2D TESR_DepthBufferWorld : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
-row_major float4x4 TESR_ProjectionTransform : register(c192);   // only its x and y scale are read
-float4 TESR_CameraData : register(c200);     // x: near, y: far
-float4 TESR_DepthConstants : register(c201); // z: 1 when the depth buffer is reversed
+float4 TESR_CameraData : register(c200);     // y: far (only a small correction)
 
-// How much longer the view ray through screen position uv is than its depth along the view axis
-// (1 at the centre of the screen, more toward the edges). From the projection's scales alone, so it
-// cannot be thrown by which way the view matrix's axes happen to point.
-float getViewRayLength(float2 uv){
-    float2 ndc = uv * 2.0f - 1.0f;
-    float2 slope = ndc / float2(abs(TESR_ProjectionTransform[0][0]), abs(TESR_ProjectionTransform[1][1]));
-    return sqrt(1.0f + dot(slope, slope));
+// The water's view of the screen: how points on the water plane map to screen positions (from how
+// the water surface and its own screen position change from one pixel to the next, their
+// screen-space derivatives, in the engine's own screen space, whichever way it is laid out), their
+// distance along the view axis, and the depth buffer's scale. Build it at the top level (ddx/ddy);
+// the surface is flat, so the map is exact for points on the water plane near the pixel, which is
+// all refraction needs.
+struct WaterScreenMap {
+    float2 worldX, worldY;   // camera-relative water-plane position, per pixel across and down
+    float2 uvX, uvY;         // screen position, per pixel across and down
+    float viewZ;             // the water's distance along the view axis at the pixel
+    float viewZX, viewZY;    // ... per pixel across and down
+    float det;
+    float reversed;          // 1 on a reversed depth buffer
+    float depthScale;        // the depth buffer's 1/viewZ scale (the near plane, near enough)
+};
+
+// A depth value's distance from the far end of the buffer's range.
+float getDepthFromFar(float rawDepth, float reversed){
+    return reversed > 0.5f ? rawDepth : 1.0f - rawDepth;
 }
 
-// View-space depth of the scene behind the water at uv. Nothing there reads as the far plane.
-float getSceneViewZ(float2 uv){
+float getInvFar(){
+    return 1.0f / max(TESR_CameraData.y, 1000.0f);
+}
+
+// screenPos: the water's straight screen position (getStraightScreenPos): its z is half the clip
+// depth plus half w, w the distance along the view axis.
+WaterScreenMap getWaterScreenMap(float3 surfaceFromCamera, float2 uv, float4 screenPos){
+    WaterScreenMap map;
+    map.worldX = ddx(surfaceFromCamera.xy);
+    map.worldY = ddy(surfaceFromCamera.xy);
+    map.uvX = ddx(uv);
+    map.uvY = ddy(uv);
+    map.det = map.worldX.x * map.worldY.y - map.worldX.y * map.worldY.x;
+    map.viewZ = max(screenPos.w, 1e-3f);
+    map.viewZX = ddx(map.viewZ);
+    map.viewZY = ddy(map.viewZ);
+    float waterDepth = 2.0f * screenPos.z / map.viewZ - 1.0f;
+    map.reversed = waterDepth < 0.5f ? 1.0f : 0.0f;
+    map.depthScale = max(getDepthFromFar(waterDepth, map.reversed), 1e-9f) / max(1.0f / map.viewZ - getInvFar(), 1e-9f);
+    return map;
+}
+
+// Screen offset, in pixels across and down, of a water-plane offset (world units, horizontal).
+float2 getPixelOffset(WaterScreenMap map, float2 worldOffset){
+    if (abs(map.det) < 1e-10f) return 0.0f;
+    float across = (worldOffset.x * map.worldY.y - worldOffset.y * map.worldY.x) / map.det;
+    float down = (map.worldX.x * worldOffset.y - map.worldX.y * worldOffset.x) / map.det;
+    return float2(across, down);
+}
+
+// Screen offset of a water-plane offset.
+float2 getScreenOffset(WaterScreenMap map, float2 worldOffset){
+    float2 pixels = getPixelOffset(map, worldOffset);
+    return pixels.x * map.uvX + pixels.y * map.uvY;
+}
+
+// Distance along the view axis of the water-plane point worldOffset away from the pixel's.
+float getWaterViewZ(WaterScreenMap map, float2 worldOffset){
+    float2 pixels = getPixelOffset(map, worldOffset);
+    return max(map.viewZ + pixels.x * map.viewZX + pixels.y * map.viewZY, 1e-3f);
+}
+
+// Distance along the view axis of the scene behind the water at uv. Nothing there reads as the far plane.
+float getSceneViewZ(WaterScreenMap map, float2 uv){
     float rawDepth = tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x;
-    float nearZ = TESR_CameraData.x;
-    float farZ = TESR_CameraData.y;
-    return TESR_DepthConstants.z > 0.5f ? nearZ * farZ / (nearZ + rawDepth * (farZ - nearZ))
-                                        : nearZ * farZ / (farZ - rawDepth * (farZ - nearZ));
-}
-
-// How far from the camera the scene lies along the view ray through uv.
-float getSceneDistance(float2 uv){
-    return getViewRayLength(uv) * getSceneViewZ(uv);
+    return 1.0f / (getInvFar() + getDepthFromFar(rawDepth, map.reversed) / map.depthScale);
 }
 
 // What lies behind the water, camera-relative, seen through the water surface point waterPoint
-// (camera-relative) at screen position uv: along the ray from the camera through that point, as
-// far as the depth buffer says. The ray's direction comes from the point itself, not a view matrix.
-float3 getBedBehind(float3 waterPoint, float2 uv){
-    return normalize(waterPoint) * getSceneDistance(uv);
+// (camera-relative, waterViewZ along the view axis) at screen position uv: on the line from the
+// camera through that point, as far as the depth buffer says. Distance along the view axis grows in
+// step with distance along any line from the camera, so no view matrix or projection is needed.
+float3 getBedBehind(WaterScreenMap map, float3 waterPoint, float waterViewZ, float2 uv){
+    return waterPoint * (getSceneViewZ(map, uv) / waterViewZ);
 }
 
 // x: how far the view travels through the water to what is behind it, y: how far that lies below
@@ -138,39 +193,13 @@ float2 getWaterPathTo(float3 bed, float3 waterPoint){
     return float2(max(length(bed) - length(waterPoint), 0.0f), max(waterPoint.z - bed.z, 0.0f));
 }
 
-float2 getWaterPath(float3 surfaceFromCamera, float2 uv){
-    return getWaterPathTo(getBedBehind(surfaceFromCamera, uv), surfaceFromCamera);
+float2 getWaterPath(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
+    return getWaterPathTo(getBedBehind(map, surfaceFromCamera, map.viewZ, uv), surfaceFromCamera);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Screen positions of points on the water, taken from how the water surface and its own screen
-// position change from one pixel to the next (their screen-space derivatives): the local map from
-// the flat water plane to the screen, in the engine's own screen space, whichever way it is laid
-// out. Build it at the top level (ddx/ddy); the surface is flat, so the map is exact for points on
-// the water plane near the pixel, which is all refraction needs.
-// ---------------------------------------------------------------------------------------------
-struct WaterScreenMap {
-    float2 worldX, worldY;   // camera-relative water-plane position, per pixel across and down
-    float2 uvX, uvY;         // screen position, per pixel across and down
-    float det;
-};
-
-WaterScreenMap getWaterScreenMap(float3 surfaceFromCamera, float2 uv){
-    WaterScreenMap map;
-    map.worldX = ddx(surfaceFromCamera.xy);
-    map.worldY = ddy(surfaceFromCamera.xy);
-    map.uvX = ddx(uv);
-    map.uvY = ddy(uv);
-    map.det = map.worldX.x * map.worldY.y - map.worldX.y * map.worldY.x;
-    return map;
-}
-
-// Screen offset of a water-plane offset (world units, horizontal).
-float2 getScreenOffset(WaterScreenMap map, float2 worldOffset){
-    if (abs(map.det) < 1e-10f) return 0.0f;
-    float across = (worldOffset.x * map.worldY.y - worldOffset.y * map.worldY.x) / map.det;
-    float down = (map.worldX.x * worldOffset.y - map.worldX.y * worldOffset.x) / map.det;
-    return across * map.uvX + down * map.uvY;
+// The depth buffer's near-plane scale against the DLL's own near plane, for DebugView 13.
+float getDepthCalibration(WaterScreenMap map){
+    return map.depthScale / max(TESR_CameraData.x, 1e-3f);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -195,18 +224,22 @@ float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, Wate
     float depth = bedDepth;
     float2 uv = straightUV;
     float3 waterPoint = surfaceFromCamera;
+    float waterViewZ = map.viewZ;
     [unroll]
     for (int i = 0; i < 2; i++) {
         float3 target = surfaceFromCamera + bent * (depth / max(-bent.z, 0.1f));
         waterPoint = float3(target.xy * (planeZ / min(target.z, planeZ)), surfaceFromCamera.z);
-        uv = straightUV + getScreenOffset(map, waterPoint.xy - surfaceFromCamera.xy);
-        depth = max(surfaceFromCamera.z - getBedBehind(waterPoint, uv).z, 0.0f);
+        float2 offset = waterPoint.xy - surfaceFromCamera.xy;
+        uv = straightUV + getScreenOffset(map, offset);
+        waterViewZ = getWaterViewZ(map, offset);
+        depth = max(surfaceFromCamera.z - getBedBehind(map, waterPoint, waterViewZ, uv).z, 0.0f);
     }
 
-    bool leak = getSceneDistance(uv) < length(waterPoint) || any(uv != saturate(uv));
+    bool leak = getSceneViewZ(map, uv) < waterViewZ || any(uv != saturate(uv));
     uv = leak ? straightUV : uv;
     waterPoint = leak ? surfaceFromCamera : waterPoint;
-    bed = getBedBehind(waterPoint, uv);
+    waterViewZ = leak ? map.viewZ : waterViewZ;
+    bed = getBedBehind(map, waterPoint, waterViewZ, uv);
     path = getWaterPathTo(bed, waterPoint);
     return uv;
 }
@@ -596,6 +629,8 @@ float getWaterSunShadow(float3 surfaceFromCamera){
 //   7 path through the water, black 0 to white 20 m  8 depth below the surface, black 0 to white 20 m
 //   9 foam                                           10 shoreline fade (black see-through, white solid)
 //  11 caustics                                        12 wave height (black trough, white crest)
+//  13 depth calibration: mid-grey where the game's near plane matches the DLL's, brighter where the
+//     game's is further out (depth used to read too shallow), darker where nearer (too deep)
 // ---------------------------------------------------------------------------------------------
 struct WaterDebug {
     float shadow;
@@ -609,6 +644,7 @@ struct WaterDebug {
     float alpha;
     float caustics;
     float waveHeight;
+    float depthCalibration;
 };
 
 float3 getWaterDebugView(float view, WaterDebug d){
@@ -624,5 +660,6 @@ float3 getWaterDebugView(float view, WaterDebug d){
     result = view > 9.5f ? saturate(d.alpha) : result;
     result = view > 10.5f ? saturate(d.caustics) : result;
     result = view > 11.5f ? d.waveHeight * 0.5f + 0.5f : result;
+    result = view > 12.5f ? saturate(d.depthCalibration * 0.5f) : result;
     return result;
 }

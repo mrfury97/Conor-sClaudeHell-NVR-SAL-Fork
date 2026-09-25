@@ -213,8 +213,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     // ---- The water surface ------------------------------------------------------------------
     float4 straightPos = getStraightScreenPos(IN);
     float2 straightUV = straightPos.xy / straightPos.w;
-    WaterScreenMap screenMap = getWaterScreenMap(surface, straightUV);   // derivatives: top level
-    float2 straightPath = getWaterPath(surface, straightUV);   // x: path through the water, y: depth below, under this pixel
+    WaterScreenMap screenMap = getWaterScreenMap(surface, straightUV, straightPos);   // derivatives: top level
+    float2 straightPath = getWaterPath(screenMap, surface, straightUV);   // x: path through the water, y: depth below, under this pixel
 
     // Refraction (getRefraction): the view bent through the waves as real water bends it, followed
     // down to the bed it lands on. path: through the water to that bed, and its depth.
@@ -289,6 +289,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     debug.foam = foam;
     debug.alpha = alpha;
     debug.caustics = caustics;
+    debug.depthCalibration = getDepthCalibration(screenMap);
 #endif
 
     OUT.color_0 = float4(applyDistanceFog(color, eyeDistance), alpha);
