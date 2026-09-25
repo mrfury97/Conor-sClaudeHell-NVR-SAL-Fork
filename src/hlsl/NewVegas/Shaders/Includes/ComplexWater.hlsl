@@ -23,7 +23,7 @@ struct PS_OUTPUT {
 // engine's water constants (c0-c13), of the template's own (c14-c72), of Shadow.hlsl (c100-c133)
 // and of the scene-depth constants below (c192-c201).
 //   TESR_WaterLighting     x: SunShadows      y: AbsorptionDepth  z: WaterColorBrightness  w: WaveScattering
-//   TESR_WaterLighting2    x: SpecularAA      y: PointLights      z: SunGlitter            w: DebugView
+//   TESR_WaterLighting2    x: SpecularAA      y: PointLights      z: SunGlitter
 //   TESR_WaterLighting3    x: Foam            y: FoamWidth        z: ShoreFadeWidth        w: ReflectionBlur
 //   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)  w: ScreenSpaceReflections
 //   TESR_WaterScatterColor rgb: ScatterColor, w: 1 when set (else the water form's own colours)
@@ -203,16 +203,6 @@ float getSceneViewZ(WaterScreenMap map, float2 uv, float waterViewZ){
     return isWaterSurface(sceneZ, waterViewZ) ? beforeWaterZ : sceneZ;
 }
 
-// For DebugView 15, under the pixel: x the depth below the surface by TESR_DepthBufferWorld, y by
-// TESR_DepthBufferBeforeWater, z 1 where the first shows the water surface itself.
-float3 getDepthCopies(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
-    float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x);
-    float beforeWaterZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferBeforeWater, float4(uv, 0.0f, 0.0f)).x);
-    float depth = max(surfaceFromCamera.z * (1.0f - sceneZ / map.viewZ), 0.0f);
-    float beforeWaterDepth = max(surfaceFromCamera.z * (1.0f - beforeWaterZ / map.viewZ), 0.0f);
-    return float3(depth, beforeWaterDepth, isWaterSurface(sceneZ, map.viewZ) ? 1.0f : 0.0f);
-}
-
 // What lies behind the water, camera-relative, seen through the water surface point waterPoint
 // (camera-relative, waterViewZ along the view axis) at screen position uv: on the line from the
 // camera through that point, as far as the depth buffer says. Distance along the view axis grows in
@@ -229,18 +219,6 @@ float2 getWaterPathTo(float3 bed, float3 waterPoint){
 
 float2 getWaterPath(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
     return getWaterPathTo(getBedBehind(map, surfaceFromCamera, map.viewZ, uv), surfaceFromCamera);
-}
-
-// 1 where the depth buffer holds nothing at uv (still as cleared: the far end of its range), for
-// DebugView 14.
-float getSceneEmpty(WaterScreenMap map, float2 uv){
-    float rawDepth = tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x;
-    return getDepthFromFar(rawDepth, map.reversed) <= 1e-7f ? 1.0f : 0.0f;
-}
-
-// The depth buffer's near-plane scale against the DLL's own near plane, for DebugView 13.
-float getDepthCalibration(WaterScreenMap map){
-    return map.depthScale / max(TESR_CameraData.x, 1e-3f);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -832,37 +810,3 @@ float getWaterSunShadow(float3 surfaceFromCamera){
 }
 #endif
 
-// ---------------------------------------------------------------------------------------------
-// DebugView: one term on its own, in place of the water.
-//   1 sun shadow on the surface (black in shadow)   2 what still shows through the water, per colour
-//   3 reflection amount                              4 wave scattering
-//   5 glint roughness (black calm, white widened)    6 point-light glints
-//   7 path through the water, black 0 to white 20 m  8 depth below the surface, black 0 to white 20 m
-//   9 foam                                           10 shoreline fade (black see-through, white solid)
-//  11 caustics                                        12 wave height (black trough, white crest)
-//  13 depth calibration: mid-grey where the game's near plane matches the DLL's, brighter where the
-//     game's is further out (depth used to read too shallow), darker where nearer (too deep)
-//  14 depth below the surface, black 0 to white 100 m, red where the depth buffer holds nothing
-//     behind the water
-//  15 the two depth copies (0 to 20 m each): red the depth taken as the water is drawn, green the
-//     depth taken before any water; blue where the first shows the water itself (the second is
-//     used there). Yellow-grey: both agree. Green: something drawn in between is in front (the pier,
-//     or other water at another height)
-//  16 screen-space reflections: what they found, weighted by how far they are trusted (black: the
-//     reflection map, sky or room is used there)
-// ---------------------------------------------------------------------------------------------
-// Sets debugColor to value when DebugView is view. Picked as each term is worked out, so no term
-// has to be kept until the end: the pixel shader's registers are few.
-void setDebug(inout float3 debugColor, float view, float3 value){
-    debugColor = abs(TESR_WaterLighting2.w - view) < 0.5f ? value : debugColor;
-}
-
-#if !WATER_LOD && !WATER_BELOW
-// DebugViews 13-15, the depth diagnostics.
-void setDepthDebug(inout float3 debugColor, WaterScreenMap map, float3 surfaceFromCamera, float2 uv, float straightDepth){
-    setDebug(debugColor, 13.0f, saturate(getDepthCalibration(map) * 0.5f));
-    setDebug(debugColor, 14.0f, getSceneEmpty(map, uv) > 0.5f ? float3(1.0f, 0.0f, 0.0f) : saturate(straightDepth / (100.0f * WATER_UNITS_PER_METRE)).xxx);
-    float3 copies = getDepthCopies(map, surfaceFromCamera, uv);
-    setDebug(debugColor, 15.0f, float3(saturate(copies.xy / (20.0f * WATER_UNITS_PER_METRE)), copies.z));
-}
-#endif

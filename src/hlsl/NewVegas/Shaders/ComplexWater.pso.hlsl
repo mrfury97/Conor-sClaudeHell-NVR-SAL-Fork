@@ -161,15 +161,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     // How far off the reflection lookup is pushed by the waves (the game's own falloff with distance).
     float lookupOffset = (saturate(distance * 0.002f) * (-4.0f + VarAmounts.w)) + 4.0f;
 
-    // DebugView (setDebug): each term is picked as it is worked out. Terms a kind of water does not
-    // have show as their neutral value: no shadow, everything shows through, solid.
-    float3 debugColor = 0.0f;
-    setDebug(debugColor, 1.0f, 1.0f);
-    setDebug(debugColor, 2.0f, 1.0f);
-    setDebug(debugColor, 10.0f, 1.0f);
-    setDebug(debugColor, 5.0f, saturate((roughness - WATER_ROUGHNESS) / 0.4f));
-    setDebug(debugColor, 12.0f, waveHeight * 0.5f + 0.5f);
-
 #if WATER_BELOW
     // ---- Underwater, looking up at the surface --------------------------------------------------
     // Snell's window: light from above only reaches the eye within about 49 degrees of straight up;
@@ -195,7 +186,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 inside = getWaterColor(linearize(ShallowColor).rgb, linearize(DeepColor).rgb, cameraDepth)
                   * (luma(sunLight) + luma(skyLight) * 0.5f) * brightness;
     float3 color = lerp(above, inside, reflectance);
-    setDebug(debugColor, 3.0f, reflectance);
     float alpha = 1.0f;
 
 #elif WATER_LOD
@@ -211,8 +201,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     float fresnel = getFresnel(N, eyeDirection, waveParams.w);
     color = lerp(color, reflection, fresnel);
     color += getSunGlint(N, sunDirection, eyeDirection, roughness) * sunLight;
-    setDebug(debugColor, 3.0f, fresnel);
-    setDebug(debugColor, 4.0f, saturate(scattering));
     float alpha = 1.0f;
 
 #else
@@ -221,17 +209,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     float2 straightUV = straightPos.xy / straightPos.w;
     WaterScreenMap screenMap = getWaterScreenMap(surface, straightUV, straightPos);   // derivatives: top level
     float2 straightPath = getWaterPath(screenMap, surface, straightUV);   // x: path through the water, y: depth below, under this pixel
-    [branch]
-    if (TESR_WaterLighting2.w > 12.5f)
-        setDepthDebug(debugColor, screenMap, surface, straightUV, straightPath.y);
 
     // Refraction (getRefraction): the view bent through the waves as real water bends it, followed
     // down to the bed it lands on. path: through the water to that bed, and its depth.
     float2 path;
     float3 refractedBed;
     float2 refractionUV = getRefraction(surface, refractionN, straightUV, screenMap, straightPath.y, WATER_SETTINGS.w, path, refractedBed);
-    setDebug(debugColor, 7.0f, saturate(path.x / (20.0f * WATER_UNITS_PER_METRE)));
-    setDebug(debugColor, 8.0f, saturate(path.y / (20.0f * WATER_UNITS_PER_METRE)));
 
     // The reflection lookup, pushed by the waves (the game's own falloff with distance).
     float4 reflectionPos = getReflectionScreenPos(IN, N.xy * lookupOffset * 0.2f);
@@ -254,7 +237,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     float screenReflectionAmount;
     float3 screenReflection = getScreenSpaceReflection(IN, projector, screenMap, reflectedRay, screenReflectionAmount);
     reflection = lerp(reflection, screenReflection, screenReflectionAmount);
-    setDebug(debugColor, 16.0f, saturate(screenReflection * screenReflectionAmount));
 
     // Sun shadow on the surface, and foam (top level: texture reads).
 #if WATER_SUNLIT
@@ -262,11 +244,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 #else
     float shadow = 1.0f;
 #endif
-    setDebug(debugColor, 1.0f, shadow);
     // Foam: along the edge, and whitecaps where the crests fold.
     float2 foamTexture = getFoamTexture(wavePos, time);
     float foam = max(getFoamMask(straightPath.x, foamTexture), getWhitecaps(waveFold, foamTexture));
-    setDebug(debugColor, 9.0f, foam);
 
     // The water body. The bed, with caustics on it where the sun reaches it, loses its colours one
     // by one over the path through the water; the water's own glow, lit by the sun and the sky,
@@ -281,9 +261,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 #else
     float caustics = 0.0f;
 #endif
-    setDebug(debugColor, 11.0f, saturate(caustics));
     float3 transmittance = getTransmittance(path.x);
-    setDebug(debugColor, 2.0f, transmittance);
     float3 waterColor = getWaterColor(linearize(ShallowColor).rgb, linearize(DeepColor).rgb, path.y);
     // Lit by the sun and the sky; less down in the troughs, which the waves around them shade.
     float bodyLight = (luma(sunLight) * lerp(0.4f, 1.0f, shadow) + luma(skyLight) * 0.5f) * lerp(1.0f, 0.75f, saturate(-waveHeight));
@@ -294,13 +272,10 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 waterHue = waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f);
     float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight * shadow, waterHue, waveHeight);
     color += scattering;
-    setDebug(debugColor, 4.0f, saturate(scattering));
     float fresnel = getFresnel(N, eyeDirection, waveParams.w) * saturate(straightPath.y / 30.0f);
-    setDebug(debugColor, 3.0f, fresnel);
     color = lerp(color, reflection, fresnel);
     color += getSunGlint(N, sunDirection, eyeDirection, roughness) * sunLight * shadow;
     float3 pointLights = getPointLights(N, surface, eyeDirection, roughness);
-    setDebug(debugColor, 6.0f, saturate(pointLights));
     color += pointLights;
 
     // The edge: foam, white under the sun and the sky, over everything; then the shoreline fade.
@@ -310,14 +285,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 #if !WATER_INTERIOR && !WATER_PLACED
     alpha = lerp(alpha, 1.0f, smoothstep(4096.0f, 8192.0f, distance));
 #endif
-    setDebug(debugColor, 10.0f, saturate(alpha));
 #endif
 
     OUT.color_0 = float4(applyDistanceFog(color, eyeDistance), alpha);
-
-    [branch]
-    if (TESR_WaterLighting2.w > 0.5f)
-        OUT.color_0 = float4(debugColor, 1.0f);
 
     return OUT;
 }
