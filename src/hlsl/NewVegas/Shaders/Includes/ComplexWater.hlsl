@@ -241,6 +241,8 @@ float2 getWaterPath(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
 //     or other water at another height)
 //  16 screen-space reflections: what they found, weighted by how far they are trusted (black: the
 //     reflection map, sky or room is used there)
+//  17 screen-space reflection search: red not traced (ScreenSpaceReflections 0, or the ray heads back
+//     toward the camera), black traced but found nothing, white found something (grey where faded)
 // ---------------------------------------------------------------------------------------------
 #ifndef WATER_DEBUG_VIEW
     #define WATER_DEBUG_VIEW 0
@@ -359,13 +361,17 @@ float3 projectFromWater(PS_INPUT IN, WaterProjector projector, float3 worldOffse
 }
 
 // The reflection along R from the water pixel, and how far it can be trusted (confidence, 0-1).
-float3 getScreenSpaceReflection(PS_INPUT IN, WaterProjector projector, WaterScreenMap map, float3 R, out float confidence){
+// status, for DebugView 17: 0 not traced (off, or the ray heads back toward the camera), 1 traced
+// and found nothing, 2 found something.
+float3 getScreenSpaceReflection(PS_INPUT IN, WaterProjector projector, WaterScreenMap map, float3 R, out float confidence, out float status){
     const float maxDistance = 4000.0f;
     confidence = 0.0f;
+    status = 0.0f;
     // Rays heading back toward the camera find the backs of things, which are not on the screen.
     float towardScreen = (projectFromWater(IN, projector, R * 100.0f).z - map.viewZ) / 100.0f;
     float directionFade = saturate(towardScreen * 4.0f + 1.0f);
     if (TESR_WaterLighting4.w <= 0.0f || directionFade <= 0.0f) return 0.0f;
+    status = 1.0f;
 
     float before = 0.0f;
     float after = 0.0f;
@@ -386,6 +392,7 @@ float3 getScreenSpaceReflection(PS_INPUT IN, WaterProjector projector, WaterScre
         before = t;
     }
     if (!hit) return 0.0f;
+    status = 2.0f;
 
     // Close in on where the ray meets the surface.
     [loop]

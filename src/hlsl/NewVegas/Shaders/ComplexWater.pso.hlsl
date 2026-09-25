@@ -245,9 +245,11 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 reflectedRay = reflect(-eyeDirection, N);
     reflectedRay = normalize(float3(reflectedRay.xy, max(reflectedRay.z, 0.02f)));
     float screenReflectionAmount;
-    float3 screenReflection = getScreenSpaceReflection(IN, projector, screenMap, reflectedRay, screenReflectionAmount);
+    float screenReflectionStatus;
+    float3 screenReflection = getScreenSpaceReflection(IN, projector, screenMap, reflectedRay, screenReflectionAmount, screenReflectionStatus);
     reflection = lerp(reflection, screenReflection, screenReflectionAmount);
     WATER_DEBUG(16, saturate(screenReflection * screenReflectionAmount));
+    WATER_DEBUG(17, screenReflectionStatus < 0.5f ? float3(1.0f, 0.0f, 0.0f) : (screenReflectionStatus < 1.5f ? 0.0f : max(screenReflectionAmount, 0.3f)).xxx);
 
     // Sun shadow on the surface, and foam (top level: texture reads).
 #if WATER_SUNLIT

@@ -12,7 +12,7 @@ public:
 	std::map<std::string_view, ShaderTemplate> Templates() {
 		static char DebugView[8];
 		int View = TheSettingManager->GetSettingI("Shaders.Water.ComplexWater", "DebugView");
-		sprintf(DebugView, "%d", View < 0 ? 0 : (View > 16 ? 16 : View));
+		sprintf(DebugView, "%d", View < 0 ? 0 : (View > 17 ? 17 : View));
 		return std::map<std::string_view, ShaderTemplate>{
 			{ "WATER000.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_DEBUG_VIEW", DebugView}} } },
 			{ "WATER017.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_WADING", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
