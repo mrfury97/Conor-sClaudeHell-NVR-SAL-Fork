@@ -117,11 +117,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     float eyeDistance = length(eyeVector);
     float4 waveParams = WAVE_PARAMS;
 
-    // Light. Outdoors: the sun (gone at night and below the horizon) and the sky. Indoors: a dim
-    // room light, no sun.
+    // Light. Outdoors: the sun (gone at night, below the horizon, and in any interior cell -- placed
+    // water is drawn indoors too, where the game's time of day still runs) and the sky. Interior
+    // water: a dim room light, no sun.
 #if WATER_SUNLIT
     float3 sunDirection = TESR_SunDirection.xyz;
-    float3 sunLight = linearize(WATER_BELOW ? TESR_SunColor : SunColor).rgb * smoothstep(0.0f, 0.5f, TESR_SunAmount.x) * saturate(sunDirection.z * 5.0f);
+    float3 sunLight = linearize(WATER_BELOW ? TESR_SunColor : SunColor).rgb * smoothstep(0.0f, 0.5f, TESR_SunAmount.x) * saturate(sunDirection.z * 5.0f) * TESR_WaterLighting4.z;
     float3 skyLight = linearize(TESR_HorizonColor).rgb;
 #else
     float3 sunDirection = float3(0.0f, 0.0f, 1.0f);

@@ -25,7 +25,7 @@ struct PS_OUTPUT {
 //   TESR_WaterLighting     x: SunShadows      y: AbsorptionDepth  z: WaterColorBrightness  w: WaveScattering
 //   TESR_WaterLighting2    x: SpecularAA      y: PointLights      z: SunGlitter            w: DebugView
 //   TESR_WaterLighting3    x: Foam            y: FoamWidth        z: ShoreFadeWidth        w: ReflectionBlur
-//   TESR_WaterLighting4    x: Caustics        y: CausticsScale
+//   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)
 //   TESR_WaterScatterColor rgb: ScatterColor, w: 1 when set (else the water form's own colours)
 //   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
 // The DLL keeps the ones that must never be 0 (AbsorptionDepth, WaterColorBrightness, FoamWidth,

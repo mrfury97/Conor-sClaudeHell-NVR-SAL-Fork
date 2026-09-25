@@ -53,6 +53,10 @@ void WaterShaders::UpdateConstants() {
 		Constants.Fog.z = 1;
 	}
 
+	// Complex Water: is the sun out here at all. Placed water is drawn indoors too, where the game's
+	// time of day (and so its sun) still runs.
+	Constants.Lighting4.z = TheShaderManager->GameState.isExterior ? 1.0f : 0.0f;
+
 	// caustics strength
 	Constants.Default.waterVolume.x = Constants.Placed.waterVolume.x = causticsStrength * TheShaderManager->ShaderConst.sunGlare;
 }
