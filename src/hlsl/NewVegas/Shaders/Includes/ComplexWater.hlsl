@@ -30,6 +30,7 @@ struct PS_OUTPUT {
 //   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
 //   TESR_WaterWaves        x: WaveHeight (units, trough to crest)  y: WaveLength (units, crest to crest)  z: WaveDirection (radians)  w: WaveSteepness
 //   TESR_WaterWaves2       x: Whitecaps       y: WaveParallax     z: RefractionBlur        w: RefractionDispersion
+//   TESR_WaterLighting5    x: 1 when the game's reflection map is rendered (SkipReflectionPass off)
 // The DLL keeps the ones that must never be 0 (AbsorptionDepth, WaterColorBrightness, FoamWidth,
 // CausticsScale) off 0.
 // ---------------------------------------------------------------------------------------------
@@ -41,6 +42,8 @@ float4 TESR_WaterScatterColor : register(c204);
 float4 TESR_WaterAbsorption   : register(c205);
 float4 TESR_WaterWaves        : register(c206);
 float4 TESR_WaterWaves2       : register(c207);
+float4 TESR_WaterLighting5    : register(c208);
+float4 TESR_SkyColor          : register(c209);
 
 // Water's reflectance looking straight down: 2% (index of refraction 1.33).
 #define WATER_F0 0.02f
@@ -672,6 +675,14 @@ float3 getWaveScattering(float3 N, float3 eyeDirection, float3 sunDirection, flo
 
 // Reflection, blurred on choppy water (ReflectionBlur): four taps around the lookup, spread by how
 // steep the waves are there, so calm water stays mirror-sharp. Linear. tex2Dproj: top level only.
+// The sky along a reflected ray R, for when the game's reflection map is not rendered
+// (SkipReflectionPass): the horizon colour low down, the sky's colour higher up.
+float3 getSkyReflection(float3 R, float3 horizon){
+    float up = saturate(R.z);
+    float3 low = lerp(horizon, linearize(TESR_SkyLowColor).rgb, saturate(up * 4.0f));
+    return lerp(low, linearize(TESR_SkyColor).rgb, saturate(up * 1.5f - 0.2f));
+}
+
 float3 getBlurredReflection(float4 reflectionPos, float3 N){
     float radius = TESR_WaterLighting3.w * 0.006f * saturate(length(N.xy) * 4.0f) * reflectionPos.w;
     float4 sum = tex2Dproj(ReflectionMap, reflectionPos);

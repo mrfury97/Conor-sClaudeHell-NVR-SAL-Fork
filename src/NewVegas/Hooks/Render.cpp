@@ -164,7 +164,18 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 
 void (__thiscall* RenderReflections)(WaterManager*, NiCamera*, ShadowSceneNode*) = (void (__thiscall*)(WaterManager*, NiCamera*, ShadowSceneNode*))Hooks::RenderReflections;
 void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* Camera, ShadowSceneNode* SceneNode) {
-	
+
+	// Complex Water's SkipReflectionPass: no reflection map at all; the water reflects the sky and the
+	// screen instead. Only while the water shaders are actually replaced, or vanilla water would lose
+	// its reflections.
+	WaterShaders* Water = TheShaderManager->Shaders.Water;
+	if (Water && Water->SkipReflectionPass && Water->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects) return;
+
+	if (!TheSettingManager->SettingsMain.Main.ForceReflections) {
+		(*RenderReflections)(This, Camera, SceneNode);
+		return;
+	}
+
 	D3DXVECTOR4* ShadowData = &TheShaderManager->Effects.ShadowsExteriors->Constants.Data;
 	float ShadowDataBackup = ShadowData->x;
 

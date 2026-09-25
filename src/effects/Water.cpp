@@ -25,6 +25,7 @@ void WaterShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WaterAbsorption", &Constants.Absorption);
 	TheShaderManager->RegisterConstant("TESR_WaterWaves", &Constants.Waves);
 	TheShaderManager->RegisterConstant("TESR_WaterWaves2", &Constants.Waves2);
+	TheShaderManager->RegisterConstant("TESR_WaterLighting5", &Constants.Lighting5);
 }
 
 
@@ -129,6 +130,11 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting4.x = Read("Caustics", 0.0f, 3.0f);
 	Constants.Lighting4.y = ReadOr("CausticsScale", 50.0f, 3000.0f, 220.0f);
 	Constants.Lighting4.w = Read("ScreenSpaceReflections", 0.0f, 1.0f);
+	// SkipReflectionPass: the game's reflection pass draws the world a second time, mirrored, for the
+	// reflection map -- CPU time on every frame with water in view. Skipped, outdoor water reflects the
+	// sky along the reflected ray under the screen-space reflections instead.
+	SkipReflectionPass = TheSettingManager->GetSettingI(Section, "SkipReflectionPass") != 0;
+	Constants.Lighting5.x = SkipReflectionPass ? 0.0f : 1.0f;
 
 	// Wave shape: off at WaveHeight 0 (also missing), which leaves the normal-map waves alone.
 	Constants.Waves.x = Read("WaveHeight", 0.0f, 60.0f);

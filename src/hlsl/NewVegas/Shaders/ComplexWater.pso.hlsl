@@ -200,7 +200,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     // ---- Distant water -----------------------------------------------------------------------
     // Too far for the bed to show: the water body's glow, its reflection by Fresnel, the sun glint.
     // The same colour the near water fades to with distance, so the two meet without a seam.
-    float3 reflection = linearize(tex2Dproj(ReflectionMap, getReflectionScreenPos(IN, N.xy * lookupOffset))).rgb;
+    float3 reflection = TESR_WaterLighting5.x > 0.5f ? linearize(tex2Dproj(ReflectionMap, getReflectionScreenPos(IN, N.xy * lookupOffset))).rgb
+                                                     : getSkyReflection(reflect(-eyeDirection, N), skyLight);
     float3 waterColor = getWaterColor(linearize(ShallowColor).rgb, linearize(DeepColor).rgb, 1e6f);
     float3 color = waterColor * (luma(sunLight) + luma(skyLight) * 0.5f) * brightness;
     float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight, waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f), waveHeight);
@@ -235,7 +236,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 #elif WATER_PLACED
     float3 reflection = skyLight;
 #else
-    float3 reflection = getBlurredReflection(reflectionPos, N);
+    // The game's reflection map, or with SkipReflectionPass the sky along the reflected ray.
+    float3 reflection = TESR_WaterLighting5.x > 0.5f ? getBlurredReflection(reflectionPos, N)
+                                                     : getSkyReflection(reflect(-eyeDirection, N), skyLight);
 #endif
     // What the screen itself shows along the reflected ray, where it can be found there.
     WaterProjector projector = getWaterProjector(IN);   // derivatives: top level

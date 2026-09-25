@@ -27,9 +27,7 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)SetSamplerState, &SetSamplerStateHook);
 
 	DetourAttach(&(PVOID&)GetWaterHeightLOD, &GetWaterHeightLODHook);
-	if (SettingsMain->Main.ForceReflections) {
-		DetourAttach(&(PVOID&)RenderReflections, &RenderReflectionsHook);
-	}
+	DetourAttach(&(PVOID&)RenderReflections, &RenderReflectionsHook);   // ForceReflections, and Complex Water's SkipReflectionPass
 
 	DetourAttach(&(PVOID&)RenderPipboy, &RenderPipboyHook);
 	DetourAttach(&(PVOID&)ShowDetectorWindow, &ShowDetectorWindowHook);
