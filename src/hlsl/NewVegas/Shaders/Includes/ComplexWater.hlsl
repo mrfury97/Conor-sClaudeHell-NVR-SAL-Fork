@@ -29,7 +29,7 @@ struct PS_OUTPUT {
 //   TESR_WaterScatterColor rgb: ScatterColor, w: 1 when set (else the water form's own colours)
 //   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
 //   TESR_WaterWaves        x: WaveHeight (units)  y: WaveLength (units)  z: WaveDirection (radians)  w: WaveSteepness
-//   TESR_WaterWaves2       x: Whitecaps       y: WaveParallax
+//   TESR_WaterWaves2       x: Whitecaps       y: WaveParallax     z: RefractionBlur        w: RefractionDispersion
 // The DLL keeps the ones that must never be 0 (AbsorptionDepth, WaterColorBrightness, FoamWidth,
 // CausticsScale) off 0.
 // ---------------------------------------------------------------------------------------------
@@ -113,26 +113,83 @@ float getSceneViewZ(float2 uv){
                                         : nearZ * farZ / (farZ - rawDepth * (farZ - nearZ));
 }
 
-// Camera-relative position of what lies behind the water at projective screen position screenPos.
-float3 getBedFromCamera(float4 screenPos){
-    float2 uv = screenPos.xy / screenPos.w;
+// Camera-relative position of what lies behind the water at screen position uv.
+float3 getBedAtUV(float2 uv){
     return getWaterViewRay(uv) * getSceneViewZ(uv);
+}
+
+float3 getBedFromCamera(float4 screenPos){
+    return getBedAtUV(screenPos.xy / screenPos.w);
 }
 
 // x: how far the view travels through the water to what is behind it, y: how far that lies below
 // the surface point, both in game units.
-float2 getWaterPath(float4 screenPos, float3 surfaceFromCamera){
-    float3 bed = getBedFromCamera(screenPos);
-    return float2(max(length(bed) - length(surfaceFromCamera), 0.0f),
-                  max(surfaceFromCamera.z - bed.z, 0.0f));
+float2 getWaterPathTo(float3 bed, float3 surfaceFromCamera){
+    return float2(max(length(bed) - length(surfaceFromCamera), 0.0f), max(surfaceFromCamera.z - bed.z, 0.0f));
 }
 
-// The refraction is read from the screen offset by the wave normal; where the offset lands on
-// something in FRONT of the water -- a pier post, legs, the shore -- that would smear into the water
-// around it, so there the straight position is used instead.
-float4 getLeakFreeRefraction(float4 refractionPos, float4 straightPos, float3 surfaceFromCamera){
+float2 getWaterPath(float4 screenPos, float3 surfaceFromCamera){
+    return getWaterPathTo(getBedFromCamera(screenPos), surfaceFromCamera);
+}
+
+// Screen position of a camera-relative point: getWaterViewRay the other way round.
+float2 getScreenUV(float3 posFromCamera){
+    float3 right   = float3(TESR_ViewTransform[0][0], TESR_ViewTransform[1][0], TESR_ViewTransform[2][0]);
+    float3 up      = float3(TESR_ViewTransform[0][1], TESR_ViewTransform[1][1], TESR_ViewTransform[2][1]);
     float3 forward = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
-    return getSceneViewZ(refractionPos.xy / refractionPos.w) < dot(surfaceFromCamera, forward) ? straightPos : refractionPos;
+    float viewZ = max(dot(posFromCamera, forward), 1e-3f);
+    return float2(0.5f + 0.5f * dot(posFromCamera, right) * TESR_ProjectionTransform[0][0] / viewZ,
+                  0.5f - 0.5f * dot(posFromCamera, up) * TESR_ProjectionTransform[1][1] / viewZ);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Refraction, as real water bends light. The view ray is refracted through the wave normal at
+// water's index of refraction (Snell's law, 1.33) and followed down to the bed: first to the depth
+// of the bed under the pixel, then once more to the depth of whatever the bent ray actually lands
+// on, so the offset comes out of the real geometry -- small over a shallow bed, large over a deep
+// one, the bed raised and squeezed at low angles as it is through real water -- instead of the
+// screen simply being pushed by the normal. strength: the water type's refractionPower, 1 real
+// water. Where the bent ray lands on something in front of the water (a post, legs, the shore) or
+// off the screen, the straight view is used, so nothing above the water smears into it.
+// Returns the screen position of the bed seen; path: getWaterPath's, for that bed.
+// ---------------------------------------------------------------------------------------------
+float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, float bedDepth, float strength, out float2 path){
+    float3 incident = normalize(surfaceFromCamera);
+    float3 bent = refract(incident, N, 1.0f / 1.33f);
+    bent = normalize(lerp(incident, dot(bent, bent) > 0.0f ? bent : incident, strength));
+
+    float3 bed = surfaceFromCamera + bent * (bedDepth / max(-bent.z, 0.1f));
+    float2 uv = getScreenUV(bed);
+    float depthThere = max(surfaceFromCamera.z - getBedAtUV(uv).z, 0.0f);
+    bed = surfaceFromCamera + bent * (depthThere / max(-bent.z, 0.1f));
+    uv = getScreenUV(bed);
+
+    float3 forward = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
+    bool leak = getSceneViewZ(uv) < dot(surfaceFromCamera, forward) || any(uv != saturate(uv));
+    uv = leak ? straightUV : uv;
+    path = getWaterPathTo(getBedAtUV(uv), surfaceFromCamera);
+    return uv;
+}
+
+// The bed as seen through the water. Blurred the more water it is seen through (RefractionBlur),
+// as fine particles in the water soften what lies deep; and split slightly by colour along the bend
+// (RefractionDispersion), since water bends red light a little less than blue. Linear.
+// tex2Dlod: the refraction map has no mipmaps, and the lookup follows the depth buffer.
+float3 getRefractedBed(float2 uv, float2 straightUV, float pathLength){
+    float2 bend = uv - straightUV;
+    float dispersion = TESR_WaterWaves2.w * 0.5f;
+    float3 bed;
+    bed.r = tex2Dlod(RefractionMap, float4(straightUV + bend * (1.0f - dispersion), 0.0f, 0.0f)).r;
+    bed.g = tex2Dlod(RefractionMap, float4(uv, 0.0f, 0.0f)).g;
+    bed.b = tex2Dlod(RefractionMap, float4(straightUV + bend * (1.0f + dispersion), 0.0f, 0.0f)).b;
+
+    float radius = TESR_WaterWaves2.z * saturate(pathLength / (10.0f * WATER_UNITS_PER_METRE)) * 0.006f;
+    float3 blurred = bed;
+    blurred += tex2Dlod(RefractionMap, float4(uv + float2( radius, 0.0f), 0.0f, 0.0f)).rgb;
+    blurred += tex2Dlod(RefractionMap, float4(uv + float2(-radius, 0.0f), 0.0f, 0.0f)).rgb;
+    blurred += tex2Dlod(RefractionMap, float4(uv + float2(0.0f,  radius), 0.0f, 0.0f)).rgb;
+    blurred += tex2Dlod(RefractionMap, float4(uv + float2(0.0f, -radius), 0.0f, 0.0f)).rgb;
+    return linearize(float4(blurred * 0.2f, 1.0f)).rgb;
 }
 
 // ---------------------------------------------------------------------------------------------

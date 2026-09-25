@@ -12,8 +12,8 @@
 // What a surface pixel does, in order:
 //   waves      four turned layers of the wave texture, rain rings, the wading ripples
 //   depth      the real depth of water the view passes through, from the scene depth behind it
-//   refraction the scene behind the water, offset by the waves (more the deeper the water), never
-//              pulling in anything in front of the water
+//   refraction the view bent through the waves by Snell's law and followed to the bed it lands on,
+//              never onto anything in front of the water; blurred with depth, split by colour
 //   water body the bed (with caustics) absorbed colour by colour over the path through the water,
 //              and the water's own glow taking its place
 //   surface    wave scattering, the reflection by Fresnel (blurred on rough water), the sun glint
@@ -155,8 +155,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
     float roughness = getSpecularRoughness(N, distance);   // derivatives: top level
 
-    // How far off the reflection and refraction lookups are pushed by the waves (the game's own
-    // falloff with distance), times the water type's refraction strength for the refraction.
+    // How far off the reflection lookup is pushed by the waves (the game's own falloff with distance).
     float lookupOffset = (saturate(distance * 0.002f) * (-4.0f + VarAmounts.w)) + 4.0f;
 
     WaterDebug debug = (WaterDebug)0;
@@ -181,7 +180,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // Above: the sky, its horizon to its low colour by how steeply up, the sun disc, and the world
     // above the water fading in as the camera nears the surface.
-    float4 abovePos = flipToRefraction(getReflectionScreenPos(IN, below.xy * WATER_SETTINGS.w * 4.0f));
+    float4 abovePos = flipToRefraction(getReflectionScreenPos(IN, below.xy * WATER_SETTINGS.w * 0.8f));
     float cameraDepth = WATER_SETTINGS.x - TESR_CameraPosition.z;
     float3 sky = lerp(skyLight, linearize(TESR_SkyLowColor).rgb, sqrt(saturate(-eyeDirection.z)));
     sky += sunLight * 5.0f * pow(shades(-eyeDirection, sunDirection), 20.0f);
@@ -215,11 +214,14 @@ PS_OUTPUT main(PS_INPUT IN) {
     float4 straightPos = getStraightScreenPos(IN);
     float2 straightPath = getWaterPath(straightPos, surface);   // x: path through the water, y: depth below, under this pixel
 
-    // Refraction: the scene behind the water, pushed by the waves -- none at the waterline, where the
-    // bed meets the surface, more as the water deepens -- and never onto anything in front of it.
-    float4 reflectionPos = getReflectionScreenPos(IN, N.xy * lookupOffset * WATER_SETTINGS.w * saturate(straightPath.y / 150.0f));
-    float4 refractionPos = getLeakFreeRefraction(flipToRefraction(reflectionPos), straightPos, surface);
-    float2 path = getWaterPath(refractionPos, surface);         // the same, for the bed the pixel shows
+    // Refraction (getRefraction): the view bent through the waves as real water bends it, followed
+    // down to the bed it lands on. path: through the water to that bed, and its depth.
+    float2 straightUV = straightPos.xy / straightPos.w;
+    float2 path;
+    float2 refractionUV = getRefraction(surface, N, straightUV, straightPath.y, WATER_SETTINGS.w, path);
+
+    // The reflection lookup, pushed by the waves (the game's own falloff with distance).
+    float4 reflectionPos = getReflectionScreenPos(IN, N.xy * lookupOffset * 0.2f);
 
     // What the surface reflects: the reflection map outdoors (blurred on rough water), the sky's
     // colour on placed water (which has no reflection map), the room's fog indoors.
@@ -244,9 +246,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     // The water body. The bed, with caustics on it where the sun reaches it, loses its colours one
     // by one over the path through the water; the water's own glow, lit by the sun and the sky,
     // takes their place.
-    float3 bed = linearize(tex2Dproj(RefractionMap, refractionPos)).rgb;
+    float3 bed = getRefractedBed(refractionUV, straightUV, path.x);
 #if WATER_SUNLIT
-    float caustics = getCaustics(getBedFromCamera(refractionPos), path.y, waveParams) * shadow;
+    float caustics = getCaustics(getBedAtUV(refractionUV), path.y, waveParams) * shadow;
     bed *= 1.0f + caustics * luma(sunLight);
 #else
     float caustics = 0.0f;

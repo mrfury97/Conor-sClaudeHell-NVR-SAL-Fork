@@ -136,6 +136,8 @@ void WaterShaders::UpdateSettings() {
 	Constants.Waves.w = Read("WaveSteepness", 0.0f, 1.0f);
 	Constants.Waves2.x = Read("Whitecaps", 0.0f, 1.0f);
 	Constants.Waves2.y = Read("WaveParallax", 0.0f, 2.0f);
+	Constants.Waves2.z = Read("RefractionBlur", 0.0f, 3.0f);
+	Constants.Waves2.w = Read("RefractionDispersion", 0.0f, 1.0f);
 
 	// The water body's glow colour. All three 0 (also missing) means the water form's own colours.
 	D3DXVECTOR4 scatter(Read("ScatterColorR", 0.0f, 2.0f), Read("ScatterColorG", 0.0f, 2.0f), Read("ScatterColorB", 0.0f, 2.0f), 1.0f);
