@@ -10,15 +10,15 @@
 //                            waves bend the reflection)  w: DebugView
 //   DebugView 1: water mask (white where the effect runs)
 //             2: the search: green hit (brighter the more trusted); blue a hit thrown out as the
-//                first-person weapon; yellow the ray went behind something, but by more than the
-//                thickness allowed (passed behind it); dark red never behind anything; black not
+//                first-person weapon; yellow the ray went behind something (not the water), but by more
+//                than the thickness allowed (passed behind it); dark red never behind anything; black not
 //                searched
 //             3: the reflected colour alone
 //             4: the reflection amount (Fresnel * confidence * Strength)
 //             5: the frame 1.5 m above each water point, through the effect's own projection:
 //                posts and the pier show on the water a little below where they stand (magenta
 //                off the screen) -- checks the projection on its own
-//             6: the ray's first step that went behind something: its distance behind, over the
+//             6: the ray's first step that went behind something (not the water): its distance behind, over the
 //                thickness allowed (green within, red beyond; black never behind)
 
 float4 TESR_ReciprocalResolution;
@@ -208,10 +208,11 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 			float sceneZ = readDepthLod(rayUV);
 			float thickness = max(abs(rayZ - beforeZ) * 1.5f, 30.0f + rayZ * 0.01f);
 			float behind = rayZ - sceneZ;
-			if (firstBehind < 0.0f && behind > 0.0f) firstBehind = behind / thickness;
 			// Behind what the screen shows there, but not so far that the ray passed behind it; and
 			// not the water itself (it cannot reflect itself).
-			if (behind > 0.0f && behind < thickness && !isWaterHeight(TESR_CameraPosition.z + toWorld(rayUV).z * sceneZ, sceneZ)) {
+			bool solid = behind > 0.0f && !isWaterHeight(TESR_CameraPosition.z + toWorld(rayUV).z * sceneZ, sceneZ);
+			if (firstBehind < 0.0f && solid) firstBehind = behind / thickness;
+			if (solid && behind < thickness) {
 				after = t;
 				break;
 			}
