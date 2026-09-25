@@ -340,17 +340,17 @@ float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
 // ---------------------------------------------------------------------------------------------
 #define GERSTNER_WAVES 12
 // Length (against WaveLength), angle off the wind (radians) and starting phase of each wave, four to
-// a vector: the waves are worked out four at a time. (As arrays, twelve of each would not fit in the
-// pixel shader's registers.)
-static const float4 GerstnerLengthA = float4(1.0f, 0.62f, 0.41f, 0.27f);
-static const float4 GerstnerLengthB = float4(0.17f, 0.11f, 0.81f, 0.5f);
-static const float4 GerstnerLengthC = float4(0.33f, 0.22f, 0.14f, 0.09f);
-static const float4 GerstnerAngleA  = float4(0.0f, 0.3f, -0.25f, 0.55f);
-static const float4 GerstnerAngleB  = float4(-0.5f, 0.8f, -0.12f, 0.62f);
-static const float4 GerstnerAngleC  = float4(-0.7f, 0.18f, 0.95f, -0.9f);
-static const float4 GerstnerPhaseA  = float4(0.0f, 1.7f, 4.1f, 2.6f);
-static const float4 GerstnerPhaseB  = float4(5.3f, 0.9f, 3.3f, 5.9f);
-static const float4 GerstnerPhaseC  = float4(1.2f, 4.6f, 2.1f, 0.4f);
+// a vector, longest first: the waves are worked out four at a time. (As arrays, twelve of each would
+// not fit in the pixel shader's registers.)
+static const float4 GerstnerLengthA = float4(1.0f, 0.81f, 0.62f, 0.5f);
+static const float4 GerstnerLengthB = float4(0.41f, 0.33f, 0.27f, 0.22f);
+static const float4 GerstnerLengthC = float4(0.17f, 0.14f, 0.11f, 0.09f);
+static const float4 GerstnerAngleA  = float4(0.0f, -0.12f, 0.3f, 0.62f);
+static const float4 GerstnerAngleB  = float4(-0.25f, -0.7f, 0.55f, 0.18f);
+static const float4 GerstnerAngleC  = float4(-0.5f, 0.95f, 0.8f, -0.9f);
+static const float4 GerstnerPhaseA  = float4(0.0f, 3.3f, 1.7f, 5.9f);
+static const float4 GerstnerPhaseB  = float4(4.1f, 1.2f, 2.6f, 4.6f);
+static const float4 GerstnerPhaseC  = float4(5.3f, 2.1f, 0.9f, 0.4f);
 // Scales the twelve so together they reach the height one set of six did (their lengths add to 4.67,
 // the six's to 2.58): WaveHeight keeps its meaning.
 #define GERSTNER_NORM (2.58f / 4.67f)
@@ -370,25 +370,19 @@ void getGerstnerWaves(float4 lengths, float4 angles, float4 phases, float2 world
     phase = k * (dirX * worldPos.x + dirY * worldPos.y) - sqrt(WATER_GRAVITY * k) * time + phases;
 }
 
-// Four waves, reduced to what their height at any point needs: phase = kx * x + ky * y + c. Worked
-// out once per pixel, so each height the parallax trace asks for is one sine per wave.
-struct GerstnerSet {
-    float4 kx, ky, c, amplitude;
-};
-
-GerstnerSet getGerstnerSet(float4 lengths, float4 angles, float4 phases, float time, float pixelSize, float heightScale){
+// Four waves' height at worldPos.
+float getGerstnerWavesHeight(float4 lengths, float4 angles, float4 phases, float2 worldPos, float time, float pixelSize, float heightScale){
     float4 dirX, dirY, k, amplitude, fade, phase;
-    getGerstnerWaves(lengths, angles, phases, float2(0.0f, 0.0f), time, pixelSize, heightScale, dirX, dirY, k, amplitude, fade, phase);
-    GerstnerSet waves;
-    waves.kx = k * dirX;
-    waves.ky = k * dirY;
-    waves.c = phase;   // the phase at the origin
-    waves.amplitude = amplitude;
-    return waves;
+    getGerstnerWaves(lengths, angles, phases, worldPos, time, pixelSize, heightScale, dirX, dirY, k, amplitude, fade, phase);
+    return dot(amplitude, sin(phase));
 }
 
-float getGerstnerSetHeight(GerstnerSet waves, float2 worldPos){
-    return dot(waves.amplitude, sin(waves.kx * worldPos.x + waves.ky * worldPos.y + waves.c));
+// Height for the parallax trace: the eight longest waves. The four shortest carry a tenth of the
+// height, too little to move where the view meets the surface, and leaving them out keeps the trace
+// within the pixel shader's registers.
+float getParallaxHeight(float2 worldPos, float time, float pixelSize, float heightScale){
+    return getGerstnerWavesHeight(GerstnerLengthA, GerstnerAngleA, GerstnerPhaseA, worldPos, time, pixelSize, heightScale)
+         + getGerstnerWavesHeight(GerstnerLengthB, GerstnerAngleB, GerstnerPhaseB, worldPos, time, pixelSize, heightScale);
 }
 
 // Adds four waves' height, and their slope and crest sharpening into the surface vector n.
@@ -432,15 +426,12 @@ float2 getWaveParallax(float2 worldPos, float3 eyeDirection, float time, float p
     // Along the view ray, the ground position moves by shift for each unit of height.
     float2 shift = eyeDirection.xy / max(eyeDirection.z, 0.25f) * strength;
     float range = getGerstnerRange(heightScale);
-    GerstnerSet setA = getGerstnerSet(GerstnerLengthA, GerstnerAngleA, GerstnerPhaseA, time, pixelSize, heightScale);
-    GerstnerSet setB = getGerstnerSet(GerstnerLengthB, GerstnerAngleB, GerstnerPhaseB, time, pixelSize, heightScale);
-    GerstnerSet setC = getGerstnerSet(GerstnerLengthC, GerstnerAngleC, GerstnerPhaseC, time, pixelSize, heightScale);
 
     // f = height of the ray above the waves: positive above the tallest crest, never positive below
     // the deepest trough, so a crossing always lies in between.
     float2 p = worldPos + shift * range;
     float aboveH = range;
-    float aboveF = range - (getGerstnerSetHeight(setA, p) + getGerstnerSetHeight(setB, p) + getGerstnerSetHeight(setC, p));
+    float aboveF = range - getParallaxHeight(p, time, pixelSize, heightScale);
     float belowH = -range;
     float belowF = -1.0f;
     bool found = false;
@@ -448,7 +439,7 @@ float2 getWaveParallax(float2 worldPos, float3 eyeDirection, float time, float p
     for (int i = 1; i <= 8; i++) {
         float h = range - range * 0.25f * i;
         p = worldPos + shift * h;
-        float f = h - (getGerstnerSetHeight(setA, p) + getGerstnerSetHeight(setB, p) + getGerstnerSetHeight(setC, p));
+        float f = h - getParallaxHeight(p, time, pixelSize, heightScale);
         if (!found && f <= 0.0f) {
             belowH = h;
             belowF = f;
@@ -463,7 +454,7 @@ float2 getWaveParallax(float2 worldPos, float3 eyeDirection, float time, float p
     for (int j = 0; j < 2; j++) {
         float h = aboveH + (belowH - aboveH) * aboveF / max(aboveF - belowF, 1e-5f);
         p = worldPos + shift * h;
-        float f = h - (getGerstnerSetHeight(setA, p) + getGerstnerSetHeight(setB, p) + getGerstnerSetHeight(setC, p));
+        float f = h - getParallaxHeight(p, time, pixelSize, heightScale);
         if (f > 0.0f) { aboveH = h; aboveF = f; }
         else          { belowH = h; belowF = f; }
     }
