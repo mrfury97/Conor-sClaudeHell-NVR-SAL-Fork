@@ -314,7 +314,8 @@ float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
 
 // ---------------------------------------------------------------------------------------------
 // Wave shape: Gerstner waves (WaveHeight, WaveLength, WaveDirection, WaveSteepness). Six waves of
-// falling length rolling out around the wind direction, each moving at the speed a real water wave
+// falling length rolling out within about 45 degrees of the wind direction, as a wind sea does (wider
+// and they cross into lumps instead of rolling crests), each moving at the speed a real water wave
 // of its length does. A Gerstner wave's surface bunches up toward its crests, so the crests come
 // sharp and the troughs broad and flat, as on real water -- the shape a plain sine or a normal map
 // cannot give. Evaluated per pixel on the world position: the shading follows the waves exactly,
@@ -323,7 +324,7 @@ float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
 // ---------------------------------------------------------------------------------------------
 #define GERSTNER_WAVES 6
 static const float GerstnerLength[GERSTNER_WAVES] = { 1.0f, 0.62f, 0.41f, 0.27f, 0.17f, 0.11f };
-static const float GerstnerAngle[GERSTNER_WAVES]  = { 0.0f, 0.45f, -0.38f, 0.9f, -0.8f, 1.6f };
+static const float GerstnerAngle[GERSTNER_WAVES]  = { 0.0f, 0.3f, -0.25f, 0.55f, -0.5f, 0.8f };
 static const float GerstnerPhase[GERSTNER_WAVES]  = { 0.0f, 1.7f, 4.1f, 2.6f, 5.3f, 0.9f };
 #define WATER_GRAVITY (9.8f * WATER_UNITS_PER_METRE)   // units per second squared
 
@@ -370,6 +371,12 @@ float getGerstner(float2 worldPos, float time, float pixelSize, float heightScal
     return height;
 }
 
+// The steepest the waves can get: each wave's slope is k * amplitude = 2 pi WaveHeight / WaveLength,
+// the same for all six.
+float getGerstnerSlopeBound(float heightScale){
+    return GERSTNER_WAVES * 6.2831853f * TESR_WaterWaves.x * heightScale / max(TESR_WaterWaves.y, 1.0f);
+}
+
 // The tallest the waves get here, to put a height on a -1 (trough) to 1 (crest) scale.
 float getGerstnerRange(float heightScale){
     return max(TESR_WaterWaves.x * heightScale * 2.58f, 1e-3f);
@@ -379,9 +386,14 @@ float getGerstnerRange(float heightScale){
 // crest in front covers the trough beyond. The view ray is followed up from the flat surface to where
 // it actually meets the waves (three refinement steps on the height), so the shading is taken from
 // the point the eye really sees. Fades out with distance. Returns the world position to shade.
+// The steps only settle while the shift per unit of height, times the waves' steepest slope, stays
+// under 1; at low angles it would not, and the steps would jump about and smear the waves sideways,
+// so the shift is held under that (seen that low, a crest simply hides more than this can show).
 float2 getWaveParallax(float2 worldPos, float3 eyeDirection, float time, float pixelSize, float heightScale, float distance){
     float strength = TESR_WaterWaves2.y * (1.0f - saturate(distance / 4000.0f));
     float2 shift = eyeDirection.xy / max(eyeDirection.z, 0.25f) * strength;
+    float reach = length(shift) * getGerstnerSlopeBound(heightScale);
+    shift *= reach > 0.8f ? 0.8f / reach : 1.0f;
     float2 p = worldPos;
     [unroll]
     for (int i = 0; i < 3; i++)
