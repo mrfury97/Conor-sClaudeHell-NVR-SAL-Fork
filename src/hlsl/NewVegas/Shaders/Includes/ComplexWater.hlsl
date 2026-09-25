@@ -28,7 +28,7 @@ struct PS_OUTPUT {
 //   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)
 //   TESR_WaterScatterColor rgb: ScatterColor, w: 1 when set (else the water form's own colours)
 //   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
-//   TESR_WaterWaves        x: WaveHeight (units)  y: WaveLength (units)  z: WaveDirection (radians)  w: WaveSteepness
+//   TESR_WaterWaves        x: WaveHeight (units, trough to crest)  y: WaveLength (units, crest to crest)  z: WaveDirection (radians)  w: WaveSteepness
 //   TESR_WaterWaves2       x: Whitecaps       y: WaveParallax     z: RefractionBlur        w: RefractionDispersion
 // The DLL keeps the ones that must never be 0 (AbsorptionDepth, WaterColorBrightness, FoamWidth,
 // CausticsScale) off 0.
@@ -328,91 +328,89 @@ float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
 }
 
 // ---------------------------------------------------------------------------------------------
-// Wave shape: Gerstner waves (WaveHeight, WaveLength, WaveDirection, WaveSteepness). Twelve waves of
-// falling length -- two interleaved sets of six, so no one pattern repeats -- rolling out within
-// about 55 degrees of the wind direction, as a wind sea does (wider
-// and they cross into lumps instead of rolling crests), each moving at the speed a real water wave
-// of its length does. A Gerstner wave's surface bunches up toward its crests, so the crests come
-// sharp and the troughs broad and flat, as on real water -- the shape a plain sine or a normal map
-// cannot give. Evaluated per pixel on the world position: the shading follows the waves exactly,
-// though the mesh itself stays flat. Each wave fades out once it is too short for the pixels it
-// covers, so distant water does not alias. The normal-map waves ride on top as the fine detail.
+// Wave shape (WaveHeight, WaveLength, WaveDirection, WaveSteepness): an animated patch of wind-driven
+// water baked into a looping volume texture (Textures\Water\NVR_WaterWaves.dds, made by
+// tools/water/generate_water_waves.py, the way film and game oceans are made): hundreds of waves
+// from a real wind-wave spectrum, each moving at the speed a real water wave of its length does, the
+// crests pulled sharp and the troughs broad, and where the crests fold, whitecap foam. Two layers of
+// it, the second smaller and turned against the first and playing at its own speed, so the tiling
+// never lines up. Per texel: R, G slope, B height, A crest folding.
 // ---------------------------------------------------------------------------------------------
-#define GERSTNER_WAVES 12
-// Length (against WaveLength), angle off the wind (radians) and starting phase of each wave, four to
-// a vector, longest first: the waves are worked out four at a time. (As arrays, twelve of each would
-// not fit in the pixel shader's registers.)
-static const float4 GerstnerLengthA = float4(1.0f, 0.81f, 0.62f, 0.5f);
-static const float4 GerstnerLengthB = float4(0.41f, 0.33f, 0.27f, 0.22f);
-static const float4 GerstnerLengthC = float4(0.17f, 0.14f, 0.11f, 0.09f);
-static const float4 GerstnerAngleA  = float4(0.0f, -0.12f, 0.3f, 0.62f);
-static const float4 GerstnerAngleB  = float4(-0.25f, -0.7f, 0.55f, 0.18f);
-static const float4 GerstnerAngleC  = float4(-0.5f, 0.95f, 0.8f, -0.9f);
-static const float4 GerstnerPhaseA  = float4(0.0f, 3.3f, 1.7f, 5.9f);
-static const float4 GerstnerPhaseB  = float4(4.1f, 1.2f, 2.6f, 4.6f);
-static const float4 GerstnerPhaseC  = float4(5.3f, 2.1f, 0.9f, 0.4f);
-// Scales the twelve so together they reach the height one set of six did (their lengths add to 4.67,
-// the six's to 2.58): WaveHeight keeps its meaning.
-#define GERSTNER_NORM (2.58f / 4.67f)
-#define WATER_GRAVITY (9.8f * WATER_UNITS_PER_METRE)   // units per second squared
+// MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
+sampler3D TESR_WaterWavesMap : register(s11) < string ResourceName = "Water\NVR_WaterWaves.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
-// Four waves at worldPos: their directions (dirX, dirY), wave numbers, amplitudes, pixel-size fades
-// (0-1: each wave fades out once it is too short for the pixels it covers) and phases.
-void getGerstnerWaves(float4 lengths, float4 angles, float4 phases, float2 worldPos, float time, float pixelSize, float heightScale,
-                      out float4 dirX, out float4 dirY, out float4 k, out float4 amplitude, out float4 fade, out float4 phase){
-    float4 wavelength = TESR_WaterWaves.y * lengths;
-    float4 angle = TESR_WaterWaves.z + angles;
-    dirX = cos(angle);
-    dirY = sin(angle);
-    k = 6.2831853f / wavelength;
-    fade = saturate(wavelength / (pixelSize * 8.0f) - 1.0f);
-    amplitude = TESR_WaterWaves.x * heightScale * GERSTNER_NORM * lengths * fade;
-    phase = k * (dirX * worldPos.x + dirY * worldPos.y) - sqrt(WATER_GRAVITY * k) * time + phases;
+// From the generator (it prints these).
+#define WAVE_TEX_SIZE        128.0f
+#define WAVE_TEX_PATCH       15.0f     // metres the patch spans
+#define WAVE_TEX_PERIOD      12.0f     // seconds its loop lasts at that size
+#define WAVE_TEX_PEAK        3.0f      // patch size over the peak wavelength
+#define WAVE_TEX_HEIGHT_MAX  3.4369f   // stored height 1 over the height's standard deviation
+#define WAVE_TEX_SLOPE_SCALE 127.1509f // slope_max * patch / standard deviation
+// The second layer: its size and height against the first, its turn, and offsets in place and time.
+#define WAVE_LAYER_B_SCALE   0.37f
+#define WAVE_LAYER_B_ANGLE   0.55f
+#define WAVE_LAYER_B_OFFSET  float2(0.31f, 0.67f)
+#define WAVE_LAYER_B_TIME    0.43f
+
+// Everything about the two layers that stays the same across the pixel.
+struct WaveField {
+    float2 dirA, dirB;      // each layer's wind direction (its texture's +u) in the world
+    float tileA, tileB;     // world units each layer's patch spans
+    float timeA, timeB;     // loop position
+    float lodA, lodB;       // mip level for the pixel's size
+    float height;           // world units per unit of stored height (first layer)
+    float slope;            // world slope per unit of stored slope (the same for both layers)
+};
+
+// WaveHeight is the typical height from trough to crest (the significant wave height, four standard
+// deviations); WaveLength the typical length from crest to crest (the spectrum's peak).
+WaveField getWaveField(float time, float pixelSize, float heightScale){
+    WaveField field;
+    float angle = TESR_WaterWaves.z;
+    field.dirA = float2(cos(angle), sin(angle));
+    field.dirB = float2(cos(angle + WAVE_LAYER_B_ANGLE), sin(angle + WAVE_LAYER_B_ANGLE));
+    field.tileA = max(TESR_WaterWaves.y, 1.0f) * WAVE_TEX_PEAK;
+    field.tileB = field.tileA * WAVE_LAYER_B_SCALE;
+    // Waves scaled up by s take sqrt(s) longer to pass (deep water): each layer plays at its own speed.
+    float patchUnits = WAVE_TEX_PATCH * WATER_UNITS_PER_METRE;
+    field.timeA = time / (WAVE_TEX_PERIOD * sqrt(field.tileA / patchUnits));
+    field.timeB = time / (WAVE_TEX_PERIOD * sqrt(field.tileB / patchUnits)) + WAVE_LAYER_B_TIME;
+    field.lodA = max(log2(pixelSize * WAVE_TEX_SIZE / field.tileA), 0.0f);
+    field.lodB = max(log2(pixelSize * WAVE_TEX_SIZE / field.tileB), 0.0f);
+    float sigma = TESR_WaterWaves.x * heightScale * 0.25f;
+    field.height = sigma * WAVE_TEX_HEIGHT_MAX;
+    field.slope = sigma * WAVE_TEX_SLOPE_SCALE / field.tileA * lerp(0.5f, 1.5f, saturate(TESR_WaterWaves.w));
+    return field;
 }
 
-// Four waves' height at worldPos.
-float getGerstnerWavesHeight(float4 lengths, float4 angles, float4 phases, float2 worldPos, float time, float pixelSize, float heightScale){
-    float4 dirX, dirY, k, amplitude, fade, phase;
-    getGerstnerWaves(lengths, angles, phases, worldPos, time, pixelSize, heightScale, dirX, dirY, k, amplitude, fade, phase);
-    return dot(amplitude, sin(phase));
+float4 sampleWaveLayer(float2 worldPos, float2 dir, float tile, float2 offset, float time, float lod){
+    float2 uv = float2(dot(worldPos, dir), dot(worldPos, float2(-dir.y, dir.x))) / tile + offset;
+    return tex3Dlod(TESR_WaterWavesMap, float4(uv, time, lod));
 }
 
-// Height for the parallax trace: the eight longest waves. The four shortest carry a tenth of the
-// height, too little to move where the view meets the surface, and leaving them out keeps the trace
-// within the pixel shader's registers.
-float getParallaxHeight(float2 worldPos, float time, float pixelSize, float heightScale){
-    return getGerstnerWavesHeight(GerstnerLengthA, GerstnerAngleA, GerstnerPhaseA, worldPos, time, pixelSize, heightScale)
-         + getGerstnerWavesHeight(GerstnerLengthB, GerstnerAngleB, GerstnerPhaseB, worldPos, time, pixelSize, heightScale);
+// The height of the waves at worldPos, for the parallax trace.
+float getWaveFieldHeight(WaveField field, float2 worldPos){
+    float a = sampleWaveLayer(worldPos, field.dirA, field.tileA, 0.0f, field.timeA, field.lodA).b;
+    float b = sampleWaveLayer(worldPos, field.dirB, field.tileB, WAVE_LAYER_B_OFFSET, field.timeB, field.lodB).b;
+    return field.height * ((a * 2.0f - 1.0f) + WAVE_LAYER_B_SCALE * (b * 2.0f - 1.0f));
 }
 
-// Adds four waves' height, and their slope and crest sharpening into the surface vector n.
-void addGerstnerWaves(float4 lengths, float4 angles, float4 phases, float2 worldPos, float time, float pixelSize, float heightScale,
-                      float steepness, inout float height, inout float3 n){
-    float4 dirX, dirY, k, amplitude, fade, phase;
-    getGerstnerWaves(lengths, angles, phases, worldPos, time, pixelSize, heightScale, dirX, dirY, k, amplitude, fade, phase);
-    float4 s = sin(phase);
-    float4 slope = k * amplitude * cos(phase);
-    height += dot(amplitude, s);
-    n.x -= dot(dirX, slope);
-    n.y -= dot(dirY, slope);
-    n.z -= steepness * dot(fade, s);   // sharpening fades with the wave
+// The tallest the waves can reach.
+float getWaveFieldRange(WaveField field){
+    return max(field.height * (1.0f + WAVE_LAYER_B_SCALE), 1e-3f);
 }
 
-// Height, and the surface slope (dh/dx, dh/dy) with the Gerstner crest sharpening folded in.
-float getGerstner(float2 worldPos, float time, float pixelSize, float heightScale, out float2 slope){
-    float height = 0.0f;
-    float3 n = float3(0.0f, 0.0f, 1.0f);
-    float steepness = TESR_WaterWaves.x > 0.0f ? saturate(TESR_WaterWaves.w) / GERSTNER_WAVES : 0.0f;
-    addGerstnerWaves(GerstnerLengthA, GerstnerAngleA, GerstnerPhaseA, worldPos, time, pixelSize, heightScale, steepness, height, n);
-    addGerstnerWaves(GerstnerLengthB, GerstnerAngleB, GerstnerPhaseB, worldPos, time, pixelSize, heightScale, steepness, height, n);
-    addGerstnerWaves(GerstnerLengthC, GerstnerAngleC, GerstnerPhaseC, worldPos, time, pixelSize, heightScale, steepness, height, n);
-    slope = -n.xy / max(n.z, 0.1f);
-    return height;
-}
-
-// The tallest the waves get here, to put a height on a -1 (trough) to 1 (crest) scale.
-float getGerstnerRange(float heightScale){
-    return max(TESR_WaterWaves.x * heightScale * 2.58f, 1e-3f);
+// Height, world slope (dh/dx, dh/dy) and crest folding at worldPos.
+float getWaveFieldSurface(WaveField field, float2 worldPos, out float2 slope, out float fold){
+    float4 a = sampleWaveLayer(worldPos, field.dirA, field.tileA, 0.0f, field.timeA, field.lodA);
+    float4 b = sampleWaveLayer(worldPos, field.dirB, field.tileB, WAVE_LAYER_B_OFFSET, field.timeB, field.lodB);
+    // Stored slopes are along each layer's own axes: turn them back into the world.
+    float2 slopeA = a.rg * 2.0f - 1.0f;
+    float2 slopeB = b.rg * 2.0f - 1.0f;
+    slope = field.slope * (slopeA.x * field.dirA + slopeA.y * float2(-field.dirA.y, field.dirA.x)
+                         + slopeB.x * field.dirB + slopeB.y * float2(-field.dirB.y, field.dirB.x));
+    fold = max(a.a, b.a * 0.7f);
+    return field.height * ((a.b * 2.0f - 1.0f) + WAVE_LAYER_B_SCALE * (b.b * 2.0f - 1.0f));
 }
 
 // Parallax (WaveParallax): a wave standing up hides what is behind it, and seen at a low angle the
@@ -421,25 +419,23 @@ float getGerstnerRange(float heightScale){
 // between the steps either side of it -- so the shading is taken from the point the eye really sees,
 // the nearest crest hiding what lies behind it, at any angle. Fades out with distance. Returns the
 // world position to shade.
-float2 getWaveParallax(float2 worldPos, float3 eyeDirection, float time, float pixelSize, float heightScale, float distance){
+float2 getWaveParallax(float2 worldPos, float3 eyeDirection, WaveField field, float distance){
     float strength = TESR_WaterWaves2.y * (1.0f - saturate(distance / 4000.0f));
     // Along the view ray, the ground position moves by shift for each unit of height.
     float2 shift = eyeDirection.xy / max(eyeDirection.z, 0.25f) * strength;
-    float range = getGerstnerRange(heightScale);
+    float range = getWaveFieldRange(field);
 
     // f = height of the ray above the waves: positive above the tallest crest, never positive below
     // the deepest trough, so a crossing always lies in between.
-    float2 p = worldPos + shift * range;
     float aboveH = range;
-    float aboveF = range - getParallaxHeight(p, time, pixelSize, heightScale);
+    float aboveF = range - getWaveFieldHeight(field, worldPos + shift * range);
     float belowH = -range;
     float belowF = -1.0f;
     bool found = false;
     [loop]
     for (int i = 1; i <= 8; i++) {
         float h = range - range * 0.25f * i;
-        p = worldPos + shift * h;
-        float f = h - getParallaxHeight(p, time, pixelSize, heightScale);
+        float f = h - getWaveFieldHeight(field, worldPos + shift * h);
         if (!found && f <= 0.0f) {
             belowH = h;
             belowF = f;
@@ -453,8 +449,7 @@ float2 getWaveParallax(float2 worldPos, float3 eyeDirection, float time, float p
     [loop]
     for (int j = 0; j < 2; j++) {
         float h = aboveH + (belowH - aboveH) * aboveF / max(aboveF - belowF, 1e-5f);
-        p = worldPos + shift * h;
-        float f = h - getParallaxHeight(p, time, pixelSize, heightScale);
+        float f = h - getWaveFieldHeight(field, worldPos + shift * h);
         if (f > 0.0f) { aboveH = h; aboveF = f; }
         else          { belowH = h; belowF = f; }
     }
@@ -473,15 +468,16 @@ float2 getWaveTextureShift(float2 texPos, float2 worldPos, float2 worldShift){
     return texPos + screen.x * ddx(texPos) + screen.y * ddy(texPos);
 }
 
-// Waves: the Gerstner shape with the normal-map detail on it, as slopes added together. heightOut:
-// -1 in a trough to 1 on a crest. texPos: the wave texture position of the shaded point.
-// refractionNormal: the same with the fine detail at 40%. The fine ripples glint and shade the
-// surface, but at full strength they would scribble the bed seen through them into squiggles; what a
-// bed seen through real water mostly follows is the larger waves.
-float3 getWaves(float2 texPos, float2 worldPos, float distance, float4 waveParams, float time, float pixelSize, float heightScale, out float heightOut, out float3 refractionNormal){
+// Waves: the wave field with the normal-map detail on it, as slopes added together. heightOut: -1
+// in a trough to 1 on a crest (half WaveHeight either way); foldOut: crest folding, 0-1, for the
+// whitecaps. texPos: the wave texture position of the shaded point. refractionNormal: the same with
+// the fine detail at 40%. The fine ripples glint and shade the surface, but at full strength they
+// would scribble the bed seen through them into squiggles; what a bed seen through real water mostly
+// follows is the larger waves.
+float3 getWaves(float2 texPos, float2 worldPos, float distance, float4 waveParams, WaveField field, float heightScale, out float heightOut, out float foldOut, out float3 refractionNormal){
     float2 slope;
-    float height = getGerstner(worldPos, time, pixelSize, heightScale, slope);
-    heightOut = TESR_WaterWaves.x > 0.0f ? clamp(height / getGerstnerRange(heightScale), -1.0f, 1.0f) : 0.0f;
+    float height = getWaveFieldSurface(field, worldPos, slope, foldOut);
+    heightOut = TESR_WaterWaves.x > 0.0f ? clamp(height / (TESR_WaterWaves.x * heightScale * 0.5f), -1.0f, 1.0f) : 0.0f;
     float3 detail = getWaveNormal(texPos, distance, waveParams);
     // A surface of slope s faces (-s, 1); the detail normal already faces its own way.
     float2 detailSlope = detail.xy / max(detail.z, 0.1f);
@@ -648,12 +644,12 @@ float getFoamMask(float pathLength, float foamNoise){
     return saturate((band * 1.6f - (1.0f - foamNoise)) * 2.5f) * saturate(TESR_WaterLighting3.x);
 }
 
-// Whitecaps (Whitecaps): the tallest crests break into foam, patchy like the shore foam. waveHeight:
-// -1 trough to 1 crest; the more Whitecaps, the lower on the wave they start.
-float getWhitecaps(float waveHeight, float foamNoise){
+// Whitecaps (Whitecaps): where the wave crests fold over, they break into foam, patchy like the shore
+// foam. fold: 0-1 from the wave field; the more Whitecaps, the less folding it takes.
+float getWhitecaps(float fold, float foamNoise){
     float amount = saturate(TESR_WaterWaves2.x);
-    float cap = saturate((waveHeight - lerp(1.0f, 0.35f, amount)) * 5.0f);
-    return saturate(cap * (foamNoise * 1.5f - 0.2f)) * amount;
+    float cap = saturate((fold - (1.0f - amount) * 0.8f) * 4.0f);
+    return saturate(cap * (foamNoise * 1.5f + 0.2f)) * amount;
 }
 
 // Shoreline fade (ShoreFadeWidth): the water fades out over that much depth at the edge, lapping in

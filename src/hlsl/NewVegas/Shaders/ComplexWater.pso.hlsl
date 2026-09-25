@@ -41,7 +41,7 @@
     #define WATER_BELOW 0
 #endif
 #define WATER_SUNLIT (!WATER_INTERIOR)
-// The Gerstner wave height on this kind of water, against WaveHeight: pools and interior water are
+// The wave height on this kind of water, against WaveHeight: pools and interior water are
 // small and sheltered.
 #if WATER_PLACED || WATER_INTERIOR
     #define WATER_WAVE_SCALE 0.3f
@@ -138,16 +138,18 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
     float brightness = TESR_WaterLighting.z;
 
-    // Waves: the Gerstner shape, seen where the view ray really meets it (parallax), with the
+    // Waves: the wave field, seen where the view ray really meets it (parallax), with the
     // normal-map detail on top. Derivatives first, at the top level.
     float time = WATER_SECONDS;                                             // real seconds
     float2 flatPos = surface.xy + TESR_CameraPosition.xy;                    // world position on the flat mesh
     float pixelSize = max(length(ddx(flatPos)), length(ddy(flatPos)));       // world units per pixel here
-    float2 wavePos = getWaveParallax(flatPos, eyeDirection, time, pixelSize, WATER_WAVE_SCALE, distance);
+    WaveField waveField = getWaveField(time, pixelSize, WATER_WAVE_SCALE);
+    float2 wavePos = getWaveParallax(flatPos, eyeDirection, waveField, distance);
     float2 waveTexPos = getWaveTextureShift(IN.LTEXCOORD_7, flatPos, wavePos - flatPos);
     float waveHeight;                                                        // -1 trough to 1 crest
+    float waveFold;                                                          // crest folding, for whitecaps
     float3 refractionN;                                                      // calmer: for the bed seen through
-    float3 N = getWaves(waveTexPos, wavePos, distance, waveParams, time, pixelSize, WATER_WAVE_SCALE, waveHeight, refractionN);
+    float3 N = getWaves(waveTexPos, wavePos, distance, waveParams, waveField, WATER_WAVE_SCALE, waveHeight, waveFold, refractionN);
 #if !WATER_INTERIOR && !WATER_LOD
     N = getRainRipples(IN.LTEXCOORD_7, N, distance, TESR_WetWorldData.x);
 #endif
@@ -244,7 +246,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
     // Foam: along the edge, and whitecaps on the tallest crests.
     float foamNoise = getFoamNoise(waveTexPos, waveParams);
-    float foam = max(getFoamMask(straightPath.x, foamNoise), getWhitecaps(waveHeight, foamNoise));
+    float foam = max(getFoamMask(straightPath.x, foamNoise), getWhitecaps(waveFold, foamNoise));
 
     // The water body. The bed, with caustics on it where the sun reaches it, loses its colours one
     // by one over the path through the water; the water's own glow, lit by the sun and the sky,

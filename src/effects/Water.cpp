@@ -131,7 +131,7 @@ void WaterShaders::UpdateSettings() {
 
 	// Wave shape: off at WaveHeight 0 (also missing), which leaves the normal-map waves alone.
 	Constants.Waves.x = Read("WaveHeight", 0.0f, 60.0f);
-	Constants.Waves.y = ReadOr("WaveLength", 50.0f, 5000.0f, 500.0f);
+	Constants.Waves.y = ReadOr("WaveLength", 50.0f, 5000.0f, 200.0f);
 	Constants.Waves.z = Read("WaveDirection", 0.0f, 360.0f) * 0.0174532925f;
 	Constants.Waves.w = Read("WaveSteepness", 0.0f, 1.0f);
 	Constants.Waves2.x = Read("Whitecaps", 0.0f, 1.0f);
