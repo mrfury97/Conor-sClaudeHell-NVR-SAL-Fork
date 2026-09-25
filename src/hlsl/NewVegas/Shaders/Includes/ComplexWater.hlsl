@@ -49,6 +49,15 @@ float4 TESR_WaterWaves2       : register(c207);
 // Game units in a metre, near enough.
 #define WATER_UNITS_PER_METRE 70.0f
 
+// Time. TESR_GameTime.x is the game's clock -- the time of day in game seconds, running at the
+// game's timescale (30 by default), stopping when it stops and jumping back to 0 at midnight -- so
+// nothing here uses it: every pattern would snap at midnight, and speed up with a timescale mod.
+// TESR_GameTime.z is real seconds since the game started. WATER_SCROLL_TIME keeps the speeds the
+// scrolling patterns were tuned at (game seconds at the default timescale); the wave shapes move in
+// real seconds, at the speed real waves do.
+#define WATER_SECONDS     (TESR_GameTime.z)
+#define WATER_SCROLL_TIME (TESR_GameTime.z * 30.0f)
+
 // A texture position turned by angle (radians): each wave layer, the foam and the caustics at their own.
 float2 rotateWaterUV(float2 uv, float angle){
     float s = sin(angle);
@@ -151,18 +160,22 @@ float2 getScreenUV(float3 posFromCamera){
 // screen simply being pushed by the normal. strength: the water type's refractionPower, 1 real
 // water. Where the bent ray lands on something in front of the water (a post, legs, the shore) or
 // off the screen, the straight view is used, so nothing above the water smears into it.
+// The bent ray's screen position is taken relative to the surface point's own (straightUV plus the
+// difference of the two projections), so any small mismatch between the view matrices and the
+// engine's screen mapping -- a half-pixel offset, jitter -- cancels instead of shifting the bed.
 // Returns the screen position of the bed seen; path: getWaterPath's, for that bed.
 // ---------------------------------------------------------------------------------------------
 float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, float bedDepth, float strength, out float2 path){
     float3 incident = normalize(surfaceFromCamera);
     float3 bent = refract(incident, N, 1.0f / 1.33f);
     bent = normalize(lerp(incident, dot(bent, bent) > 0.0f ? bent : incident, strength));
+    float2 surfaceUV = getScreenUV(surfaceFromCamera);
 
     float3 bed = surfaceFromCamera + bent * (bedDepth / max(-bent.z, 0.1f));
-    float2 uv = getScreenUV(bed);
+    float2 uv = straightUV + getScreenUV(bed) - surfaceUV;
     float depthThere = max(surfaceFromCamera.z - getBedAtUV(uv).z, 0.0f);
     bed = surfaceFromCamera + bent * (depthThere / max(-bent.z, 0.1f));
-    uv = getScreenUV(bed);
+    uv = straightUV + getScreenUV(bed) - surfaceUV;
 
     float3 forward = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
     bool leak = getSceneViewZ(uv) < dot(surfaceFromCamera, forward) || any(uv != saturate(uv));
@@ -201,7 +214,7 @@ float3 getRefractedBed(float2 uv, float2 straightUV, float pathLength){
 // ---------------------------------------------------------------------------------------------
 float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
     float choppiness = waveParams.x;
-    float speed = TESR_GameTime.x * 0.002f * waveParams.z;
+    float speed = WATER_SCROLL_TIME * 0.002f * waveParams.z;
     float2 p = texPos * waveParams.y;
 
     float near = 1.0f - saturate(distance / 3000.0f);
@@ -330,7 +343,7 @@ float3 getRainRing(float2 uv, float time, float weight){
 float3 getRainRipples(float2 texPos, float3 N, float distance, float rain){
     float fade = 1.0f - saturate(distance / 3500.0f);
     float4 weights = saturate(float4(1.0f, 0.75f, 0.5f, 0.25f) * rain * 4.0f) * 2.0f * fade;
-    float4 times = float4(0.96f, 0.97f, 0.98f, 0.99f) * 0.07f * TESR_GameTime.x;
+    float4 times = float4(0.96f, 0.97f, 0.98f, 0.99f) * 0.07f * WATER_SCROLL_TIME;
     float2 uv = texPos * 5.0f;
     float3 r1 = getRainRing(uv + float2(0.25f, 0.0f), times.x, weights.x);
     float3 r2 = getRainRing(uv * 1.1f + float2(-0.55f, 0.3f), times.y, weights.y);
@@ -441,7 +454,7 @@ float3 getTransmittance(float pathLength){
 // where their slopes cancel, the light converges. None at the waterline, fading out in deep water.
 // A factor on the sunlit bed. Needs TESR_CameraPosition. tex2Dlod, a level from the distance.
 float getCaustics(float3 bedFromCamera, float depthBelow, float4 waveParams){
-    float speed = TESR_GameTime.x * 0.002f * waveParams.z;
+    float speed = WATER_SCROLL_TIME * 0.002f * waveParams.z;
     float2 world = (bedFromCamera.xy + TESR_CameraPosition.xy) / TESR_WaterLighting4.y;
     float lod = log2(max(length(bedFromCamera) / (TESR_WaterLighting4.y * 2.0f), 1.0f));
     float2 a = expand(tex2Dlod(TESR_samplerWater, float4(world + float2(0.8f, 0.6f) * speed * 3.0f, 0.0f, lod))).xy;
@@ -462,7 +475,7 @@ float getCaustics(float3 bedFromCamera, float depthBelow, float4 waveParams){
 // point: in front of a post that depth is small all the way down the post. tex2D: top level only.
 // The patchy pattern foam breaks up into: the wave texture at two other sizes. tex2D: top level.
 float getFoamNoise(float2 texPos, float4 waveParams){
-    float speed = TESR_GameTime.x * 0.002f * waveParams.z;
+    float speed = WATER_SCROLL_TIME * 0.002f * waveParams.z;
     float2 p = texPos * waveParams.y;
     return saturate(tex2D(TESR_samplerWater, rotateWaterUV(p * 3.0f, 0.4f) + float2(0.7f, 0.3f) * speed).x
                   + tex2D(TESR_samplerWater, rotateWaterUV(p * 7.0f, 1.9f) - float2(0.4f, 0.9f) * speed).y - 0.5f);
@@ -487,7 +500,7 @@ float getWhitecaps(float waveHeight, float foamNoise){
 float getShoreAlpha(float depthBelow, float shoreMovement, float foam){
     float width = TESR_WaterLighting3.z;
     if (width <= 0.0f) return 1.0f;
-    float lap = sin(TESR_GameTime.x * shoreMovement * 0.1f) * 0.25f;
+    float lap = sin(WATER_SCROLL_TIME * shoreMovement * 0.1f) * 0.25f;
     return max(smoothstep(0.0f, width, depthBelow + lap * width), foam * 0.9f);
 }
 

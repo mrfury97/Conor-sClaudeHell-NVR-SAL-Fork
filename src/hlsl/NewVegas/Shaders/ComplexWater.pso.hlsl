@@ -76,7 +76,7 @@ float4 TESR_WaterShorelineParams        : register(c16);
 #define WATER_SETTINGS   TESR_WaterSettings
 #define SHORELINE_PARAMS TESR_WaterShorelineParams
 #endif
-float4 TESR_GameTime                    : register(c17);
+float4 TESR_GameTime                    : register(c17);   // z: real seconds (see WATER_SECONDS)
 float4 TESR_HorizonColor                : register(c18);
 float4 TESR_SunDirection                : register(c19);
 float4 TESR_SunAmount                   : register(c20);
@@ -140,7 +140,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // Waves: the Gerstner shape, seen where the view ray really meets it (parallax), with the
     // normal-map detail on top. Derivatives first, at the top level.
-    float time = TESR_GameTime.x * 0.001f;                                  // seconds
+    float time = WATER_SECONDS;                                             // real seconds
     float2 flatPos = surface.xy + TESR_CameraPosition.xy;                    // world position on the flat mesh
     float pixelSize = max(length(ddx(flatPos)), length(ddy(flatPos)));       // world units per pixel here
     float2 wavePos = getWaveParallax(flatPos, eyeDirection, time, pixelSize, WATER_WAVE_SCALE, distance);
