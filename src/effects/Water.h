@@ -44,7 +44,7 @@ public:
 		D3DXVECTOR4		Absorption;		// TESR_WaterAbsorption: rgb absorption rates
 		D3DXVECTOR4		Waves;			// TESR_WaterWaves: x height, y length, z direction (radians), w steepness
 		D3DXVECTOR4		Waves2;			// TESR_WaterWaves2: x whitecaps, y parallax, z refraction blur, w refraction dispersion
-		D3DXVECTOR4		Lighting5;		// TESR_WaterLighting5: x 1 when the game's reflection map is rendered
+		D3DXVECTOR4		Lighting5;		// TESR_WaterLighting5: x 1 when the game's reflection map is rendered, y foam scale
 	};
 	WaterConstants		Constants;
 

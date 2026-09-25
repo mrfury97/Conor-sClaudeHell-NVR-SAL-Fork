@@ -30,7 +30,7 @@ struct PS_OUTPUT {
 //   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
 //   TESR_WaterWaves        x: WaveHeight (units, trough to crest)  y: WaveLength (units, crest to crest)  z: WaveDirection (radians)  w: WaveSteepness
 //   TESR_WaterWaves2       x: Whitecaps       y: WaveParallax     z: RefractionBlur        w: RefractionDispersion
-//   TESR_WaterLighting5    x: 1 when the game's reflection map is rendered (SkipReflectionPass off)
+//   TESR_WaterLighting5    x: 1 when the game's reflection map is rendered (SkipReflectionPass off)  y: FoamScale (units)
 // The DLL keeps the ones that must never be 0 (AbsorptionDepth, WaterColorBrightness, FoamWidth,
 // CausticsScale) off 0.
 // ---------------------------------------------------------------------------------------------
@@ -731,30 +731,39 @@ float getCaustics(float3 bedFromCamera, float depthBelow, float4 waveParams){
 // The edge
 // ---------------------------------------------------------------------------------------------
 
-// Foam (Foam, FoamWidth): where the view passes through the least water -- along the shore and
-// around anything standing in the water -- solid at the edge and breaking into drifting patches made
-// from the wave texture at two other sizes. By the path through the water, not the depth under the
-// point: in front of a post that depth is small all the way down the post. tex2D: top level only.
-// The patchy pattern foam breaks up into: the wave texture at two other sizes. tex2D: top level.
-float getFoamNoise(float2 texPos, float4 waveParams){
-    float speed = WATER_SCROLL_TIME * 0.002f * waveParams.z;
-    float2 p = texPos * waveParams.y;
-    return saturate(tex2D(TESR_samplerWater, rotateWaterUV(p * 3.0f, 0.4f) + float2(0.7f, 0.3f) * speed).x
-                  + tex2D(TESR_samplerWater, rotateWaterUV(p * 7.0f, 1.9f) - float2(0.4f, 0.9f) * speed).y - 0.5f);
+// Foam (Foam, FoamWidth, FoamScale): a foam texture (Textures\Water\NVR_Foam.dds) -- R dense,
+// cellular foam, G broken, streaky foam -- in world space, two layers turned against each other and
+// drifting slowly apart, so it neither repeats nor sits still.
+// MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
+sampler2D TESR_FoamMap : register(s13) < string ResourceName = "Water\NVR_Foam.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+
+// The foam texture at worldPos (x dense, y streaky). tex2D: top level only.
+float2 getFoamTexture(float2 worldPos, float time){
+    float2 uv = worldPos / max(TESR_WaterLighting5.y, 1.0f);
+    float2 a = tex2D(TESR_FoamMap, uv + float2(0.011f, 0.006f) * time).rg;
+    float2 b = tex2D(TESR_FoamMap, rotateWaterUV(uv * 0.71f, 1.3f) + float2(-0.007f, 0.009f) * time).rg;
+    return 0.5f * (a + b);
 }
 
-float getFoamMask(float pathLength, float foamNoise){
+// Foam where the view passes through the least water -- along the shore and around anything
+// standing in the water. By the path through the water, not the depth under the point: in front of a
+// post that depth is small all the way down the post. Solid right at the edge; further out only the
+// thickest of the dense foam holds together, and beyond it, out to twice FoamWidth, only streaks.
+float getFoamMask(float pathLength, float2 foamTexture){
     float band = 1.0f - saturate(pathLength / TESR_WaterLighting3.y);
-    band *= band;
-    return saturate((band * 1.6f - (1.0f - foamNoise)) * 2.5f) * saturate(TESR_WaterLighting3.x);
+    float outer = 1.0f - saturate(pathLength / (TESR_WaterLighting3.y * 2.0f));
+    float dense = max(smoothstep(0.9f - band, 1.1f - band, foamTexture.x), band * band * band * band);
+    float streaks = smoothstep(0.9f - outer, 1.1f - outer, foamTexture.y) * outer;
+    return max(dense, streaks) * saturate(TESR_WaterLighting3.x);
 }
 
-// Whitecaps (Whitecaps): where the wave crests fold over, they break into foam, patchy like the shore
-// foam. fold: 0-1 from the wave field; the more Whitecaps, the less folding it takes.
-float getWhitecaps(float fold, float foamNoise){
+// Whitecaps (Whitecaps): where the wave crests fold over, they break into streaky foam: the more a
+// crest folds, the more of the pattern shows. fold: 0-1 from the wave field; the more Whitecaps, the
+// less folding it takes.
+float getWhitecaps(float fold, float2 foamTexture){
     float amount = saturate(TESR_WaterWaves2.x);
     float cap = saturate((fold - (1.0f - amount) * 0.8f) * 4.0f);
-    return saturate(cap * (foamNoise * 1.5f + 0.2f)) * amount;
+    return smoothstep(0.9f - cap, 1.1f - cap, foamTexture.y) * cap * saturate(amount * 4.0f);
 }
 
 // Shoreline fade (ShoreFadeWidth): the water fades out over that much depth at the edge, lapping in

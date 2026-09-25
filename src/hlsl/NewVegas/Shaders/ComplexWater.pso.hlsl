@@ -254,9 +254,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 #else
     float shadow = 1.0f;
 #endif
-    // Foam: along the edge, and whitecaps on the tallest crests.
-    float foamNoise = getFoamNoise(waveTexPos, waveParams);
-    float foam = max(getFoamMask(straightPath.x, foamNoise), getWhitecaps(waveFold, foamNoise));
+    // Foam: along the edge, and whitecaps where the crests fold.
+    float2 foamTexture = getFoamTexture(wavePos, time);
+    float foam = max(getFoamMask(straightPath.x, foamTexture), getWhitecaps(waveFold, foamTexture));
 
     // The water body. The bed, with caustics on it where the sun reaches it, loses its colours one
     // by one over the path through the water; the water's own glow, lit by the sun and the sky,

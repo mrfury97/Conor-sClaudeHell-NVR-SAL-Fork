@@ -124,7 +124,7 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting2.z = Read("SunGlitter", 0.0f, 3.0f);
 	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 16);
 	Constants.Lighting3.x = Read("Foam", 0.0f, 1.0f);
-	Constants.Lighting3.y = ReadOr("FoamWidth", 2.0f, 400.0f, 12.0f);
+	Constants.Lighting3.y = ReadOr("FoamWidth", 2.0f, 400.0f, 20.0f);
 	Constants.Lighting3.z = Read("ShoreFadeWidth", 0.0f, 300.0f);
 	Constants.Lighting3.w = Read("ReflectionBlur", 0.0f, 3.0f);
 	Constants.Lighting4.x = Read("Caustics", 0.0f, 3.0f);
@@ -135,6 +135,7 @@ void WaterShaders::UpdateSettings() {
 	// sky along the reflected ray under the screen-space reflections instead.
 	SkipReflectionPass = TheSettingManager->GetSettingI(Section, "SkipReflectionPass") != 0;
 	Constants.Lighting5.x = SkipReflectionPass ? 0.0f : 1.0f;
+	Constants.Lighting5.y = ReadOr("FoamScale", 20.0f, 5000.0f, 250.0f);
 
 	// Wave shape: off at WaveHeight 0 (also missing), which leaves the normal-map waves alone.
 	Constants.Waves.x = Read("WaveHeight", 0.0f, 60.0f);
