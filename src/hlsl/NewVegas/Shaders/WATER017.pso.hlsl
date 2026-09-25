@@ -33,7 +33,17 @@ sampler2D DepthMap : register(s4);
 sampler2D TESR_samplerWater : register(s5) < string ResourceName = "Water\water_NRM.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = ANISOTROPIC; MINFILTER = ANISOTROPIC; MIPFILTER = ANISOTROPIC; } ;
 sampler2D TESR_RippleSampler : register(s6) < string ResourceName = "Precipitations\ripples.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
+// The water lighting's point-light glints (Water.hlsl, WATER_POINT_LIGHTS) and sun shadow (Shadow.hlsl,
+// c100-c133 and s9), in registers clear of this shader's own.
+float4 TESR_CameraPosition : register(c140);
+float4 TESR_ShadowLightPosition[12] : register(c141);
+float4 TESR_LightPosition[12] : register(c153);
+float4 TESR_LightColor[24] : register(c165);
+
+#define WATER_SUN_SHADOWS
+#define WATER_POINT_LIGHTS
 #include "Includes/Helpers.hlsl"
+#include "Includes/Shadow.hlsl"
 #include "Includes/Water.hlsl"
 
 PS_OUTPUT main(PS_INPUT IN) {
@@ -74,13 +84,25 @@ PS_OUTPUT main(PS_INPUT IN) {
     refractionPos.y = refractionPos.w - reflectionPos.y;
     float3 refractedDepth = tex2Dproj(DepthMap, refractionPos).rgb;
 
+    // Water lighting (Water.hlsl): the sun shadow on the surface and the glint roughness first -- the
+    // roughness takes derivatives, so it stays at the top level -- then the water body, the wave
+    // scattering, the reflection and the glints.
+    float shadow = getWaterSunShadow(IN.LTEXCOORD_0.xyz);
+    float specRoughness = getSpecularRoughness(surfaceNormal, distance);
+    float3 transmittance;
+
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
-    color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, sunLuma, TESR_WaterSettings, color);
+    color = getWaterBody(color, refractedDepth, linShallowColor, linDeepColor, sunLuma, TESR_WaterSettings, sunLuma * lerp(0.4f, 1.0f, shadow), transmittance);
     color = lerp(getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color), linearize(TESR_WaterLODColor) * sunLuma, LODfade); // fade to full fog to hide LOD seam
     // color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color); // fade to full fog to hide LOD seam
     // color = lerp(getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linHorizonColor, color), linShallowColor,LODfade);
-    color = lerp(color, getFresnel(surfaceNormal, eyeDirection, reflection, TESR_WaveParams.w, color), smoothstep(0, 0.2, refractedDepth.x)); // reduce fresnel in low depths
-    color = getSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb, color);
+    float3 scattering = getWaveScattering(surfaceNormal, eyeDirection, TESR_SunDirection.xyz, linSunColor.rgb * isDayTime, linShallowColor, shadow) * (1.0f - LODfade);
+    color.rgb += scattering;
+    float fresnel = getFresnelAmount(surfaceNormal, eyeDirection, reflection, TESR_WaveParams.w, color) * smoothstep(0, 0.2, refractedDepth.x); // reduce fresnel in low depths
+    color.rgb = lerp(color.rgb, reflection.rgb, fresnel);
+    color = getSunSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb * shadow, specRoughness, color);
+    float3 pointLights = getPointLightsSpecular(surfaceNormal, IN.LTEXCOORD_0.xyz, eyeDirection, specRoughness);
+    color.rgb += pointLights;
     color = lerp(getShoreFade(IN, waterDepth.x, TESR_WaterShorelineParams.x, TESR_WaterVolume.y, color), color, LODfade);
 
     color = delinearize(color); //delinearise
@@ -90,5 +112,10 @@ PS_OUTPUT main(PS_INPUT IN) {
     
     OUT.color_0.rgb = fogStrength * (FogColor.rgb - color.rgb) + color.rgb;
     OUT.color_0.a = lerp(color.a, 1, LODfade); // fade to full opacity to hide LOD seam
+    // DebugView ([Shaders.Water.Main]): one term of the water lighting on its own.
+    [branch]
+    if (TESR_WaterLighting2.w > 0.5f)
+        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights), 1.0f);
+
     return OUT;
 };

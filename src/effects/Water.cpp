@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "Water.h"
 
 void WaterShaders::RegisterConstants() {
@@ -15,6 +17,8 @@ void WaterShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PlacedWaterVolume", &Constants.Placed.waterVolume);
 	TheShaderManager->RegisterConstant("TESR_PlacedWaterSettings", &Constants.Placed.waterSettings);
 	TheShaderManager->RegisterConstant("TESR_PlacedWaterShorelineParams", &Constants.Placed.shorelineParams);
+	TheShaderManager->RegisterConstant("TESR_WaterLighting", &Constants.Lighting);
+	TheShaderManager->RegisterConstant("TESR_WaterLighting2", &Constants.Lighting2);
 }
 
 
@@ -95,4 +99,17 @@ void WaterShaders::UpdateSettings() {
 	Constants.Placed.waterVolume.w = TheSettingManager->GetSettingF("Shaders.Water.Placed", "causticsStrengthS");
 	Constants.Placed.shorelineParams.x = TheSettingManager->GetSettingF("Shaders.Water.Placed", "shoreMovement");
 	Constants.Placed.waterSettings.w = TheSettingManager->GetSettingF("Shaders.Water.Placed", "refractionPower");
+
+	// Water lighting (Includes/Water.hlsl), for every kind of water. Each term is off at 0, which is also
+	// what a missing key reads as; AbsorptionDepth, where 0 would mean no absorption at all, means 1.
+	const char* Section = "Shaders.Water.Main";
+	Constants.Lighting.x = std::clamp(TheSettingManager->GetSettingF(Section, "SunShadows"), 0.0f, 1.0f);
+	Constants.Lighting.y = std::clamp(TheSettingManager->GetSettingF(Section, "Absorption"), 0.0f, 1.0f);
+	float absorptionDepth = TheSettingManager->GetSettingF(Section, "AbsorptionDepth");
+	Constants.Lighting.z = absorptionDepth > 0.0f ? std::clamp(absorptionDepth, 0.1f, 5.0f) : 1.0f;
+	Constants.Lighting.w = std::clamp(TheSettingManager->GetSettingF(Section, "WaveScattering"), 0.0f, 3.0f);
+	Constants.Lighting2.x = std::clamp(TheSettingManager->GetSettingF(Section, "SpecularAA"), 0.0f, 1.0f);
+	Constants.Lighting2.y = std::clamp(TheSettingManager->GetSettingF(Section, "PointLights"), 0.0f, 3.0f);
+	Constants.Lighting2.z = std::clamp(TheSettingManager->GetSettingF(Section, "PhysicalFresnel"), 0.0f, 1.0f);
+	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 6);
 }

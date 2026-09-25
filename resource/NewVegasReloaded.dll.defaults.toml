@@ -1046,6 +1046,16 @@ SimpleFogBlend = 0.2                # General strength of the impact of simple f
 [_Shaders.VolumetricFog.Status]
 Enabled = true                      # Volumetric fog shader tinted by the sun. Rendered after shadows and other effects for more accurate effect.
 
+[_Shaders.Water.Main]
+SunShadows = 1.0                     # [0.0-1.0] How much the sun shadow takes off the water where something shades it: the sun glint, the glow through wave crests and the sunlit water colour. The reflection stays. Needs ForwardShadows ([Shaders.ShadowsExteriors.Main]). 0 off.
+Absorption = 1.0                     # [0.0-1.0] Depth absorption: light through the water loses red first, then green, at rates taken from each water's own deep colour, so shallows are clear and deep water takes the water's colour. 0 is the old water colour; 1 fully the new.
+AbsorptionDepth = 1.0                # [0.1-5.0] How fast light is absorbed with depth. Higher is murkier, lower clearer.
+WaveScattering = 0.6                 # [0.0-3.0] Sunlight glowing through the tops and sides of the waves, in the water's colour, when looking toward a low sun. 0 off.
+SpecularAA = 1.0                     # [0.0-1.0] Widens the sun and light glints where the waves are finer than a pixel, so distant water stops sparkling and crawling. 0 is the old sharp glint.
+PointLights = 1.0                    # [0.0-3.0] Glints of lamps, campfires and other point lights on the water, outdoors as well as indoors. 0 off.
+PhysicalFresnel = 1.0                # [0.0-1.0] Reflection strength by viewing angle as real water has it: clear looking down, a mirror at low angles. 0 is the old blend, which showed bright sky even looking straight down. reflectivity still scales it.
+DebugView = 0                        # [0-6] Shows one term of the water lighting on its own. 1 sun shadow on the surface (black in shadow). 2 absorption: what still shows through, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white fully widened). 6 point-light glints. 0 off.
+
 [_Shaders.Water.Default]
 causticsStrength = 3.0              # Caustic strength underwater. Caustics seen from above water not currently supported
 causticsStrengthS = 0.2             # Godrays intensity underwater.

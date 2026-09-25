@@ -73,10 +73,14 @@ PS_OUTPUT main(PS_INPUT IN) {
     float4 reflectionPos = getReflectionSamplePosition(IN, surfaceNormal, refractionCoeff);
     float4 reflection = linearize(tex2Dproj(ReflectionMap, reflectionPos));
 
+    // Glint roughness (Water.hlsl): takes derivatives, so it stays at the top level. Far water is
+    // where the calm glint sparkled most.
+    float specRoughness = getSpecularRoughness(surfaceNormal, distance);
+
     float4 color = linShallowColor * sunLuma;
     // color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linHorizonColor, color);
     color = getFresnel(surfaceNormal, eyeDirection, reflection, TESR_WaveParams.w, color);
-    color = getSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb, color);
+    color = getSunSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb, specRoughness, color);
     color.a = 1;
 
     color = delinearize(color); //delinearise

@@ -36,6 +36,7 @@ sampler2D DepthMap : register(s4);
 
 sampler2D TESR_samplerWater : register(s5) < string ResourceName = "Water\water_NRM.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = ANISOTROPIC; MINFILTER = LINEAR; MIPFILTER = LINEAR; } ;
 
+#define WATER_POINT_LIGHTS
 #include "Includes/Helpers.hlsl"
 #include "Includes/Water.hlsl"
 
@@ -74,15 +75,22 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     refractionPos.y = refractionPos.w - reflectionPos.y;
     float3 refractedDepth = tex2Dproj(DepthMap, refractionPos).rgb * interiorDepthModifier;
 
-    float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
-    color = getLightTravel(refractedDepth, linShallowColor, linDeepColor, 0.5, TESR_WaterSettings, color);
-   	color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color);
-    color = getFresnel(surfaceNormal, eyeDirection, linFogColor, TESR_WaveParams.w, color);
+    // Water lighting (Water.hlsl): the glint roughness first -- it takes derivatives, so it stays at
+    // the top level -- then the water body, the reflection and the point-light glints. No sun indoors.
+    float shadow = 1.0f;
+    float specRoughness = getSpecularRoughness(surfaceNormal, distance);
+    float3 transmittance;
+    float3 scattering = 0.0f;
 
-	for (int i= 0; i< 12; i++){
-	    color = getPointLightSpecular(surfaceNormal, TESR_ShadowLightPosition[i], position, eyeDirection, TESR_LightColor[i].rgb * TESR_LightColor[i].w, color);
-	    color = getPointLightSpecular(surfaceNormal, TESR_LightPosition[i], position, eyeDirection,  TESR_LightColor[ 12 + i].rgb * TESR_LightColor[ 12 + i].w, color);
-	}
+    float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
+    color = getWaterBody(color, refractedDepth, linShallowColor, linDeepColor, 0.5, TESR_WaterSettings, 0.5f, transmittance);
+   	color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color);
+    float fresnel = getFresnelAmount(surfaceNormal, eyeDirection, linFogColor, TESR_WaveParams.w, color);
+    color.rgb = lerp(color.rgb, linFogColor.rgb, fresnel);
+
+    // Point-light glints: out-of-range lights skipped, the loop ended at the last light.
+    float3 pointLights = getPointLightsSpecular(surfaceNormal, IN.LTEXCOORD_0.xyz, eyeDirection, specRoughness);
+    color.rgb += pointLights;
 
     color = getShoreFade(IN, waterDepth.x, TESR_WaterShorelineParams.x, TESR_WaterVolume.y, color);
 
@@ -93,6 +101,11 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     
     OUT.color_0.rgb = fogStrength * (FogColor.rgb - color.rgb) + color.rgb;
     OUT.color_0.a = color.a;
+
+    // DebugView ([Shaders.Water.Main]): one term of the water lighting on its own.
+    [branch]
+    if (TESR_WaterLighting2.w > 0.5f)
+        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights), 1.0f);
 
     return OUT;
 };

@@ -48,6 +48,28 @@ struct PS_OUTPUT {
 
 #include "Includes/PBR.hlsl"
 
+// ---------------------------------------------------------------------------------------------
+// Water lighting ([Shaders.Water.Main], WaterShaders::UpdateSettings). Every term is off at 0, which
+// is also what a missing setting reads as, so with all of them 0 the water renders as it did before.
+//   TESR_WaterLighting   x: SunShadows      how much the sun shadow takes off the sun glint, the wave
+//                                           scattering and the sunlit water body (forward shadows only)
+//                        y: Absorption      0 the old water colour, 1 depth absorption (Beer-Lambert)
+//                        z: AbsorptionDepth how fast light is absorbed with depth (never 0)
+//                        w: WaveScattering  sunlight glowing through wave crests
+//   TESR_WaterLighting2  x: SpecularAA      widens the glint where the waves are finer than a pixel
+//                        y: PointLights     point-light glints (campfires, lamps); 0 skips the loop
+//                        z: PhysicalFresnel 0 the old reflection strength, 1 water's real reflectance
+//                        w: DebugView       0 off, see waterDebugView
+// c190/c191: clear of every water shader's own constants (up to c70) and of Shadow.hlsl (c100-c133).
+// ---------------------------------------------------------------------------------------------
+float4 TESR_WaterLighting  : register(c190);
+float4 TESR_WaterLighting2 : register(c191);
+
+// Water's reflectance looking straight down: 2% (index of refraction 1.33).
+#define WATER_F0 0.02f
+// The glint's roughness on calm water, as before.
+#define WATER_ROUGHNESS 0.02f
+
 float4 getScreenpos(PS_INPUT IN){
     float4 screenPos;  // point coordinates in screen space for water surface
     screenPos.x = dot(IN.LTEXCOORD_2, IN.LTEXCOORD_1);
@@ -139,71 +161,160 @@ float4 getDiffuse(float3 surfaceNormal, float3 lightDir, float3 eyeDirection, fl
     return float4(result, 1);
 }
 
+// How much of the reflection shows. The old blend -- 80% Schlick plus 20% of however much brighter
+// the reflection is than the water -- showed bright sky even looking straight down; PhysicalFresnel
+// moves it to Schlick with water's own 2%, so the water is clear looking down and a mirror at low
+// angles. Reflectivity scales either.
+float getFresnelAmount(float3 surfaceNormal, float3 eyeDirection, float4 reflection, float reflectivity, float4 color){
+    float fresnelCoeff = pow(1.0f - saturate(dot(eyeDirection, surfaceNormal)), 5.0f);
+    float lumaDiff = saturate(luma(reflection) - luma(color));
+    float legacy = saturate((fresnelCoeff * 0.8f + 0.2f * lumaDiff) * reflectivity);
+    float physical = saturate((WATER_F0 + (1.0f - WATER_F0) * fresnelCoeff) * reflectivity);
+    return lerp(legacy, physical, saturate(TESR_WaterLighting2.z));
+}
+
 float4 getFresnel(float3 surfaceNormal, float3 eyeDirection, float4 reflection, float reflectivity, float4 color){
-    // float4 getReflections(float3 surfaceNormal, eyeDirection, float4 reflection, float4 color){
-    float fresnelCoeff = saturate(pow(1 - dot(eyeDirection, surfaceNormal), 5));
-    float reflectionLuma = luma(reflection);
-    float lumaDiff = saturate(reflectionLuma - luma(color));
-
-    //float4 reflectionColor = lerp (reflectionLuma * linearize(ReflectionColor), reflection, reflectionLuma * VarAmounts.y) * 0.7;
-    float4 reflectionColor = lerp (reflectionLuma * linearize(ReflectionColor), reflection, reflectionLuma) * 0.7;
-	float3 result = lerp(color.rgb, reflection.rgb , saturate((fresnelCoeff * 0.8 + 0.2 * lumaDiff) * reflectivity));
-
+	float3 result = lerp(color.rgb, reflection.rgb, getFresnelAmount(surfaceNormal, eyeDirection, reflection, reflectivity, color));
     return float4(result, 1);
 }
 
-float4 getSpecular(float3 surfaceNormal, float3 lightDir, float3 eyeDirection, float3 specColor, float4 color){
-    float specularBoost = 10;
-    float glossiness = 10000;
-
-    float3 normal = normalize(surfaceNormal);
-    float3 halfway = normalize(eyeDirection + lightDir);
-    float NdotH = shades(normal, halfway);
-
-    float3 result;
-    if (true){
-        float NdotL = shades(normal, lightDir);
-        float NdotV = shades(normal, eyeDirection);
-
-        float3 Ks = FresnelShlick(0.08, halfway, eyeDirection);
-        result = color.rgb + BRDF(0.02, Ks, NdotV, NdotL, NdotH) * specColor * specularBoost * NdotL;
-    } else{
-        // phong blinn specular
-        float specular = pows(NdotH, glossiness);
-        result = color.rgb + specular * specColor.rgb * specularBoost;
-    }
-
-    return float4(result, 1);
-}
-
-float4 getPointLightSpecular(float3 surfaceNormal, float4 lightPosition, float3 worldPosition, float3 eyeDirection, float3 specColor, float4 color){
-    if (lightPosition.w == 0) return color;
-
-    float specularBoost = 1;
-    float glossiness = 20;
-
-    float3 lightDir = lightPosition.xyz - worldPosition;
-    float distance = length(lightDir) / lightPosition.w;
-
-        // radius based attenuation based on https://lisyarus.github.io/blog/graphics/2022/07/30/point-light-attenuation.html
-    float s = saturate(distance * distance); 
-    float atten = saturate(((1 - s) * (1 - s)) / (1 + 5.0 * s));
-
-    //return color + getSpecular(surfaceNormal, normalize(lightDir), eyeDirection, specColor * atten, color);
-    lightDir = normalize(lightDir);
-    float3 H = normalize(lightDir + eyeDirection);
-    float NdotL = shades(surfaceNormal, lightDir);
-    float NdotV = shades(surfaceNormal, eyeDirection);
-    float NdotH = shades(surfaceNormal, H);
-
+// GGX glint off a water normal. NdotV and NdotL are kept off exactly 0 inside the BRDF, whose
+// 4 * NdotV * NdotL denominator would otherwise make 0/0 (NaN) with the light at the horizon; the
+// result is still multiplied by the real NdotL, so it is 0 there.
+float3 getGlint(float3 N, float3 L, float3 eyeDirection, float roughness){
+    float3 H = normalize(eyeDirection + L);
+    float NdotL = shades(N, L);
+    float NdotV = max(shades(N, eyeDirection), 1e-4f);
+    float NdotH = shades(N, H);
     float3 Ks = FresnelShlick(0.08, H, eyeDirection);
-    color.rgb += BRDF(0.02, Ks, NdotV, NdotL, NdotH) * specColor * atten * NdotL;
-    // color.rgb += pows(shades(H, surfaceNormal), glossiness) * linearize(float4(specColor, 1)).rgb * specularBoost * atten;
-
-    // color.rgb += pows(shades(H, surfaceNormal), 100) * specColor * 10 * atten;
-    return color;
+    return BRDF(roughness, Ks, NdotV, max(NdotL, 1e-4f), NdotH) * NdotL;
 }
 
+// Glint roughness with specular anti-aliasing (SpecularAA). Calm water's glint is a GGX lobe so
+// narrow that where the waves are finer than a pixel -- all distant water -- it lands on some
+// pixels and misses their neighbours, and sparkles and crawls from frame to frame. Widened by how
+// fast the wave normal changes across the pixel (PBR.hlsl's SpecularAA), plus a little with
+// distance, which mipmapping hides from the derivatives. A wider GGX lobe keeps its energy, so the
+// glint gets broader and softer, not dimmer overall.
+// ddx/ddy inside: call at the top level of the shader, never under a branch or in a loop.
+float getSpecularRoughness(float3 surfaceNormal, float distance){
+    float antiAliased = SpecularAA(surfaceNormal, WATER_ROUGHNESS);
+    antiAliased = sqrt(antiAliased * antiAliased + saturate(distance / 16000.0f) * 0.04f);
+    return lerp(WATER_ROUGHNESS, antiAliased, saturate(TESR_WaterLighting2.x));
+}
+
+float4 getSunSpecular(float3 surfaceNormal, float3 lightDir, float3 eyeDirection, float3 specColor, float roughness, float4 color){
+    float specularBoost = 10;
+    return float4(color.rgb + getGlint(normalize(surfaceNormal), lightDir, eyeDirection, roughness) * specColor * specularBoost, color.a);
+}
+
+// Depth absorption (Absorption, AbsorptionDepth). Light through water loses each colour at its own
+// rate (Beer-Lambert), so what shows through goes from clear in the shallows to the water's own
+// colour in the deep, one channel at a time. The rates come from the water form's deep colour: a
+// channel it has little of is absorbed fastest, so blue water loses red first and turns blue-green,
+// green swamp water loses blue first and turns murky yellow-green -- each water keeps its own look.
+// What absorption takes away is replaced by light scattered back out of the water body: the
+// shallow-to-deep colour, lit by inscatterLight. opticalDepth is the depth map's 0-1 depth, already
+// scaled for the kind of water; depthMix the same 0-1 the old colour ramp used.
+// Absorption 0 is the old getLightTravel, exactly.
+float4 getWaterBody(float4 color, float3 refractedDepth, float4 shallowColor, float4 deepColor, float sunLuma, float4 waterSettings, float inscatterLight, out float3 transmittance){
+    float4 legacy = getLightTravel(refractedDepth, shallowColor, deepColor, sunLuma, waterSettings, color);
+
+    float3 hue = deepColor.rgb / max(max(deepColor.r, max(deepColor.g, deepColor.b)), 1e-4f);
+    float3 absorption = -log(clamp(hue, 0.02f, 1.0f)) + 0.3f;   // + 0.3: every channel goes in the end
+    transmittance = exp(-absorption * saturate(refractedDepth.x) * 3.0f * TESR_WaterLighting.z);
+
+    float3 waterColor = lerp(shallowColor.rgb, deepColor.rgb, saturate(refractedDepth.y));
+    float3 physical = color.rgb * transmittance + waterColor * inscatterLight * (1.0f - transmittance);
+    return float4(lerp(legacy.rgb, physical, saturate(TESR_WaterLighting.y)), 1.0f);
+}
+
+// Wave scattering (WaveScattering): looking toward a low sun, sunlight shines through the thin tops
+// and flanks of the waves and lights them up in the water's colour -- the turquoise glow on backlit
+// waves. Where the surface is tilted (wave flanks and crests), with the sun ahead of the camera,
+// stronger the lower the sun. The shallow colour's hue, at the sun's colour and brightness.
+// eyeDirection points from the surface to the camera, sunDirection to the sun.
+float3 getWaveScattering(float3 surfaceNormal, float3 eyeDirection, float3 sunDirection, float3 sunColor, float4 shallowColor, float shadow){
+    float crest = saturate((1.0f - surfaceNormal.z) * 3.0f);
+    float towardSun = pow(saturate(dot(-eyeDirection, sunDirection)), 4.0f);
+    float lowSun = 1.0f - saturate(sunDirection.z);
+    float3 hue = shallowColor.rgb / max(max(shallowColor.r, max(shallowColor.g, shallowColor.b)), 1e-4f);
+    return hue * sunColor * crest * towardSun * (0.5f + 0.5f * lowSun) * shadow * TESR_WaterLighting.w;
+}
+
+#ifdef WATER_SUN_SHADOWS
+// Sun shadow on the water surface (SunShadows): 1 in sunlight. In shadow the sun glint, the wave
+// scattering and the sunlit part of the water body go; the reflection stays, since it shows the sky
+// and the shore, which the shadow does not touch. Needs Shadow.hlsl included first; forward shadows
+// only (FORWARD_SHADOWS compiled in, and not suppressed at runtime -- GetSunShadow gives 1 then).
+// cameraRelativePos: IN.LTEXCOORD_0.xyz, which the water vertex shaders write as the world
+// transform's output, camera-relative (WATER000.vso adds TESR_CameraPosition to it for the world
+// position), the same space the shadow cascades are in. The surface is flat, so the bias normal is up.
+float getWaterSunShadow(float3 cameraRelativePos){
+    float shadow = 1.0f;
+#if FORWARD_SHADOWS
+    [branch]
+    if (TESR_WaterLighting.x > 0.0f)
+        shadow = lerp(1.0f, GetSunShadow(cameraRelativePos, float3(0.0f, 0.0f, 1.0f)), saturate(TESR_WaterLighting.x));
+#endif
+    return shadow;
+}
+#endif
+
+#ifdef WATER_POINT_LIGHTS
+// Point-light glints (PointLights): lamps and campfires reflected in the water. Needs
+// TESR_CameraPosition, TESR_ShadowLightPosition[12], TESR_LightPosition[12] and TESR_LightColor[24]
+// declared first. Light positions are world space; toLight is built as (light - camera) - pixel with
+// the pixel camera-relative, so the large world coordinates cancel before any per-pixel maths.
+// Attenuation as the interior water always had it. A light that does not reach the pixel is skipped
+// (its attenuation there is exactly 0), and the loop stops at the first slot where both lists are
+// empty, since both are packed from slot 0.
+float3 getPointLightGlint(float3 N, float4 light, float4 colour, float3 pixelFromCamera, float3 eyeDirection, float roughness){
+    float3 toLight = (light.xyz - TESR_CameraPosition.xyz) - pixelFromCamera;
+    float distSq = dot(toLight, toLight);
+    float radiusSq = light.w * light.w;
+    float3 glint = 0.0f;
+    [branch]
+    if (light.w > 0.0f && distSq < radiusSq) {
+        float s = distSq / radiusSq;
+        float atten = saturate(((1.0f - s) * (1.0f - s)) / (1.0f + 5.0f * s));
+        float3 L = toLight * rsqrt(max(distSq, 1e-4f));
+        glint = getGlint(N, L, eyeDirection, roughness) * colour.rgb * colour.w * atten;
+    }
+    return glint;
+}
+
+float3 getPointLightsSpecular(float3 surfaceNormal, float3 pixelFromCamera, float3 eyeDirection, float roughness){
+    float3 specular = 0.0f;
+    float strength = TESR_WaterLighting2.y;
+    [branch]
+    if (strength > 0.0f) {
+        float3 N = normalize(surfaceNormal);
+        [loop]
+        for (int i = 0; i < 12; i++) {
+            if (TESR_ShadowLightPosition[i].w <= 0.0f && TESR_LightPosition[i].w <= 0.0f) break;
+            specular += getPointLightGlint(N, TESR_ShadowLightPosition[i], TESR_LightColor[i], pixelFromCamera, eyeDirection, roughness);
+            specular += getPointLightGlint(N, TESR_LightPosition[i], TESR_LightColor[12 + i], pixelFromCamera, eyeDirection, roughness);
+        }
+        specular *= strength;
+    }
+    return specular;
+}
+#endif
+
+// DebugView ([Shaders.Water.Main]): one term on its own, in place of the water.
+//   1 sun shadow on the surface (black in shadow)       2 absorption: what still shows through, per colour
+//   3 reflection amount (Fresnel), black none to white  4 wave scattering
+//   5 glint roughness: black calm, white fully widened  6 point-light glints
+float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights){
+    float3 result = shadow;
+    result = view > 1.5f ? transmittance : result;
+    result = view > 2.5f ? fresnel : result;
+    result = view > 3.5f ? saturate(scattering) : result;
+    result = view > 4.5f ? saturate((roughness - WATER_ROUGHNESS) / 0.4f) : result;
+    result = view > 5.5f ? saturate(pointLights) : result;
+    return result;
+}
 
 float4 getShoreFade(PS_INPUT IN, float depth, float shoreSpeed, float shoreFactor, float4 color){
     float scale = 0.07;
