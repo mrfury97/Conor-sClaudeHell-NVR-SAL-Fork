@@ -26,6 +26,7 @@ float4 TESR_DebugVar : register(c21);
 float4 TESR_ShadowLightPosition[12] : register(c22);
 float4 TESR_LightPosition[12] : register(c34);
 float4 TESR_LightColor[24] : register(c46);
+float4 TESR_CameraPosition : register(c70); // the point-light glints work camera-relative (Water.hlsl)
 
 sampler2D ReflectionMap : register(s0);
 sampler2D RefractionMap : register(s1);
