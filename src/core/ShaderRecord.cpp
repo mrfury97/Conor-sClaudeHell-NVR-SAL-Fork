@@ -401,6 +401,7 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 			// The raw world depth (INTZ), resolved just before the draw: the water shaders read the
 			// scene behind the water from it to measure how deep the water is (Includes/Water.hlsl).
 			if (!strcmp(ConstantDesc.Name, "TESR_DepthBufferWorld")) HasDepthBuffer = true;
+			if (!strcmp(ConstantDesc.Name, "TESR_DepthBufferBeforeWater")) HasDepthBuffer = true;
 			if (!memcmp(ConstantDesc.Name, "TESR_RenderedBuffer", 20)) HasRenderedBuffer = true;
 	
 			TextureIndex++;
@@ -505,14 +506,19 @@ void ShaderFloatValue::GetValueFromConstantTable() {
 void ShaderRecord::SetCT() {
 
 	if (HasRenderedBuffer) TheRenderManager->device->StretchRect(TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface, NULL, TheTextureManager->RenderedSurface, NULL, D3DTEXF_NONE);
-	// The world depth buffer is resolved once per world render, by the first shader that reads it:
-	// the water, which reads what lies behind it, is drawn in several pieces (a quad per cell, in
-	// several shader variants), and a resolve each time its shader came back would hold the pieces
-	// already drawn -- where they meet, the next piece would see the water itself as the bed.
-	if (HasDepthBuffer && !WorldDepthResolved) {
+	// The water reads what lies behind it from the depth buffer, and is drawn in several pieces (a
+	// quad per cell, in several shader variants) with other geometry drawn between them. So the world
+	// depth is resolved each time such a shader comes into use -- it then holds everything drawn so
+	// far, the pier over the water included, but also the water pieces already drawn -- and, the
+	// first time in each world render, also into TESR_DepthBufferBeforeWater, which holds no water.
+	// The water takes the second wherever the first shows the water itself (Includes/ComplexWater.hlsl).
+	if (HasDepthBuffer) {
 		//Logger::Log("Resolving depth buffer for shader %s", Name);
+		if (!WorldDepthResolved) {
+			TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureBeforeWater);
+			WorldDepthResolved = true;
+		}
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
-		WorldDepthResolved = true;
 	}
 
 	// reset samplers

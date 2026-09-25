@@ -123,7 +123,8 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	TAAEffect* TAA = TheShaderManager->Effects.TAA;
 	if (TAA) TAA->BeginJitter();
 
-	// The first shader reading the world depth buffer during this render resolves it (ShaderRecord::SetCT).
+	// The first shader reading the world depth buffer during this render also resolves the depth before
+	// any water is drawn (ShaderRecord::SetCT).
 	ShaderRecord::WorldDepthResolved = false;
 	(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
 	ShaderRecord::WorldDepthResolved = false;

@@ -89,8 +89,8 @@ public:
 
 	static ShaderRecord*	LoadShader(const char* Name, const char* SubPath, ShaderTemplate Template = ShaderTemplate{});
 
-	// Whether the world depth buffer has been resolved for this world render (see SetCT). Cleared
-	// around each world render by RenderWorldSceneGraphHook.
+	// Whether TESR_DepthBufferBeforeWater has been resolved for this world render (see SetCT).
+	// Cleared around each world render by RenderWorldSceneGraphHook.
 	static bool				WorldDepthResolved;
 
 	const char* Name;

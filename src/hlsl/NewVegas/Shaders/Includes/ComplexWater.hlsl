@@ -105,9 +105,17 @@ float4 flipToRefraction(float4 reflectionPos){
 // with (a camera mod, a changed fNearDistance) would otherwise scale every depth read by the
 // mismatch. Which way the buffer runs also comes from the water: anything past twice the near
 // plane has a depth value under 0.5 on a reversed buffer and over 0.5 on a standard one.
+//
+// Two copies of the depth buffer are read. The game draws the water in pieces, a quad per cell, with
+// other geometry between them: TESR_DepthBufferWorld is taken as each piece is drawn, so it holds the
+// pier and whatever else came before it, but also the water pieces already drawn;
+// TESR_DepthBufferBeforeWater is taken before the first, so it holds no water, but misses what was
+// drawn after it. Where the first shows the water surface itself (the same distance as the water
+// point it is seen through), the second is used.
 // ---------------------------------------------------------------------------------------------
-// MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
+// MUST stay on ONE line each (see Shadow.hlsl's TESR_ShadowAtlas).
 sampler2D TESR_DepthBufferWorld : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_DepthBufferBeforeWater : register(s10) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 float4 TESR_CameraData : register(c200);     // y: far (only a small correction)
 
 // The water's view of the screen: how points on the water plane map to screen positions (from how
@@ -173,10 +181,18 @@ float getWaterViewZ(WaterScreenMap map, float2 worldOffset){
     return max(map.viewZ + pixels.x * map.viewZX + pixels.y * map.viewZY, 1e-3f);
 }
 
-// Distance along the view axis of the scene behind the water at uv. Nothing there reads as the far plane.
-float getSceneViewZ(WaterScreenMap map, float2 uv){
-    float rawDepth = tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x;
+// Distance along the view axis of a depth value. Nothing there reads as the far plane.
+float getViewZFromDepth(WaterScreenMap map, float rawDepth){
     return 1.0f / (getInvFar() + getDepthFromFar(rawDepth, map.reversed) / map.depthScale);
+}
+
+// Distance along the view axis of the scene behind the water at uv, seen through a water point
+// waterViewZ along the view axis.
+float getSceneViewZ(WaterScreenMap map, float2 uv, float waterViewZ){
+    float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x);
+    float beforeWaterZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferBeforeWater, float4(uv, 0.0f, 0.0f)).x);
+    bool isWater = abs(sceneZ - waterViewZ) < 1.0f + waterViewZ * 1e-3f;
+    return isWater ? beforeWaterZ : sceneZ;
 }
 
 // What lies behind the water, camera-relative, seen through the water surface point waterPoint
@@ -184,7 +200,7 @@ float getSceneViewZ(WaterScreenMap map, float2 uv){
 // camera through that point, as far as the depth buffer says. Distance along the view axis grows in
 // step with distance along any line from the camera, so no view matrix or projection is needed.
 float3 getBedBehind(WaterScreenMap map, float3 waterPoint, float waterViewZ, float2 uv){
-    return waterPoint * (getSceneViewZ(map, uv) / waterViewZ);
+    return waterPoint * (getSceneViewZ(map, uv, waterViewZ) / waterViewZ);
 }
 
 // x: how far the view travels through the water to what is behind it, y: how far that lies below
@@ -242,7 +258,7 @@ float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, Wate
         depth = max(surfaceFromCamera.z - getBedBehind(map, waterPoint, waterViewZ, uv).z, 0.0f);
     }
 
-    bool leak = getSceneViewZ(map, uv) < waterViewZ || any(uv != saturate(uv));
+    bool leak = getSceneViewZ(map, uv, waterViewZ) < waterViewZ || any(uv != saturate(uv));
     uv = leak ? straightUV : uv;
     waterPoint = leak ? surfaceFromCamera : waterPoint;
     waterViewZ = leak ? map.viewZ : waterViewZ;
