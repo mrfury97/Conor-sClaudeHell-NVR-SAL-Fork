@@ -386,34 +386,53 @@ float getGerstner(float2 worldPos, float time, float pixelSize, float heightScal
     return height;
 }
 
-// The steepest the waves can get: each wave's slope is k * amplitude = 2 pi WaveHeight / WaveLength,
-// the same for all six.
-float getGerstnerSlopeBound(float heightScale){
-    return GERSTNER_WAVES * 6.2831853f * TESR_WaterWaves.x * heightScale / max(TESR_WaterWaves.y, 1.0f);
-}
-
 // The tallest the waves get here, to put a height on a -1 (trough) to 1 (crest) scale.
 float getGerstnerRange(float heightScale){
     return max(TESR_WaterWaves.x * heightScale * 2.58f, 1e-3f);
 }
 
 // Parallax (WaveParallax): a wave standing up hides what is behind it, and seen at a low angle the
-// crest in front covers the trough beyond. The view ray is followed up from the flat surface to where
-// it actually meets the waves (three refinement steps on the height), so the shading is taken from
-// the point the eye really sees. Fades out with distance. Returns the world position to shade.
-// The steps only settle while the shift per unit of height, times the waves' steepest slope, stays
-// under 1; at low angles it would not, and the steps would jump about and smear the waves sideways,
-// so the shift is held under that (seen that low, a crest simply hides more than this can show).
+// crest in front covers the trough beyond. The view ray is traced down from above the tallest crest
+// to where it first meets the waves -- eight steps to find the first crossing, then two refinements
+// between the steps either side of it -- so the shading is taken from the point the eye really sees,
+// the nearest crest hiding what lies behind it, at any angle. Fades out with distance. Returns the
+// world position to shade.
 float2 getWaveParallax(float2 worldPos, float3 eyeDirection, float time, float pixelSize, float heightScale, float distance){
     float strength = TESR_WaterWaves2.y * (1.0f - saturate(distance / 4000.0f));
+    // Along the view ray, the ground position moves by shift for each unit of height.
     float2 shift = eyeDirection.xy / max(eyeDirection.z, 0.25f) * strength;
-    float reach = length(shift) * getGerstnerSlopeBound(heightScale);
-    shift *= reach > 0.8f ? 0.8f / reach : 1.0f;
-    float2 p = worldPos;
+    float range = getGerstnerRange(heightScale);
+
+    // f = height of the ray above the waves: positive above the tallest crest, never positive below
+    // the deepest trough, so a crossing always lies in between.
+    float aboveH = range;
+    float aboveF = range - getGerstnerHeight(worldPos + shift * range, time, pixelSize, heightScale);
+    float belowH = -range;
+    float belowF = -1.0f;
+    bool found = false;
     [unroll]
-    for (int i = 0; i < 3; i++)
-        p = worldPos + shift * getGerstnerHeight(p, time, pixelSize, heightScale);
-    return p;
+    for (int i = 1; i <= 8; i++) {
+        float h = range - range * 0.25f * i;
+        float f = h - getGerstnerHeight(worldPos + shift * h, time, pixelSize, heightScale);
+        if (!found && f <= 0.0f) {
+            belowH = h;
+            belowF = f;
+            found = true;
+        }
+        if (!found) {
+            aboveH = h;
+            aboveF = f;
+        }
+    }
+    [unroll]
+    for (int j = 0; j < 2; j++) {
+        float h = aboveH + (belowH - aboveH) * aboveF / max(aboveF - belowF, 1e-5f);
+        float f = h - getGerstnerHeight(worldPos + shift * h, time, pixelSize, heightScale);
+        if (f > 0.0f) { aboveH = h; aboveF = f; }
+        else          { belowH = h; belowF = f; }
+    }
+    float hit = aboveH + (belowH - aboveH) * aboveF / max(aboveF - belowF, 1e-5f);
+    return worldPos + shift * hit;
 }
 
 // Moves a wave texture position by a world-space offset, through the screen-space derivatives of
