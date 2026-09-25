@@ -290,6 +290,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     debug.alpha = alpha;
     debug.caustics = caustics;
     debug.depthCalibration = getDepthCalibration(screenMap);
+    debug.straightDepth = straightPath.y;
+    debug.sceneEmpty = getSceneEmpty(screenMap, straightUV);
 #endif
 
     OUT.color_0 = float4(applyDistanceFog(color, eyeDistance), alpha);

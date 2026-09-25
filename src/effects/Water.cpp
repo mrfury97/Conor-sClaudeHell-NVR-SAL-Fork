@@ -121,7 +121,7 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting2.x = Read("SpecularAA", 0.0f, 1.0f);
 	Constants.Lighting2.y = Read("PointLights", 0.0f, 3.0f);
 	Constants.Lighting2.z = Read("SunGlitter", 0.0f, 3.0f);
-	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 13);
+	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 14);
 	Constants.Lighting3.x = Read("Foam", 0.0f, 1.0f);
 	Constants.Lighting3.y = ReadOr("FoamWidth", 2.0f, 400.0f, 15.0f);
 	Constants.Lighting3.z = Read("ShoreFadeWidth", 0.0f, 300.0f);

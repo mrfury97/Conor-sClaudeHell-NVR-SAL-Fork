@@ -197,6 +197,13 @@ float2 getWaterPath(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
     return getWaterPathTo(getBedBehind(map, surfaceFromCamera, map.viewZ, uv), surfaceFromCamera);
 }
 
+// 1 where the depth buffer holds nothing at uv (still as cleared: the far end of its range), for
+// DebugView 14.
+float getSceneEmpty(WaterScreenMap map, float2 uv){
+    float rawDepth = tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x;
+    return getDepthFromFar(rawDepth, map.reversed) <= 1e-7f ? 1.0f : 0.0f;
+}
+
 // The depth buffer's near-plane scale against the DLL's own near plane, for DebugView 13.
 float getDepthCalibration(WaterScreenMap map){
     return map.depthScale / max(TESR_CameraData.x, 1e-3f);
@@ -631,6 +638,8 @@ float getWaterSunShadow(float3 surfaceFromCamera){
 //  11 caustics                                        12 wave height (black trough, white crest)
 //  13 depth calibration: mid-grey where the game's near plane matches the DLL's, brighter where the
 //     game's is further out (depth used to read too shallow), darker where nearer (too deep)
+//  14 depth below the surface, black 0 to white 100 m, red where the depth buffer holds nothing
+//     behind the water
 // ---------------------------------------------------------------------------------------------
 struct WaterDebug {
     float shadow;
@@ -645,6 +654,8 @@ struct WaterDebug {
     float caustics;
     float waveHeight;
     float depthCalibration;
+    float straightDepth;
+    float sceneEmpty;
 };
 
 float3 getWaterDebugView(float view, WaterDebug d){
@@ -661,5 +672,6 @@ float3 getWaterDebugView(float view, WaterDebug d){
     result = view > 10.5f ? saturate(d.caustics) : result;
     result = view > 11.5f ? d.waveHeight * 0.5f + 0.5f : result;
     result = view > 12.5f ? saturate(d.depthCalibration * 0.5f) : result;
+    result = view > 13.5f ? (d.sceneEmpty > 0.5f ? float3(1.0f, 0.0f, 0.0f) : saturate(d.straightDepth / (100.0f * WATER_UNITS_PER_METRE)).xxx) : result;
     return result;
 }
