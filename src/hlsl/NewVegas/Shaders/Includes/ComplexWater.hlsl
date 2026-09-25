@@ -324,13 +324,14 @@ float3 getScreenSpaceReflection(PS_INPUT IN, WaterProjector projector, WaterScre
     float after = 0.0f;
     bool hit = false;
     [loop]
-    for (int i = 1; i <= 16; i++) {
-        float t = maxDistance * (i * i) / 256.0f;   // finer steps near the surface
+    for (int i = 1; i <= 24; i++) {
+        float t = maxDistance * (i * i) / 576.0f;   // finer steps near the surface
         float3 ray = projectFromWater(IN, projector, R * t);
         if (ray.z <= 1.0f || any(ray.xy != saturate(ray.xy))) break;
         float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(ray.xy, 0.0f, 0.0f)).x);
-        // Behind what is on the screen there, but not so far behind that it passed behind it.
-        if (ray.z > sceneZ && ray.z - sceneZ < 40.0f + t * 0.1f) {
+        // Behind what is on the screen there, but by no more than this step could have carried it
+        // past the surface: deeper, and it passed behind the thing rather than into it.
+        if (ray.z > sceneZ && ray.z - sceneZ < 30.0f + (t - before) * 1.2f) {
             after = t;
             hit = true;
             break;
