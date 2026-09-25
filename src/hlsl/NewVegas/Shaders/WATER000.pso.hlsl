@@ -83,9 +83,10 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
 
     float refractionCoeff = (waterDepth.y * depthFog) * ((saturate(distance * 0.002) * (-4 + VarAmounts.w)) + 4);
     float4 reflectionPos = getReflectionSamplePosition(IN, surfaceNormal, refractionCoeff * exteriorRefractionModifier);
-    float4 reflection = linearize(tex2Dproj(ReflectionMap, reflectionPos));
+    float4 reflection = getBlurredReflection(reflectionPos, surfaceNormal);   // blurred on choppy water (ReflectionBlur)
     float4 refractionPos = reflectionPos;
     refractionPos.y = refractionPos.w - reflectionPos.y;
+    refractionPos = getLeakFreeRefraction(refractionPos, screenPos, IN.LTEXCOORD_0.xyz);   // nothing above the water smeared into it
     float3 refractedDepth = tex2Dproj(DepthMap, refractionPos).rgb * exteriorDepthModifier;
 
     // float water = max(refractedDepth.y, 0.0000000001) * 4096;
@@ -99,6 +100,8 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float specRoughness = getSpecularRoughness(surfaceNormal, distance);
     float3 transmittance;
     float2 waterPath = getWaterPath(refractionPos, IN.LTEXCOORD_0.xyz);   // through the water to the bed, and straight down
+    float2 straightPath = getWaterPath(screenPos, IN.LTEXCOORD_0.xyz);    // the same, right under this pixel: shore and foam
+    float foam = getFoamMask(IN.LTEXCOORD_7, straightPath.y, TESR_WaveParams);
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
     color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, sunLuma, TESR_WaterSettings, sunLuma * lerp(0.4f, 1.0f, shadow), transmittance);
@@ -111,7 +114,10 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     color = getSunSpecular(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, linSunColor.rgb * shadow, specRoughness, color);
     float3 pointLights = getPointLightsSpecular(surfaceNormal, IN.LTEXCOORD_0.xyz, eyeDirection, specRoughness);
     color.rgb += pointLights;
-    color = lerp(getShoreFade(IN, waterDepth.x, TESR_WaterShorelineParams.x, TESR_WaterVolume.y, color), color, LODfade);
+    // Foam: white, lit by the sun (in shadow, not) and the sky; it hides the reflection and glints under it.
+    float3 foamLight = linSunColor.rgb * saturate(TESR_SunDirection.z) * shadow * isDayTime + linHorizonColor.rgb * 0.6f;
+    color.rgb = lerp(color.rgb, foamLight * 0.9f, foam);
+    color = lerp(getShoreFade(IN, waterDepth.x, TESR_WaterShorelineParams.x, TESR_WaterVolume.y, color, straightPath.y, foam), color, LODfade);
 
     color = delinearize(color);
     
@@ -124,7 +130,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     // DebugView ([Shaders.Water.Main]): one term of the water lighting on its own.
     [branch]
     if (TESR_WaterLighting2.w > 0.5f)
-        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath), 1.0f);
+        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath, foam, color.a), 1.0f);
 
     return OUT;
 };

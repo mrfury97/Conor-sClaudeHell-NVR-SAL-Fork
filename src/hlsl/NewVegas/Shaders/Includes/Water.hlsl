@@ -61,12 +61,18 @@ struct PS_OUTPUT {
 //                        z: PhysicalFresnel 0 the old reflection strength, 1 water's real reflectance
 //                        w: DebugView       0 off, see waterDebugView
 //   TESR_WaterLighting3  x: WaterColorBrightness  brightness of the water's own colour (never 0)
-// c190-c191 and c202: clear of every water shader's own constants (up to c70), of Shadow.hlsl
+//                        y: WaveDetail      0 the old waves, 1 waves by distance without visible tiling
+//                        z: Foam            foam where the water meets the shore and anything in it
+//                        w: FoamWidth       how far out from the edge the foam reaches (units, never 0)
+//   TESR_WaterLighting4  x: ShoreFadeWidth  0 the old shoreline fade, else a soft fade over this depth
+//                        y: ReflectionBlur  blurs the reflection on choppy water
+// c190-c191 and c202-c203: clear of every water shader's own constants (up to c70), of Shadow.hlsl
 // (c100-c133) and of the scene-depth constants below (c192-c201).
 // ---------------------------------------------------------------------------------------------
 float4 TESR_WaterLighting  : register(c190);
 float4 TESR_WaterLighting2 : register(c191);
 float4 TESR_WaterLighting3 : register(c202);
+float4 TESR_WaterLighting4 : register(c203);
 
 #ifdef WATER_SCENE_DEPTH
 // ---------------------------------------------------------------------------------------------
@@ -98,16 +104,31 @@ float3 getWaterViewRay(float2 uv){
 // there, both in game units (about 70 to a metre). screenPos: the projective position the
 // refraction is read from, so the depth goes with the bed the pixel shows. Nothing behind the water
 // (depth buffer empty) reads as the far plane: as deep as it gets. tex2Dlod: legal anywhere.
-float2 getWaterPath(float4 screenPos, float3 surfaceFromCamera){
-    float2 uv = screenPos.xy / screenPos.w;
+// View-space depth of the scene behind the water at screen position uv.
+float getSceneViewZ(float2 uv){
     float rawDepth = tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x;
     float nearZ = TESR_CameraData.x;
     float farZ = TESR_CameraData.y;
-    float viewZ = TESR_DepthConstants.z > 0.5f ? nearZ * farZ / (nearZ + rawDepth * (farZ - nearZ))
-                                               : nearZ * farZ / (farZ - rawDepth * (farZ - nearZ));
-    float3 bedFromCamera = getWaterViewRay(uv) * viewZ;
+    return TESR_DepthConstants.z > 0.5f ? nearZ * farZ / (nearZ + rawDepth * (farZ - nearZ))
+                                        : nearZ * farZ / (farZ - rawDepth * (farZ - nearZ));
+}
+
+float2 getWaterPath(float4 screenPos, float3 surfaceFromCamera){
+    float2 uv = screenPos.xy / screenPos.w;
+    float3 bedFromCamera = getWaterViewRay(uv) * getSceneViewZ(uv);
     return float2(max(length(bedFromCamera) - length(surfaceFromCamera), 0.0f),
                   max(surfaceFromCamera.z - bedFromCamera.z, 0.0f));
+}
+
+// Refraction without the leak. The refraction is read from the screen offset by the wave normal,
+// and where the offset lands on something in FRONT of the water -- a pier post, the player's legs,
+// the shore -- that thing showed up smeared into the water around it. Where the scene at the
+// offset position is nearer than the water surface, the straight, unoffset position is used instead.
+// straightPos: getScreenpos(IN), the same projective position with no wave offset.
+float4 getLeakFreeRefraction(float4 refractionPos, float4 straightPos, float3 surfaceFromCamera){
+    float3 forward = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
+    float surfaceViewZ = dot(surfaceFromCamera, forward);
+    return getSceneViewZ(refractionPos.xy / refractionPos.w) < surfaceViewZ ? straightPos : refractionPos;
 }
 #endif
 
@@ -126,6 +147,37 @@ float4 getScreenpos(PS_INPUT IN){
     return screenPos;
 }
 
+// Wave detail by distance without visible tiling (WaveDetail). The old waves are one normal texture
+// at three sizes, all on the same axes: the repeat lines up across the water and reads as a grid,
+// and the finest layer only aliases in the distance. Here each layer is turned to its own angle so
+// the repeats never line up, a broad swell is added under them, the finest ripples fade out with
+// distance (where they only shimmered) while the swell carries the far water, and a very large,
+// slow pattern varies the wave strength across the water into rougher and calmer patches.
+// Same texture, same wave settings (choppiness, waveWidth, waveSpeed). tex2D: top level only.
+float2 rotateWaveUV(float2 uv, float angle){
+    float s = sin(angle);
+    float c = cos(angle);
+    return float2(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
+}
+
+float3 getDetailedWaveTexture(float2 texPos, float distance, float4 waveParams){
+    float waveWidth = waveParams.y;
+    float speed = TESR_GameTime.x * 0.002 * waveParams.z;
+    float2 p = texPos * waveWidth;
+
+    float near = 1.0f - saturate(distance / 3000.0f);
+    float3 swell  = expand(tex2D(TESR_samplerWater, rotateWaveUV(p * 0.15f, 0.61f) + normalize(float2(1, 3)) * speed * 0.5f).xyz);
+    float3 large  = expand(tex2D(TESR_samplerWater, rotateWaveUV(p * 0.5f, 1.23f) + normalize(float2(-3, -2)) * speed).xyz);
+    float3 medium = expand(tex2D(TESR_samplerWater, rotateWaveUV(p * 2.0f, 2.17f) + normalize(float2(2, -1)) * speed).xyz);
+    float3 micro  = expand(tex2D(TESR_samplerWater, rotateWaveUV(p * 4.0f, 2.89f) + normalize(float2(2, 2)) * speed).xyz);
+    // Rough and calm patches: 0.6 to 1.4 times the wave strength, drifting slowly.
+    float patches = 0.6f + 0.8f * saturate(tex2D(TESR_samplerWater, p * 0.03f + speed * 0.1f).x);
+
+    float2 tilt = (swell.xy * 0.8f + large.xy * 1.0f + medium.xy * 0.5f + micro.xy * 0.3f * near) * patches;
+    float up = swell.z * 0.8f + large.z * 1.0f + medium.z * 0.5f + micro.z * 0.3f * near;
+    return float3(tilt, up);
+}
+
 float3 getWaveTexture(PS_INPUT IN, float distance, float4 waveParams) {
 
     float2 texPos = IN.LTEXCOORD_7;
@@ -141,6 +193,7 @@ float3 getWaveTexture(PS_INPUT IN, float distance, float4 waveParams) {
 
     // combine waves
     waveTexture = float3(waveTextureLarge.xy + waveTexture.xy + waveTextureMicro.xy,  waveTextureLarge.z + waveTexture.z + waveTextureMicro.z);
+    waveTexture = lerp(waveTexture, getDetailedWaveTexture(texPos, distance, waveParams), saturate(TESR_WaterLighting3.y));
     waveTexture.z *= 1/max(choppiness, 0.000001);
     // waveTexture.z *= lerp(1, 0.5, (distance / 4096)) / max(choppiness, 0.000001);
 
@@ -174,6 +227,34 @@ float3 getDisplacement(PS_INPUT IN, float blendRadius, float3 surfaceNormal){
     surfaceNormal = float3(surfaceNormal.xy + DisplacementNormal.xy * 2,  surfaceNormal.z * DisplacementNormal.z);
     surfaceNormal = normalize(surfaceNormal);
     return surfaceNormal;
+}
+
+// Reflection, blurred on choppy water (ReflectionBlur). A mirror-sharp reflection on rough water
+// looks painted on; real rough water scatters it. Four taps around the reflection lookup, spread by
+// how steep the waves are there, so calm water stays sharp. Returned linear. tex2Dproj: top level.
+float4 getBlurredReflection(float4 reflectionPos, float3 surfaceNormal){
+    float4 centre = tex2Dproj(ReflectionMap, reflectionPos);
+    float radius = TESR_WaterLighting4.y * 0.006f * saturate(length(surfaceNormal.xy) * 4.0f) * reflectionPos.w;
+    float4 blurred = centre;
+    blurred += tex2Dproj(ReflectionMap, reflectionPos + float4( radius, 0.0f, 0.0f, 0.0f));
+    blurred += tex2Dproj(ReflectionMap, reflectionPos + float4(-radius, 0.0f, 0.0f, 0.0f));
+    blurred += tex2Dproj(ReflectionMap, reflectionPos + float4(0.0f,  radius, 0.0f, 0.0f));
+    blurred += tex2Dproj(ReflectionMap, reflectionPos + float4(0.0f, -radius, 0.0f, 0.0f));
+    return linearize(blurred * 0.2f);
+}
+
+// Foam (Foam, FoamWidth): where the water is shallowest -- along the shore, and around anything
+// standing in the water -- solid at the edge and breaking up into patches further out, drifting
+// with the waves. The patches come from the wave texture itself, at two other sizes, so no foam
+// texture is needed. waterDepth: the water's depth straight down at this pixel (getWaterPath).
+// tex2D: top level only.
+float getFoamMask(float2 texPos, float waterDepth, float4 waveParams){
+    float band = 1.0f - saturate(waterDepth / TESR_WaterLighting3.w);
+    float speed = TESR_GameTime.x * 0.002f * waveParams.z;
+    float2 p = texPos * waveParams.y;
+    float n = tex2D(TESR_samplerWater, rotateWaveUV(p * 3.0f, 0.4f) + float2(0.7f, 0.3f) * speed).x
+            + tex2D(TESR_samplerWater, rotateWaveUV(p * 7.0f, 1.9f) - float2(0.4f, 0.9f) * speed).y - 0.5f;
+    return saturate((band * 1.6f - (1.0f - saturate(n))) * 2.5f) * saturate(TESR_WaterLighting3.z);
 }
 
 float4 getLightTravel(float3 refractedDepth, float4 shallowColor, float4 deepColor, float sunLuma, float4 waterSettings, float4 color){
@@ -374,7 +455,8 @@ float3 getPointLightsSpecular(float3 surfaceNormal, float3 pixelFromCamera, floa
 //   7 how far the view travels through the water to the bed, black 0 to white 20 m (1400 units) --
 //     what Absorption and AbsorptionDepth work from
 //   8 the water's depth straight down, black 0 to white 20 m
-float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights, float2 waterPath){
+//   9 foam                                               10 shoreline fade: black see-through, white solid
+float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights, float2 waterPath, float foam, float shoreAlpha){
     float3 result = shadow;
     result = view > 1.5f ? transmittance : result;
     result = view > 2.5f ? fresnel : result;
@@ -383,13 +465,27 @@ float3 waterDebugView(float view, float shadow, float3 transmittance, float fres
     result = view > 5.5f ? saturate(pointLights) : result;
     result = view > 6.5f ? saturate(waterPath.x / 1400.0f) : result;
     result = view > 7.5f ? saturate(waterPath.y / 1400.0f) : result;
+    result = view > 8.5f ? foam : result;
+    result = view > 9.5f ? saturate(shoreAlpha) : result;
     return result;
 }
 
-float4 getShoreFade(PS_INPUT IN, float depth, float shoreSpeed, float shoreFactor, float4 color){
+// Shoreline fade. With ShoreFadeWidth above 0, the water fades out over that much real depth at the
+// edge, lapping gently in and out with shoreMovement -- in place of the old fade, which ran on the
+// depth map's depth through a grid of sine waves and showed as a chequered edge. The foam stays
+// visible through the fade, so it draws the waterline itself. realDepth: the water's depth straight
+// down at this pixel (getWaterPath); foam: getFoamMask's.
+float4 getShoreFade(PS_INPUT IN, float depth, float shoreSpeed, float shoreFactor, float4 color, float realDepth, float foam){
     float scale = 0.07;
     shoreSpeed *= 0.1;
     shoreFactor *= 0.1;
+
+    float fadeWidth = TESR_WaterLighting4.x;
+    if (fadeWidth > 0.0f) {
+        float lap = sin(TESR_GameTime.x * shoreSpeed) * 0.25f;
+        color.a = max(smoothstep(0.0f, fadeWidth, realDepth + lap * fadeWidth), foam * 0.9f);
+        return color;
+    }
 
     float shoreAnimation = sin(IN.LTEXCOORD_7.x/scale + TESR_GameTime.x * shoreSpeed);
     shoreAnimation *= cos(IN.LTEXCOORD_7.y/scale + TESR_GameTime.x * shoreSpeed);

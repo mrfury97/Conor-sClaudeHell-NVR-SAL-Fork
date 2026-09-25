@@ -74,6 +74,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     //float4 reflection = linearize(tex2Dproj(ReflectionMap, reflectionPos));
     float4 refractionPos = reflectionPos;
     refractionPos.y = refractionPos.w - reflectionPos.y;
+    refractionPos = getLeakFreeRefraction(refractionPos, screenPos, IN.LTEXCOORD_0.xyz);   // nothing above the water smeared into it
     float3 refractedDepth = tex2Dproj(DepthMap, refractionPos).rgb * interiorDepthModifier;
 
     // Water lighting (Water.hlsl): the glint roughness first -- it takes derivatives, so it stays at
@@ -82,6 +83,8 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float specRoughness = getSpecularRoughness(surfaceNormal, distance);
     float3 transmittance;
     float2 waterPath = getWaterPath(refractionPos, IN.LTEXCOORD_0.xyz);   // through the water to the bed, and straight down
+    float2 straightPath = getWaterPath(screenPos, IN.LTEXCOORD_0.xyz);    // the same, right under this pixel: shore and foam
+    float foam = getFoamMask(IN.LTEXCOORD_7, straightPath.y, TESR_WaveParams);
     float3 scattering = 0.0f;
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
@@ -93,8 +96,10 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     // Point-light glints: out-of-range lights skipped, the loop ended at the last light.
     float3 pointLights = getPointLightsSpecular(surfaceNormal, IN.LTEXCOORD_0.xyz, eyeDirection, specRoughness);
     color.rgb += pointLights;
+    // Foam: white, in the room's dim light; it hides the reflection and glints under it.
+    color.rgb = lerp(color.rgb, 0.35f, foam);
 
-    color = getShoreFade(IN, waterDepth.x, TESR_WaterShorelineParams.x, TESR_WaterVolume.y, color);
+    color = getShoreFade(IN, waterDepth.x, TESR_WaterShorelineParams.x, TESR_WaterVolume.y, color, straightPath.y, foam);
 
     color = delinearize(color); //delinearise
 	
@@ -107,7 +112,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     // DebugView ([Shaders.Water.Main]): one term of the water lighting on its own.
     [branch]
     if (TESR_WaterLighting2.w > 0.5f)
-        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath), 1.0f);
+        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath, foam, color.a), 1.0f);
 
     return OUT;
 };
