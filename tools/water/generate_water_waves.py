@@ -29,7 +29,7 @@ import struct
 import numpy as np
 
 WAVE_SIZE = 128        # texels across the patch
-FRAMES = 96            # frames over the loop
+FRAMES = 192           # frames over the loop: enough that blending between them keeps 96% of the slopes
 PATCH = 15.0           # metres across the patch
 PERIOD = 12.0          # seconds the loop lasts
 PEAK_WAVELENGTH = 5.0  # metres: the spectrum's peak (a light breeze over a lake)
