@@ -98,19 +98,17 @@ float4 flipToRefraction(float4 reflectionPos){
 // ---------------------------------------------------------------------------------------------
 // MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
 sampler2D TESR_DepthBufferWorld : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
-row_major float4x4 TESR_ProjectionTransform : register(c192);
-row_major float4x4 TESR_ViewTransform : register(c196);
+row_major float4x4 TESR_ProjectionTransform : register(c192);   // only its x and y scale are read
 float4 TESR_CameraData : register(c200);     // x: near, y: far
 float4 TESR_DepthConstants : register(c201); // z: 1 when the depth buffer is reversed
 
-// World-space direction from the camera through screen position uv, scaled so that its component
-// along the view axis is 1: times a view-space depth, it is the camera-relative position there.
-float3 getWaterViewRay(float2 uv){
+// How much longer the view ray through screen position uv is than its depth along the view axis
+// (1 at the centre of the screen, more toward the edges). From the projection's scales alone, so it
+// cannot be thrown by which way the view matrix's axes happen to point.
+float getViewRayLength(float2 uv){
     float2 ndc = uv * 2.0f - 1.0f;
-    float3 ray = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
-    ray += (ndc.x / TESR_ProjectionTransform[0][0]) * float3(TESR_ViewTransform[0][0], TESR_ViewTransform[1][0], TESR_ViewTransform[2][0]);
-    ray += (-ndc.y / TESR_ProjectionTransform[1][1]) * float3(TESR_ViewTransform[0][1], TESR_ViewTransform[1][1], TESR_ViewTransform[2][1]);
-    return ray;
+    float2 slope = ndc / float2(abs(TESR_ProjectionTransform[0][0]), abs(TESR_ProjectionTransform[1][1]));
+    return sqrt(1.0f + dot(slope, slope));
 }
 
 // View-space depth of the scene behind the water at uv. Nothing there reads as the far plane.
@@ -122,33 +120,57 @@ float getSceneViewZ(float2 uv){
                                         : nearZ * farZ / (farZ - rawDepth * (farZ - nearZ));
 }
 
-// Camera-relative position of what lies behind the water at screen position uv.
-float3 getBedAtUV(float2 uv){
-    return getWaterViewRay(uv) * getSceneViewZ(uv);
+// How far from the camera the scene lies along the view ray through uv.
+float getSceneDistance(float2 uv){
+    return getViewRayLength(uv) * getSceneViewZ(uv);
 }
 
-float3 getBedFromCamera(float4 screenPos){
-    return getBedAtUV(screenPos.xy / screenPos.w);
+// What lies behind the water, camera-relative, seen through the water surface point waterPoint
+// (camera-relative) at screen position uv: along the ray from the camera through that point, as
+// far as the depth buffer says. The ray's direction comes from the point itself, not a view matrix.
+float3 getBedBehind(float3 waterPoint, float2 uv){
+    return normalize(waterPoint) * getSceneDistance(uv);
 }
 
 // x: how far the view travels through the water to what is behind it, y: how far that lies below
-// the surface point, both in game units.
-float2 getWaterPathTo(float3 bed, float3 surfaceFromCamera){
-    return float2(max(length(bed) - length(surfaceFromCamera), 0.0f), max(surfaceFromCamera.z - bed.z, 0.0f));
+// the water surface, both in game units.
+float2 getWaterPathTo(float3 bed, float3 waterPoint){
+    return float2(max(length(bed) - length(waterPoint), 0.0f), max(waterPoint.z - bed.z, 0.0f));
 }
 
-float2 getWaterPath(float4 screenPos, float3 surfaceFromCamera){
-    return getWaterPathTo(getBedFromCamera(screenPos), surfaceFromCamera);
+float2 getWaterPath(float3 surfaceFromCamera, float2 uv){
+    return getWaterPathTo(getBedBehind(surfaceFromCamera, uv), surfaceFromCamera);
 }
 
-// Screen position of a camera-relative point: getWaterViewRay the other way round.
-float2 getScreenUV(float3 posFromCamera){
-    float3 right   = float3(TESR_ViewTransform[0][0], TESR_ViewTransform[1][0], TESR_ViewTransform[2][0]);
-    float3 up      = float3(TESR_ViewTransform[0][1], TESR_ViewTransform[1][1], TESR_ViewTransform[2][1]);
-    float3 forward = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
-    float viewZ = max(dot(posFromCamera, forward), 1e-3f);
-    return float2(0.5f + 0.5f * dot(posFromCamera, right) * TESR_ProjectionTransform[0][0] / viewZ,
-                  0.5f - 0.5f * dot(posFromCamera, up) * TESR_ProjectionTransform[1][1] / viewZ);
+// ---------------------------------------------------------------------------------------------
+// Screen positions of points on the water, taken from how the water surface and its own screen
+// position change from one pixel to the next (their screen-space derivatives): the local map from
+// the flat water plane to the screen, in the engine's own screen space, whichever way it is laid
+// out. Build it at the top level (ddx/ddy); the surface is flat, so the map is exact for points on
+// the water plane near the pixel, which is all refraction needs.
+// ---------------------------------------------------------------------------------------------
+struct WaterScreenMap {
+    float2 worldX, worldY;   // camera-relative water-plane position, per pixel across and down
+    float2 uvX, uvY;         // screen position, per pixel across and down
+    float det;
+};
+
+WaterScreenMap getWaterScreenMap(float3 surfaceFromCamera, float2 uv){
+    WaterScreenMap map;
+    map.worldX = ddx(surfaceFromCamera.xy);
+    map.worldY = ddy(surfaceFromCamera.xy);
+    map.uvX = ddx(uv);
+    map.uvY = ddy(uv);
+    map.det = map.worldX.x * map.worldY.y - map.worldX.y * map.worldY.x;
+    return map;
+}
+
+// Screen offset of a water-plane offset (world units, horizontal).
+float2 getScreenOffset(WaterScreenMap map, float2 worldOffset){
+    if (abs(map.det) < 1e-10f) return 0.0f;
+    float across = (worldOffset.x * map.worldY.y - worldOffset.y * map.worldY.x) / map.det;
+    float down = (map.worldX.x * worldOffset.y - map.worldX.y * worldOffset.x) / map.det;
+    return across * map.uvX + down * map.uvY;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -156,31 +178,36 @@ float2 getScreenUV(float3 posFromCamera){
 // water's index of refraction (Snell's law, 1.33) and followed down to the bed: first to the depth
 // of the bed under the pixel, then once more to the depth of whatever the bent ray actually lands
 // on, so the offset comes out of the real geometry -- small over a shallow bed, large over a deep
-// one, the bed raised and squeezed at low angles as it is through real water -- instead of the
-// screen simply being pushed by the normal. strength: the water type's refractionPower, 1 real
-// water. Where the bent ray lands on something in front of the water (a post, legs, the shore) or
-// off the screen, the straight view is used, so nothing above the water smears into it.
-// The bent ray's screen position is taken relative to the surface point's own (straightUV plus the
-// difference of the two projections), so any small mismatch between the view matrices and the
-// engine's screen mapping -- a half-pixel offset, jitter -- cancels instead of shifting the bed.
-// Returns the screen position of the bed seen; path: getWaterPath's, for that bed.
+// one, the bed raised and squeezed at low angles as it is through real water. The pixel that shows
+// that point of the bed is where the line from the camera to it crosses the water surface; its
+// screen position comes from the water's own screen map. strength: the water type's
+// refractionPower, 1 real water. Where the bent ray lands on something in front of the water (a
+// post, legs, the shore) or off the screen, the straight view is used, so nothing above the water
+// smears into it. Returns the screen position of the bed seen; path and bed: for that bed.
 // ---------------------------------------------------------------------------------------------
-float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, float bedDepth, float strength, out float2 path){
+float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, WaterScreenMap map, float bedDepth, float strength, out float2 path, out float3 bed){
     float3 incident = normalize(surfaceFromCamera);
     float3 bent = refract(incident, N, 1.0f / 1.33f);
     bent = normalize(lerp(incident, dot(bent, bent) > 0.0f ? bent : incident, strength));
-    float2 surfaceUV = getScreenUV(surfaceFromCamera);
+    // The water plane, seen from the camera: only meaningful with the camera above it.
+    float planeZ = min(surfaceFromCamera.z, -1e-3f);
 
-    float3 bed = surfaceFromCamera + bent * (bedDepth / max(-bent.z, 0.1f));
-    float2 uv = straightUV + getScreenUV(bed) - surfaceUV;
-    float depthThere = max(surfaceFromCamera.z - getBedAtUV(uv).z, 0.0f);
-    bed = surfaceFromCamera + bent * (depthThere / max(-bent.z, 0.1f));
-    uv = straightUV + getScreenUV(bed) - surfaceUV;
+    float depth = bedDepth;
+    float2 uv = straightUV;
+    float3 waterPoint = surfaceFromCamera;
+    [unroll]
+    for (int i = 0; i < 2; i++) {
+        float3 target = surfaceFromCamera + bent * (depth / max(-bent.z, 0.1f));
+        waterPoint = float3(target.xy * (planeZ / min(target.z, planeZ)), surfaceFromCamera.z);
+        uv = straightUV + getScreenOffset(map, waterPoint.xy - surfaceFromCamera.xy);
+        depth = max(surfaceFromCamera.z - getBedBehind(waterPoint, uv).z, 0.0f);
+    }
 
-    float3 forward = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
-    bool leak = getSceneViewZ(uv) < dot(surfaceFromCamera, forward) || any(uv != saturate(uv));
+    bool leak = getSceneDistance(uv) < length(waterPoint) || any(uv != saturate(uv));
     uv = leak ? straightUV : uv;
-    path = getWaterPathTo(getBedAtUV(uv), surfaceFromCamera);
+    waterPoint = leak ? surfaceFromCamera : waterPoint;
+    bed = getBedBehind(waterPoint, uv);
+    path = getWaterPathTo(bed, waterPoint);
     return uv;
 }
 

@@ -212,13 +212,15 @@ PS_OUTPUT main(PS_INPUT IN) {
 #else
     // ---- The water surface ------------------------------------------------------------------
     float4 straightPos = getStraightScreenPos(IN);
-    float2 straightPath = getWaterPath(straightPos, surface);   // x: path through the water, y: depth below, under this pixel
+    float2 straightUV = straightPos.xy / straightPos.w;
+    WaterScreenMap screenMap = getWaterScreenMap(surface, straightUV);   // derivatives: top level
+    float2 straightPath = getWaterPath(surface, straightUV);   // x: path through the water, y: depth below, under this pixel
 
     // Refraction (getRefraction): the view bent through the waves as real water bends it, followed
     // down to the bed it lands on. path: through the water to that bed, and its depth.
-    float2 straightUV = straightPos.xy / straightPos.w;
     float2 path;
-    float2 refractionUV = getRefraction(surface, N, straightUV, straightPath.y, WATER_SETTINGS.w, path);
+    float3 refractedBed;
+    float2 refractionUV = getRefraction(surface, N, straightUV, screenMap, straightPath.y, WATER_SETTINGS.w, path, refractedBed);
 
     // The reflection lookup, pushed by the waves (the game's own falloff with distance).
     float4 reflectionPos = getReflectionScreenPos(IN, N.xy * lookupOffset * 0.2f);
@@ -248,7 +250,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // takes their place.
     float3 bed = getRefractedBed(refractionUV, straightUV, path.x);
 #if WATER_SUNLIT
-    float caustics = getCaustics(getBedAtUV(refractionUV), path.y, waveParams) * shadow;
+    float caustics = getCaustics(refractedBed, path.y, waveParams) * shadow;
     bed *= 1.0f + caustics * luma(sunLight);
 #else
     float caustics = 0.0f;
