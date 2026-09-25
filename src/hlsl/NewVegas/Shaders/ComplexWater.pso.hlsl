@@ -292,6 +292,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     debug.depthCalibration = getDepthCalibration(screenMap);
     debug.straightDepth = straightPath.y;
     debug.sceneEmpty = getSceneEmpty(screenMap, straightUV);
+    debug.depthCopies = getDepthCopies(screenMap, surface, straightUV);
 #endif
 
     OUT.color_0 = float4(applyDistanceFog(color, eyeDistance), alpha);

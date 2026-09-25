@@ -186,13 +186,28 @@ float getViewZFromDepth(WaterScreenMap map, float rawDepth){
     return 1.0f / (getInvFar() + getDepthFromFar(rawDepth, map.reversed) / map.depthScale);
 }
 
+// Whether something at sceneZ along the view axis is the water surface itself, seen through a water
+// point waterViewZ along it (the same point of the same plane).
+bool isWaterSurface(float sceneZ, float waterViewZ){
+    return abs(sceneZ - waterViewZ) < 1.0f + waterViewZ * 1e-3f;
+}
+
 // Distance along the view axis of the scene behind the water at uv, seen through a water point
 // waterViewZ along the view axis.
 float getSceneViewZ(WaterScreenMap map, float2 uv, float waterViewZ){
     float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x);
     float beforeWaterZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferBeforeWater, float4(uv, 0.0f, 0.0f)).x);
-    bool isWater = abs(sceneZ - waterViewZ) < 1.0f + waterViewZ * 1e-3f;
-    return isWater ? beforeWaterZ : sceneZ;
+    return isWaterSurface(sceneZ, waterViewZ) ? beforeWaterZ : sceneZ;
+}
+
+// For DebugView 15, under the pixel: x the depth below the surface by TESR_DepthBufferWorld, y by
+// TESR_DepthBufferBeforeWater, z 1 where the first shows the water surface itself.
+float3 getDepthCopies(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
+    float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x);
+    float beforeWaterZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferBeforeWater, float4(uv, 0.0f, 0.0f)).x);
+    float depth = max(surfaceFromCamera.z * (1.0f - sceneZ / map.viewZ), 0.0f);
+    float beforeWaterDepth = max(surfaceFromCamera.z * (1.0f - beforeWaterZ / map.viewZ), 0.0f);
+    return float3(depth, beforeWaterDepth, isWaterSurface(sceneZ, map.viewZ) ? 1.0f : 0.0f);
 }
 
 // What lies behind the water, camera-relative, seen through the water surface point waterPoint
@@ -668,6 +683,10 @@ float getWaterSunShadow(float3 surfaceFromCamera){
 //     game's is further out (depth used to read too shallow), darker where nearer (too deep)
 //  14 depth below the surface, black 0 to white 100 m, red where the depth buffer holds nothing
 //     behind the water
+//  15 the two depth copies (0 to 20 m each): red the depth taken as the water is drawn, green the
+//     depth taken before any water; blue where the first shows the water itself (the second is
+//     used there). Yellow-grey: both agree. Green: something drawn in between is in front (the pier,
+//     or other water at another height)
 // ---------------------------------------------------------------------------------------------
 struct WaterDebug {
     float shadow;
@@ -684,6 +703,7 @@ struct WaterDebug {
     float depthCalibration;
     float straightDepth;
     float sceneEmpty;
+    float3 depthCopies;
 };
 
 float3 getWaterDebugView(float view, WaterDebug d){
@@ -701,5 +721,6 @@ float3 getWaterDebugView(float view, WaterDebug d){
     result = view > 11.5f ? d.waveHeight * 0.5f + 0.5f : result;
     result = view > 12.5f ? saturate(d.depthCalibration * 0.5f) : result;
     result = view > 13.5f ? (d.sceneEmpty > 0.5f ? float3(1.0f, 0.0f, 0.0f) : saturate(d.straightDepth / (100.0f * WATER_UNITS_PER_METRE)).xxx) : result;
+    result = view > 14.5f ? float3(saturate(d.depthCopies.xy / (20.0f * WATER_UNITS_PER_METRE)), d.depthCopies.z) : result;
     return result;
 }
