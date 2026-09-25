@@ -222,6 +222,53 @@ float2 getWaterPath(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
 }
 
 // ---------------------------------------------------------------------------------------------
+// DebugView: one term on its own, in place of the water. Compiled in (WATER_DEBUG_VIEW, set by the
+// DLL from DebugView when the shaders load: restart the game to change it), so it costs the water
+// nothing when off; when on, the shader stops at that term and shows it.
+//   1 sun shadow on the surface (black in shadow)   2 what still shows through the water, per colour
+//   3 reflection amount                              4 wave scattering
+//   5 glint roughness (black calm, white widened)    6 point-light glints
+//   7 path through the water, black 0 to white 20 m  8 depth below the surface, black 0 to white 20 m
+//   9 foam                                           10 shoreline fade (black see-through, white solid)
+//  11 caustics                                        12 wave height (black trough, white crest)
+//  13 depth calibration: mid-grey where the game's near plane matches the DLL's, brighter where the
+//     game's is further out (depth used to read too shallow), darker where nearer (too deep)
+//  14 depth below the surface, black 0 to white 100 m, red where the depth buffer holds nothing
+//     behind the water
+//  15 the two depth copies (0 to 20 m each): red the depth taken as the water is drawn, green the
+//     depth taken before any water; blue where the first shows the water itself (the second is
+//     used there). Yellow-grey: both agree. Green: something drawn in between is in front (the pier,
+//     or other water at another height)
+//  16 screen-space reflections: what they found, weighted by how far they are trusted (black: the
+//     reflection map, sky or room is used there)
+// ---------------------------------------------------------------------------------------------
+#ifndef WATER_DEBUG_VIEW
+    #define WATER_DEBUG_VIEW 0
+#endif
+#define WATER_DEBUG(view, value) if (WATER_DEBUG_VIEW == (view)) { OUT.color_0 = float4((float3)(value), 1.0f); return OUT; }
+
+// For DebugView 15, under the pixel: x the depth below the surface by TESR_DepthBufferWorld, y by
+// TESR_DepthBufferBeforeWater, z 1 where the first shows the water surface itself.
+float3 getDepthCopies(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
+    float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x);
+    float beforeWaterZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferBeforeWater, float4(uv, 0.0f, 0.0f)).x);
+    float depth = max(surfaceFromCamera.z * (1.0f - sceneZ / map.viewZ), 0.0f);
+    float beforeWaterDepth = max(surfaceFromCamera.z * (1.0f - beforeWaterZ / map.viewZ), 0.0f);
+    return float3(depth, beforeWaterDepth, isWaterSurface(sceneZ, map.viewZ) ? 1.0f : 0.0f);
+}
+
+// For DebugView 14: 1 where the depth buffer holds nothing at uv (still as cleared: the far end of its range).
+float getSceneEmpty(WaterScreenMap map, float2 uv){
+    float rawDepth = tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x;
+    return getDepthFromFar(rawDepth, map.reversed) <= 1e-7f ? 1.0f : 0.0f;
+}
+
+// For DebugView 13: the depth buffer's near-plane scale against the DLL's own near plane.
+float getDepthCalibration(WaterScreenMap map){
+    return map.depthScale / max(TESR_CameraData.x, 1e-3f);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Refraction, as real water bends light. The view ray is refracted through the wave normal at
 // water's index of refraction (Snell's law, 1.33) and followed down to the bed: first to the depth
 // of the bed under the pixel, then once more to the depth of whatever the bent ray actually lands

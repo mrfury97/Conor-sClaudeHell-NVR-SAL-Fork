@@ -6,17 +6,22 @@ public:
 	WaterShaders() : ShaderCollection("Water") {};
 
 	// Complex Water: every water surface pixel shader is compiled from one source,
-	// ComplexWater.pso.hlsl, with the defines that pick the kind of water it draws.
+	// ComplexWater.pso.hlsl, with the defines that pick the kind of water it draws. DebugView is
+	// compiled in too (WATER_DEBUG_VIEW), so it costs the water nothing when off: the shaders are
+	// compiled when the game loads them, so changing it takes a restart.
 	std::map<std::string_view, ShaderTemplate> Templates() {
+		static char DebugView[8];
+		int View = TheSettingManager->GetSettingI("Shaders.Water.ComplexWater", "DebugView");
+		sprintf(DebugView, "%d", View < 0 ? 0 : (View > 16 ? 16 : View));
 		return std::map<std::string_view, ShaderTemplate>{
-			{ "WATER000.pso", ShaderTemplate{ "ComplexWater.pso", {} } },
-			{ "WATER017.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_WADING", "1"}} } },
-			{ "WATER001.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_PLACED", "1"}} } },
-			{ "WATER018.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_PLACED", "1"}, {"WATER_WADING", "1"}} } },
-			{ "WATER008.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_INTERIOR", "1"}} } },
-			{ "WATER025.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_INTERIOR", "1"}, {"WATER_WADING", "1"}} } },
-			{ "WATER033.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_LOD", "1"}} } },
-			{ "WATER016.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_BELOW", "1"}} } },
+			{ "WATER000.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_DEBUG_VIEW", DebugView}} } },
+			{ "WATER017.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_WADING", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
+			{ "WATER001.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_PLACED", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
+			{ "WATER018.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_PLACED", "1"}, {"WATER_WADING", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
+			{ "WATER008.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_INTERIOR", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
+			{ "WATER025.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_INTERIOR", "1"}, {"WATER_WADING", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
+			{ "WATER033.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_LOD", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
+			{ "WATER016.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_BELOW", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
 		};
 	};
 

@@ -170,4 +170,23 @@ jobs:
             if ($kindOk) { Write-Host "ok    Shaders/$kind.pso (Complex Water)" } else { $failed += "$kind.pso (Complex Water)" }
           }
 
+          # Complex Water's DebugView is compiled in (WATER_DEBUG_VIEW, from WaterShaders::Templates): make
+          # sure every view compiles -- on the surface, and on the distant and underwater water for the
+          # views those have.
+          $debugOk = $true
+          foreach ($view in 1..16) {
+            $kinds = @('/D WATER_WADING=1')
+            if (@(3, 4, 5, 12) -contains $view) { $kinds += '/D WATER_LOD=1'; $kinds += '/D WATER_BELOW=1' }
+            foreach ($kindDefines in $kinds) {
+              $defines = ($kindDefines + ' ' + $variants[0] + " /D WATER_DEBUG_VIEW=$view") -split ' '
+              $out = & $fxc.FullName /nologo /T ps_3_0 /E main /I $shaders /D REVERSED_DEPTH=1 @defines /Fo "$env:RUNNER_TEMP\waterdebug.cso" $water 2>&1
+              if ($LASTEXITCODE -ne 0) {
+                $debugOk = $false
+                Write-Host "::error file=$water::Complex Water DebugView $view failed to compile with $kindDefines"
+                $out | ForEach-Object { Write-Host "    $_" }
+              }
+            }
+          }
+          if ($debugOk) { Write-Host "ok    Complex Water debug views 1-16" } else { $failed += 'Complex Water debug views' }
+
           if ($failed.Count -gt 0) { Write-Host "Failed: $($failed -join ', ')"; exit 1 }
