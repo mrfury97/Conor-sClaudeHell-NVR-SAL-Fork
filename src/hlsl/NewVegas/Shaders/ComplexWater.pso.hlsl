@@ -242,7 +242,8 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
     // What the screen itself shows along the reflected ray, where it can be found there.
     WaterProjector projector = getWaterProjector(straightPos, surface);   // derivatives: top level
-    WATER_DEBUG(18, getProjectorError(projector, screenMap, surface, straightUV));
+    WATER_DEBUG(18, getSceneAbove(projector));
+    WATER_DEBUG(19, float3(saturate(length(EyePos.xyz) / 50.0f), saturate((1.0f - dot(eyeDirection, normalize(-surface))) * 1000.0f), 0.0f));
     float3 reflectedRay = reflect(-eyeDirection, N);
     reflectedRay = normalize(float3(reflectedRay.xy, max(reflectedRay.z, 0.02f)));
     float screenReflectionAmount;

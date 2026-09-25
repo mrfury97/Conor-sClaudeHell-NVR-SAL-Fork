@@ -243,9 +243,11 @@ float2 getWaterPath(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
 //     reflection map, sky or room is used there)
 //  17 screen-space reflection search: red not traced (ScreenSpaceReflections 0, or the ray heads back
 //     toward the camera), black traced but found nothing, white found something (grey where faded)
-//  18 screen-space reflection projection check: the point behind the water, projected back, should
-//     land on the pixel. Black right; red off on the screen (full at 2%), blue off in depth (full at
-//     100 units)
+//  18 the frame 1.5 m above each water point (projected, read from the frame copy): near the pier its
+//     posts and deck show on the water a little below where they stand; magenta off the screen
+//  19 the eye: red where the game's eye position (EyePos) is away from the origin the water's
+//     camera-relative positions assume (full at 50 units), green where the view direction from it
+//     disagrees with the camera-relative one
 // ---------------------------------------------------------------------------------------------
 #ifndef WATER_DEBUG_VIEW
     #define WATER_DEBUG_VIEW 0
@@ -365,13 +367,14 @@ float3 projectFromWater(WaterProjector projector, float3 worldOffset){
     return float3(s.xy / max(s.z, 1e-3f), s.z);
 }
 
-// For DebugView 18: the point behind the water at the pixel (by the depth buffer), projected back
-// with the projector, should land on the pixel itself at the depth the buffer gave. r: how far off on
-// the screen (1 = 2% of it), b: how far off in depth (1 = 100 units). Black: the projector is right.
-float3 getProjectorError(WaterProjector projector, WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
-    float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x);
-    float3 behind = projectFromWater(projector, surfaceFromCamera * (sceneZ / map.viewZ - 1.0f));
-    return float3(saturate(length(behind.xy - uv) * 50.0f), 0.0f, saturate(abs(behind.z - sceneZ) / 100.0f));
+// For DebugView 18: the frame drawn so far as it stands 1.5 m (105 units) above the water point --
+// the point projected with the projector, the colour read from TESR_RenderedBuffer. Near the pier its
+// posts and deck show on the water a little below where they stand; magenta where the point is off
+// the screen.
+float3 getSceneAbove(WaterProjector projector){
+    float3 above = projectFromWater(projector, float3(0.0f, 0.0f, 105.0f));
+    bool onScreen = above.z > 1.0f && all(above.xy == saturate(above.xy));
+    return onScreen ? linearize(tex2Dlod(TESR_RenderedBuffer, float4(above.xy, 0.0f, 0.0f))).rgb : float3(1.0f, 0.0f, 1.0f);
 }
 
 // The reflection along R from the water pixel, and how far it can be trusted (confidence, 0-1).
