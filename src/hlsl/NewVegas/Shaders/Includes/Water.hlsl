@@ -65,6 +65,49 @@ struct PS_OUTPUT {
 float4 TESR_WaterLighting  : register(c190);
 float4 TESR_WaterLighting2 : register(c191);
 
+#ifdef WATER_SCENE_DEPTH
+// ---------------------------------------------------------------------------------------------
+// How much water the view passes through to reach what is behind it. The game's water depth map
+// (DepthMap, both channels) only grades the first few metres off the shore and then stays flat, so
+// it cannot tell a shallow bank from the middle of a lake. Instead the scene depth behind the water
+// -- the world depth buffer, which the DLL resolves just before each draw of a shader that reads
+// TESR_DepthBufferWorld (ShaderRecord::SetCT), before the water itself is drawn into it -- gives the
+// bed's position along the view ray; the water surface's own is the camera-relative LTEXCOORD_0.
+// All constants pinned, clear of the water shaders' own and of Shadow.hlsl (c100-c133).
+// MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
+sampler2D TESR_DepthBufferWorld : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+row_major float4x4 TESR_ProjectionTransform : register(c192);
+row_major float4x4 TESR_ViewTransform : register(c196);
+float4 TESR_CameraData : register(c200);     // x: near, y: far
+float4 TESR_DepthConstants : register(c201); // z: 1 when the depth buffer is reversed
+
+// World-space direction from the camera through screen position uv, scaled so that its component
+// along the view axis is 1: times a view-space depth it is the camera-relative position there.
+float3 getWaterViewRay(float2 uv){
+    float2 ndc = uv * 2.0f - 1.0f;
+    float3 ray = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
+    ray += (ndc.x / TESR_ProjectionTransform[0][0]) * float3(TESR_ViewTransform[0][0], TESR_ViewTransform[1][0], TESR_ViewTransform[2][0]);
+    ray += (-ndc.y / TESR_ProjectionTransform[1][1]) * float3(TESR_ViewTransform[0][1], TESR_ViewTransform[1][1], TESR_ViewTransform[2][1]);
+    return ray;
+}
+
+// x: the distance the view travels through the water to the bed, y: the water's depth straight down
+// there, both in game units (about 70 to a metre). screenPos: the projective position the
+// refraction is read from, so the depth goes with the bed the pixel shows. Nothing behind the water
+// (depth buffer empty) reads as the far plane: as deep as it gets. tex2Dlod: legal anywhere.
+float2 getWaterPath(float4 screenPos, float3 surfaceFromCamera){
+    float2 uv = screenPos.xy / screenPos.w;
+    float rawDepth = tex2Dlod(TESR_DepthBufferWorld, float4(uv, 0.0f, 0.0f)).x;
+    float nearZ = TESR_CameraData.x;
+    float farZ = TESR_CameraData.y;
+    float viewZ = TESR_DepthConstants.z > 0.5f ? nearZ * farZ / (nearZ + rawDepth * (farZ - nearZ))
+                                               : nearZ * farZ / (farZ - rawDepth * (farZ - nearZ));
+    float3 bedFromCamera = getWaterViewRay(uv) * viewZ;
+    return float2(max(length(bedFromCamera) - length(surfaceFromCamera), 0.0f),
+                  max(surfaceFromCamera.z - bedFromCamera.z, 0.0f));
+}
+#endif
+
 // Water's reflectance looking straight down: 2% (index of refraction 1.33).
 #define WATER_F0 0.02f
 // The glint's roughness on calm water, as before.
@@ -215,15 +258,17 @@ float4 getSunSpecular(float3 surfaceNormal, float3 lightDir, float3 eyeDirection
 // inscatterLight, in place of what absorption takes away, so every water still keeps its look.
 // (Rates taken from the deep colour instead turned near-black deep colours -- most of the game's,
 // once linear -- into water that swallowed every channel within a few metres, and tinted the
-// shallows with whatever channel the deep colour happened to favour.) refractedDepth.x is the depth
-// map's 0-1 depth, already scaled for the kind of water; .y the same 0-1 the old colour ramp used.
-// Absorption 0 is the old getLightTravel, exactly.
-#define WATER_ABSORPTION float3(1.0f, 0.3f, 0.15f)
+// shallows with whatever channel the deep colour happened to favour.)
+// pathLength: how far the view travels through the water (getWaterPath), in game units. At
+// AbsorptionDepth 1, 5 m of water (350 units) lets through about 30% red, 65% green, 75% blue, and
+// 20 m next to no red and a third of the blue. refractedDepth: the depth map's 0-1 depths, still
+// what the old colour ramp and getLightTravel use. Absorption 0 is the old getLightTravel, exactly.
+#define WATER_ABSORPTION float3(1.0f, 0.4f, 0.25f)
 
-float4 getWaterBody(float4 color, float3 refractedDepth, float4 shallowColor, float4 deepColor, float sunLuma, float4 waterSettings, float inscatterLight, out float3 transmittance){
+float4 getWaterBody(float4 color, float3 refractedDepth, float pathLength, float4 shallowColor, float4 deepColor, float sunLuma, float4 waterSettings, float inscatterLight, out float3 transmittance){
     float4 legacy = getLightTravel(refractedDepth, shallowColor, deepColor, sunLuma, waterSettings, color);
 
-    transmittance = exp(-WATER_ABSORPTION * saturate(refractedDepth.x) * 2.5f * TESR_WaterLighting.z);
+    transmittance = exp(-WATER_ABSORPTION * pathLength * (TESR_WaterLighting.z / 300.0f));
 
     float3 waterColor = lerp(shallowColor.rgb, deepColor.rgb, saturate(refractedDepth.y));
     float3 physical = color.rgb * transmittance + waterColor * inscatterLight * (1.0f - transmittance);
@@ -312,17 +357,18 @@ float3 getPointLightsSpecular(float3 surfaceNormal, float3 pixelFromCamera, floa
 //   1 sun shadow on the surface (black in shadow)       2 absorption: what still shows through, per colour
 //   3 reflection amount (Fresnel), black none to white  4 wave scattering
 //   5 glint roughness: black calm, white fully widened  6 point-light glints
-//   7 the depth map's depth under the pixel (x): black at the surface, white at its deepest -- what
-//     Absorption and AbsorptionDepth work from      8 the depth map's second depth (y), the colour ramp
-float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights, float3 refractedDepth){
+//   7 how far the view travels through the water to the bed, black 0 to white 20 m (1400 units) --
+//     what Absorption and AbsorptionDepth work from
+//   8 the water's depth straight down, black 0 to white 20 m
+float3 waterDebugView(float view, float shadow, float3 transmittance, float fresnel, float3 scattering, float roughness, float3 pointLights, float2 waterPath){
     float3 result = shadow;
     result = view > 1.5f ? transmittance : result;
     result = view > 2.5f ? fresnel : result;
     result = view > 3.5f ? saturate(scattering) : result;
     result = view > 4.5f ? saturate((roughness - WATER_ROUGHNESS) / 0.4f) : result;
     result = view > 5.5f ? saturate(pointLights) : result;
-    result = view > 6.5f ? saturate(refractedDepth.x) : result;
-    result = view > 7.5f ? saturate(refractedDepth.y) : result;
+    result = view > 6.5f ? saturate(waterPath.x / 1400.0f) : result;
+    result = view > 7.5f ? saturate(waterPath.y / 1400.0f) : result;
     return result;
 }
 

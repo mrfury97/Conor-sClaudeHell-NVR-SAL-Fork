@@ -36,6 +36,7 @@ sampler2D DepthMap : register(s4);
 sampler2D TESR_samplerWater : register(s5) < string ResourceName = "Water\water_NRM.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = ANISOTROPIC; MINFILTER = ANISOTROPIC; MIPFILTER = ANISOTROPIC; } ;
 
 #define WATER_POINT_LIGHTS
+#define WATER_SCENE_DEPTH
 #include "Includes/Helpers.hlsl"
 #include "Includes/Water.hlsl"
 
@@ -81,10 +82,11 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float shadow = 1.0f;
     float specRoughness = getSpecularRoughness(surfaceNormal, distance);
     float3 transmittance;
+    float2 waterPath = getWaterPath(refractionPos, IN.LTEXCOORD_0.xyz);   // through the water to the bed, and straight down
     float3 scattering = 0.0f;
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
-    color = getWaterBody(color, refractedDepth, linShallowColor, linDeepColor, 0.5, TESR_WaterSettings, 0.5f, transmittance);
+    color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, 0.5, TESR_WaterSettings, 0.5f, transmittance);
     color = getTurbidityFog(refractedDepth, linShallowColor, TESR_WaterVolume, sunLuma, color);
     //color = getDiffuse(surfaceNormal, lightDir, eyeDirection, distance, linFogColor, color);
     float fresnel = getFresnelAmount(surfaceNormal, eyeDirection, linFogColor, TESR_WaveParams.w, color);
@@ -107,7 +109,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     // DebugView ([Shaders.Water.Main]): one term of the water lighting on its own.
     [branch]
     if (TESR_WaterLighting2.w > 0.5f)
-        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, refractedDepth), 1.0f);
+        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath), 1.0f);
 
     return OUT;
 };

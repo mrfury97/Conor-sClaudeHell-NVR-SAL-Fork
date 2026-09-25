@@ -396,6 +396,9 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 
 			// mark this shader as needing to render depth/a buffer of the scene before the object can be rendered
 			if (!memcmp(ConstantDesc.Name, "TESR_DepthBuffer", 17)) HasDepthBuffer = true;
+			// The raw world depth (INTZ), resolved just before the draw: the water shaders read the
+			// scene behind the water from it to measure how deep the water is (Includes/Water.hlsl).
+			if (!strcmp(ConstantDesc.Name, "TESR_DepthBufferWorld")) HasDepthBuffer = true;
 			if (!memcmp(ConstantDesc.Name, "TESR_RenderedBuffer", 20)) HasRenderedBuffer = true;
 	
 			TextureIndex++;

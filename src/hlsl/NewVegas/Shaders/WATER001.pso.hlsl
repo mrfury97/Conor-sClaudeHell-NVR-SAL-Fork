@@ -44,6 +44,7 @@ float4 TESR_LightColor[24] : register(c165);
 
 #define WATER_SUN_SHADOWS
 #define WATER_POINT_LIGHTS
+#define WATER_SCENE_DEPTH
 #include "Includes/Helpers.hlsl"
 #include "Includes/Shadow.hlsl"
 #include "Includes/Water.hlsl"
@@ -91,9 +92,10 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float shadow = getWaterSunShadow(IN.LTEXCOORD_0.xyz);
     float specRoughness = getSpecularRoughness(surfaceNormal, distance);
     float3 transmittance;
+    float2 waterPath = getWaterPath(refractionPos, IN.LTEXCOORD_0.xyz);   // through the water to the bed, and straight down
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
-    color = getWaterBody(color, refractedDepth, linShallowColor, linDeepColor, sunLuma, TESR_PlacedWaterSettings, sunLuma * lerp(0.4f, 1.0f, shadow), transmittance);
+    color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, sunLuma, TESR_PlacedWaterSettings, sunLuma * lerp(0.4f, 1.0f, shadow), transmittance);
     color = getTurbidityFog(refractedDepth, linShallowColor, TESR_PlacedWaterVolume, sunLuma, color);
     //color = getDiffuse(surfaceNormal, TESR_SunDirection.xyz, eyeDirection, distance, linShallowColor, color);
     float3 scattering = getWaveScattering(surfaceNormal, eyeDirection, TESR_SunDirection.xyz, linSunColor.rgb, linShallowColor, shadow);
@@ -114,7 +116,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     // DebugView ([Shaders.Water.Main]): one term of the water lighting on its own.
     [branch]
     if (TESR_WaterLighting2.w > 0.5f)
-        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, refractedDepth), 1.0f);
+        OUT.color_0 = float4(waterDebugView(TESR_WaterLighting2.w, shadow, transmittance, fresnel, scattering, specRoughness, pointLights, waterPath), 1.0f);
 
     return OUT;
 };
