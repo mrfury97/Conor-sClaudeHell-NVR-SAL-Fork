@@ -146,7 +146,8 @@ PS_OUTPUT main(PS_INPUT IN) {
     float2 wavePos = getWaveParallax(flatPos, eyeDirection, time, pixelSize, WATER_WAVE_SCALE, distance);
     float2 waveTexPos = getWaveTextureShift(IN.LTEXCOORD_7, flatPos, wavePos - flatPos);
     float waveHeight;                                                        // -1 trough to 1 crest
-    float3 N = getWaves(waveTexPos, wavePos, distance, waveParams, time, pixelSize, WATER_WAVE_SCALE, waveHeight);
+    float3 refractionN;                                                      // calmer: for the bed seen through
+    float3 N = getWaves(waveTexPos, wavePos, distance, waveParams, time, pixelSize, WATER_WAVE_SCALE, waveHeight, refractionN);
 #if !WATER_INTERIOR && !WATER_LOD
     N = getRainRipples(IN.LTEXCOORD_7, N, distance, TESR_WetWorldData.x);
 #endif
@@ -220,7 +221,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // down to the bed it lands on. path: through the water to that bed, and its depth.
     float2 path;
     float3 refractedBed;
-    float2 refractionUV = getRefraction(surface, N, straightUV, screenMap, straightPath.y, WATER_SETTINGS.w, path, refractedBed);
+    float2 refractionUV = getRefraction(surface, refractionN, straightUV, screenMap, straightPath.y, WATER_SETTINGS.w, path, refractedBed);
 
     // The reflection lookup, pushed by the waves (the game's own falloff with distance).
     float4 reflectionPos = getReflectionScreenPos(IN, N.xy * lookupOffset * 0.2f);
@@ -249,6 +250,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     // by one over the path through the water; the water's own glow, lit by the sun and the sky,
     // takes their place.
     float3 bed = getRefractedBed(refractionUV, straightUV, path.x);
+    // Under water the bed looks darker than the same sand or rock dry: wet, with water instead of air
+    // around each grain. Over the first few units down, so the waterline shows no edge.
+    bed *= lerp(1.0f, 0.7f, saturate(path.y / 10.0f));
 #if WATER_SUNLIT
     float caustics = getCaustics(refractedBed, path.y, waveParams) * shadow;
     bed *= 1.0f + caustics * luma(sunLight);

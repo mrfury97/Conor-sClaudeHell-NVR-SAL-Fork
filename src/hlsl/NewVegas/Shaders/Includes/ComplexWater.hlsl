@@ -328,8 +328,9 @@ float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
 }
 
 // ---------------------------------------------------------------------------------------------
-// Wave shape: Gerstner waves (WaveHeight, WaveLength, WaveDirection, WaveSteepness). Six waves of
-// falling length rolling out within about 45 degrees of the wind direction, as a wind sea does (wider
+// Wave shape: Gerstner waves (WaveHeight, WaveLength, WaveDirection, WaveSteepness). Twelve waves of
+// falling length -- two interleaved sets of six, so no one pattern repeats -- rolling out within
+// about 55 degrees of the wind direction, as a wind sea does (wider
 // and they cross into lumps instead of rolling crests), each moving at the speed a real water wave
 // of its length does. A Gerstner wave's surface bunches up toward its crests, so the crests come
 // sharp and the troughs broad and flat, as on real water -- the shape a plain sine or a normal map
@@ -337,10 +338,13 @@ float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
 // though the mesh itself stays flat. Each wave fades out once it is too short for the pixels it
 // covers, so distant water does not alias. The normal-map waves ride on top as the fine detail.
 // ---------------------------------------------------------------------------------------------
-#define GERSTNER_WAVES 6
-static const float GerstnerLength[GERSTNER_WAVES] = { 1.0f, 0.62f, 0.41f, 0.27f, 0.17f, 0.11f };
-static const float GerstnerAngle[GERSTNER_WAVES]  = { 0.0f, 0.3f, -0.25f, 0.55f, -0.5f, 0.8f };
-static const float GerstnerPhase[GERSTNER_WAVES]  = { 0.0f, 1.7f, 4.1f, 2.6f, 5.3f, 0.9f };
+#define GERSTNER_WAVES 12
+static const float GerstnerLength[GERSTNER_WAVES] = { 1.0f, 0.62f, 0.41f, 0.27f, 0.17f, 0.11f, 0.81f, 0.5f, 0.33f, 0.22f, 0.14f, 0.09f };
+static const float GerstnerAngle[GERSTNER_WAVES]  = { 0.0f, 0.3f, -0.25f, 0.55f, -0.5f, 0.8f, -0.12f, 0.62f, -0.7f, 0.18f, 0.95f, -0.9f };
+static const float GerstnerPhase[GERSTNER_WAVES]  = { 0.0f, 1.7f, 4.1f, 2.6f, 5.3f, 0.9f, 3.3f, 5.9f, 1.2f, 4.6f, 2.1f, 0.4f };
+// Scales the twelve so together they reach the height one set of six did (their lengths add to 4.67,
+// the six's to 2.58): WaveHeight keeps its meaning.
+#define GERSTNER_NORM (2.58f / 4.67f)
 #define WATER_GRAVITY (9.8f * WATER_UNITS_PER_METRE)   // units per second squared
 
 // One wave's direction, wave number, amplitude and phase at worldPos. fade: 0-1, the pixel-size fade.
@@ -351,7 +355,7 @@ void getGerstnerWave(int i, float2 worldPos, float time, float pixelSize, float 
     dir = float2(cos(angle), sin(angle));
     k = 6.2831853f / wavelength;
     float fade = saturate(wavelength / (pixelSize * 8.0f) - 1.0f);
-    amplitude = TESR_WaterWaves.x * heightScale * GerstnerLength[i] * fade;
+    amplitude = TESR_WaterWaves.x * heightScale * GerstnerLength[i] * GERSTNER_NORM * fade;
     phase = k * dot(dir, worldPos) - sqrt(WATER_GRAVITY * k) * time + GerstnerPhase[i];
 }
 
@@ -380,7 +384,7 @@ float getGerstner(float2 worldPos, float time, float pixelSize, float heightScal
         float c = cos(phase);
         height += amplitude * s;
         n.xy -= dir * (k * amplitude * c);
-        n.z -= steepness * saturate(amplitude / max(TESR_WaterWaves.x * heightScale * GerstnerLength[i], 1e-4f)) * s;   // sharpening fades with the wave
+        n.z -= steepness * saturate(amplitude / max(TESR_WaterWaves.x * heightScale * GerstnerLength[i] * GERSTNER_NORM, 1e-4f)) * s;   // sharpening fades with the wave
     }
     slope = -n.xy / max(n.z, 0.1f);
     return height;
@@ -448,13 +452,18 @@ float2 getWaveTextureShift(float2 texPos, float2 worldPos, float2 worldShift){
 
 // Waves: the Gerstner shape with the normal-map detail on it, as slopes added together. heightOut:
 // -1 in a trough to 1 on a crest. texPos: the wave texture position of the shaded point.
-float3 getWaves(float2 texPos, float2 worldPos, float distance, float4 waveParams, float time, float pixelSize, float heightScale, out float heightOut){
+// refractionNormal: the same with the fine detail at 40%. The fine ripples glint and shade the
+// surface, but at full strength they would scribble the bed seen through them into squiggles; what a
+// bed seen through real water mostly follows is the larger waves.
+float3 getWaves(float2 texPos, float2 worldPos, float distance, float4 waveParams, float time, float pixelSize, float heightScale, out float heightOut, out float3 refractionNormal){
     float2 slope;
     float height = getGerstner(worldPos, time, pixelSize, heightScale, slope);
     heightOut = TESR_WaterWaves.x > 0.0f ? clamp(height / getGerstnerRange(heightScale), -1.0f, 1.0f) : 0.0f;
     float3 detail = getWaveNormal(texPos, distance, waveParams);
     // A surface of slope s faces (-s, 1); the detail normal already faces its own way.
-    return normalize(float3(-slope + detail.xy / max(detail.z, 0.1f), 1.0f));
+    float2 detailSlope = detail.xy / max(detail.z, 0.1f);
+    refractionNormal = normalize(float3(-slope + detailSlope * 0.4f, 1.0f));
+    return normalize(float3(-slope + detailSlope, 1.0f));
 }
 
 // Rain rings on the surface (WetWorld's rain amount). Four layers of the ripple texture, each
