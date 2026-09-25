@@ -174,7 +174,7 @@ jobs:
           # sure every view compiles -- on the surface, and on the distant and underwater water for the
           # views those have.
           $debugOk = $true
-          foreach ($view in 1..19) {
+          foreach ($view in 1..15) {
             $kinds = @('/D WATER_WADING=1')
             if (@(3, 4, 5, 12) -contains $view) { $kinds += '/D WATER_LOD=1'; $kinds += '/D WATER_BELOW=1' }
             foreach ($kindDefines in $kinds) {
@@ -187,6 +187,6 @@ jobs:
               }
             }
           }
-          if ($debugOk) { Write-Host "ok    Complex Water debug views 1-19" } else { $failed += 'Complex Water debug views' }
+          if ($debugOk) { Write-Host "ok    Complex Water debug views 1-15" } else { $failed += 'Complex Water debug views' }
 
           if ($failed.Count -gt 0) { Write-Host "Failed: $($failed -join ', ')"; exit 1 }

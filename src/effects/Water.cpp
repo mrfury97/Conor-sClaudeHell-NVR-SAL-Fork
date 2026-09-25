@@ -128,10 +128,9 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting3.w = Read("ReflectionBlur", 0.0f, 3.0f);
 	Constants.Lighting4.x = Read("Caustics", 0.0f, 3.0f);
 	Constants.Lighting4.y = ReadOr("CausticsScale", 50.0f, 3000.0f, 220.0f);
-	Constants.Lighting4.w = Read("ScreenSpaceReflections", 0.0f, 1.0f);
 	// SkipReflectionPass: the game's reflection pass draws the world a second time, mirrored, for the
 	// reflection map -- CPU time on every frame with water in view. Skipped, outdoor water reflects the
-	// sky along the reflected ray under the screen-space reflections instead.
+	// sky along the reflected ray instead (and the WaterReflections effect, what is on the screen).
 	SkipReflectionPass = TheSettingManager->GetSettingI(Section, "SkipReflectionPass") != 0;
 	Constants.Lighting5.x = SkipReflectionPass ? 0.0f : 1.0f;
 	Constants.Lighting5.y = ReadOr("FoamScale", 20.0f, 5000.0f, 250.0f);

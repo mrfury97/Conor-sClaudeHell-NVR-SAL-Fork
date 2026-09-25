@@ -179,6 +179,7 @@
     <ClCompile Include="..\src\effects\VolumetricFog.cpp" />
     <ClCompile Include="..\src\effects\Water.cpp" />
     <ClCompile Include="..\src\effects\WaterLens.cpp" />
+    <ClCompile Include="..\src\effects\WaterReflections.cpp" />
     <ClCompile Include="..\src\effects\WetWorld.cpp" />
     <ClCompile Include="..\lib\Detours\detours.cpp" />
     <ClCompile Include="..\lib\Detours\disasm.cpp" />
@@ -289,6 +290,7 @@
     <ClInclude Include="..\src\effects\VolumetricFog.h" />
     <ClInclude Include="..\src\effects\Water.h" />
     <ClInclude Include="..\src\effects\WaterLens.h" />
+    <ClInclude Include="..\src\effects\WaterReflections.h" />
     <ClInclude Include="..\src\effects\WetWorld.h" />
     <ClInclude Include="..\lib\Bink\bink.h" />
     <ClInclude Include="..\lib\Bink\radbase.h" />

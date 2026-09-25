@@ -166,6 +166,9 @@
     <ClInclude Include="..\src\effects\WaterLens.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\WaterReflections.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\WetWorld.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -436,6 +439,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\WaterLens.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\WaterReflections.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\WetWorld.cpp">

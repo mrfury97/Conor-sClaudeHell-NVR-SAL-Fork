@@ -12,7 +12,7 @@ public:
 	std::map<std::string_view, ShaderTemplate> Templates() {
 		static char DebugView[8];
 		int View = TheSettingManager->GetSettingI("Shaders.Water.ComplexWater", "DebugView");
-		sprintf(DebugView, "%d", View < 0 ? 0 : (View > 19 ? 19 : View));
+		sprintf(DebugView, "%d", View < 0 ? 0 : (View > 15 ? 15 : View));
 		return std::map<std::string_view, ShaderTemplate>{
 			{ "WATER000.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_DEBUG_VIEW", DebugView}} } },
 			{ "WATER017.pso", ShaderTemplate{ "ComplexWater.pso", {{"WATER_WADING", "1"}, {"WATER_DEBUG_VIEW", DebugView}} } },
@@ -44,7 +44,7 @@ public:
 		D3DXVECTOR4		Lighting;		// TESR_WaterLighting: x sun shadows, y absorption depth, z water colour brightness, w wave scattering
 		D3DXVECTOR4		Lighting2;		// TESR_WaterLighting2: x specular AA, y point lights, z sun glitter
 		D3DXVECTOR4		Lighting3;		// TESR_WaterLighting3: x foam, y foam width, z shore fade width, w reflection blur
-		D3DXVECTOR4		Lighting4;		// TESR_WaterLighting4: x caustics, y caustics scale, z 1 outdoors (set per frame), w screen-space reflections
+		D3DXVECTOR4		Lighting4;		// TESR_WaterLighting4: x caustics, y caustics scale, z 1 outdoors (set per frame)
 		D3DXVECTOR4		ScatterColor;	// TESR_WaterScatterColor: rgb water body colour, w 1 when set
 		D3DXVECTOR4		Absorption;		// TESR_WaterAbsorption: rgb absorption rates
 		D3DXVECTOR4		Waves;			// TESR_WaterWaves: x height, y length, z direction (radians), w steepness

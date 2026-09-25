@@ -1,0 +1,251 @@
+// Screen-space reflections on the water, as a post-process for New Vegas Reloaded.
+//
+// Runs on the finished frame, before tonemapping. Finds the water from the depth buffer (flat, at
+// the water height), turns the view ray off the waves there, and marches the reflected ray across
+// the screen against the same depth buffer the other effects use. Where it meets something, the
+// water takes that pixel's colour in proportion to the Fresnel reflectance; where it finds nothing
+// (the sky, anything off screen) the water keeps the reflection it was drawn with.
+//
+// TESR_WaterReflectionsData  x: Strength  y: MaxDistance (units)  z: Distortion (0-1, how much the
+//                            waves bend the reflection)  w: DebugView
+//   DebugView 1: water mask (white where the effect runs)
+//             2: hits (green = hit, weighted by confidence; red = ray marched, nothing found)
+//             3: the reflected colour alone
+//             4: the reflection amount (Fresnel * confidence * Strength)
+
+float4 TESR_ReciprocalResolution;
+float4 TESR_GameTime;
+float4 TESR_WaterSettings;        // x: water height
+float4 TESR_WaterWaves;           // x: WaveHeight  y: WaveLength  z: WaveDirection  w: WaveSteepness
+float4 TESR_WaterReflectionsData;
+
+sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_DepthBufferViewModel : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler3D TESR_WaterWavesMap : register(s3) < string ResourceName = "Water\NVR_WaterWaves.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+
+struct VSOUT
+{
+	float4 vertPos : POSITION;
+	float2 UVCoord : TEXCOORD0;
+};
+
+struct VSIN
+{
+	float4 vertPos : POSITION0;
+	float2 UVCoord : TEXCOORD0;
+};
+
+VSOUT FrameVS(VSIN IN)
+{
+	VSOUT OUT = (VSOUT)0.0f;
+	OUT.vertPos = IN.vertPos;
+	OUT.UVCoord = IN.UVCoord;
+	return OUT;
+}
+
+#include "Includes/Helpers.hlsl"
+#include "Includes/Depth.hlsl"
+
+#define SSR_STEPS   48
+#define SSR_REFINE  5
+#define WATER_F0    0.02f
+
+static const float strength = TESR_WaterReflectionsData.x;
+static const float maxDistance = max(TESR_WaterReflectionsData.y, 100.0f);
+static const float distortion = saturate(TESR_WaterReflectionsData.z);
+static const float debugView = TESR_WaterReflectionsData.w;
+
+// The camera's axes in the world (the columns of the view transform, as toWorld reads them).
+static const float3 camRight   = float3(TESR_ViewTransform[0][0], TESR_ViewTransform[1][0], TESR_ViewTransform[2][0]);
+static const float3 camUp      = float3(TESR_ViewTransform[0][1], TESR_ViewTransform[1][1], TESR_ViewTransform[2][1]);
+static const float3 camForward = float3(TESR_ViewTransform[0][2], TESR_ViewTransform[1][2], TESR_ViewTransform[2][2]);
+
+// A camera-relative world position to (screen uv, view depth): the exact inverse of
+// toWorld(uv) * readDepth(uv).
+float3 toScreen(float3 position){
+	float z = max(dot(position, camForward), 1e-3f);
+	float x = dot(position, camRight);
+	float y = dot(position, camUp);
+	return float3(0.5f + 0.5f * TESR_ProjectionTransform[0][0] * x / z, 0.5f - 0.5f * TESR_ProjectionTransform[1][1] * y / z, z);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The wave field of the water shader (Shaders/Includes/ComplexWater.hlsl, getWaveField and
+// getWaveFieldSurface): the same texture, tiling and timing, so the reflection bends with the
+// waves the water shows. Slopes only.
+// ---------------------------------------------------------------------------------------------
+#define WAVE_TEX_SIZE        128.0f
+#define WAVE_TEX_PATCH       15.0f
+#define WAVE_TEX_PERIOD      12.0f
+#define WAVE_TEX_PEAK        3.0f
+#define WAVE_TEX_HEIGHT_MAX  3.4428f
+#define WAVE_TEX_SLOPE_SCALE 126.5689f
+#define WAVE_LAYER_B_SCALE   0.37f
+#define WAVE_LAYER_B_ANGLE   0.55f
+#define WAVE_LAYER_B_OFFSET  float2(0.31f, 0.67f)
+#define WAVE_LAYER_B_TIME    0.43f
+#define WATER_UNITS_PER_METRE 70.0f
+
+float2 sampleWaveSlope(float2 worldPos, float2 dir, float tile, float2 offset, float time, float lod){
+	float2 uv = float2(dot(worldPos, dir), dot(worldPos, float2(-dir.y, dir.x))) / tile + offset;
+	float2 slope = tex3Dlod(TESR_WaterWavesMap, float4(uv, time, lod)).rg * 2.0f - 1.0f;
+	// Stored along the layer's own axes: turn it back into the world.
+	return slope.x * dir + slope.y * float2(-dir.y, dir.x);
+}
+
+float2 getWaveSlope(float2 worldPos, float pixelSize){
+	float time = TESR_GameTime.z;
+	float angle = TESR_WaterWaves.z;
+	float2 dirA = float2(cos(angle), sin(angle));
+	float2 dirB = float2(cos(angle + WAVE_LAYER_B_ANGLE), sin(angle + WAVE_LAYER_B_ANGLE));
+	float tileA = max(TESR_WaterWaves.y, 1.0f) * WAVE_TEX_PEAK;
+	float tileB = tileA * WAVE_LAYER_B_SCALE;
+	float patchUnits = WAVE_TEX_PATCH * WATER_UNITS_PER_METRE;
+	float timeA = time / (WAVE_TEX_PERIOD * sqrt(tileA / patchUnits));
+	float timeB = time / (WAVE_TEX_PERIOD * sqrt(tileB / patchUnits)) + WAVE_LAYER_B_TIME;
+	float lodA = max(log2(pixelSize * WAVE_TEX_SIZE / tileA), 0.0f);
+	float lodB = max(log2(pixelSize * WAVE_TEX_SIZE / tileB), 0.0f);
+	float sigma = TESR_WaterWaves.x * 0.25f;
+	float slopeScale = sigma * WAVE_TEX_SLOPE_SCALE / tileA * lerp(0.5f, 1.5f, saturate(TESR_WaterWaves.w));
+	return slopeScale * (sampleWaveSlope(worldPos, dirA, tileA, 0.0f, timeA, lodA)
+	                   + sampleWaveSlope(worldPos, dirB, tileB, WAVE_LAYER_B_OFFSET, timeB, lodB));
+}
+
+// readDepth without derivatives, for the loops.
+float readDepthLod(float2 uv){
+	return tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x * farZ;
+}
+
+// Water (by height) within the tolerance of the depth buffer at that distance.
+bool isWaterHeight(float worldZ, float depth){
+	return abs(worldZ - TESR_WaterSettings.x) < 2.0f + depth * 0.002f;
+}
+
+bool isViewModel(float2 uv){
+	float viewmodelDepth = tex2Dlod(TESR_DepthBufferViewModel, float4(uv, 0.0f, 0.0f)).x;
+	return (invertedDepth == 0 && viewmodelDepth < 0.9f) || (invertedDepth > 0 && viewmodelDepth > 0.01f);
+}
+
+// Interleaved gradient noise: a different start along the ray for neighbouring pixels, so the
+// steps' banding turns into fine noise.
+float getNoise(float2 pixel){
+	return frac(52.9829189f * frac(dot(pixel, float2(0.06711056f, 0.00583715f))));
+}
+
+float4 WaterReflections(VSOUT IN) : COLOR0
+{
+	float2 uv = IN.UVCoord;
+	float4 color = tex2D(TESR_SourceBuffer, uv);
+
+	float depth = readDepth(uv);
+	float3 surface = toWorld(uv) * depth;                        // camera-relative
+	float3 worldPos = surface + TESR_CameraPosition.xyz;
+	float pixelSize = max(length(ddx(worldPos.xy)), length(ddy(worldPos.xy)));
+
+	bool water = depth < farZ * 0.99f && surface.z < 0.0f && isWaterHeight(worldPos.z, depth);
+	if (debugView == 1) return water ? white : black;
+	if (!water) return color;
+
+	// The normal of the waves, and the view ray turned off it. Kept pointing up: a ray turned into
+	// the water would have nothing to reflect.
+	float3 eyeDirection = normalize(surface);                   // camera to surface
+	float2 slope = getWaveSlope(worldPos.xy, pixelSize) * distortion;
+	float3 N = normalize(float3(-slope, 1.0f));
+	float3 R = reflect(eyeDirection, N);
+	R = normalize(float3(R.xy, max(R.z, 0.02f)));
+
+	float cosTheta = saturate(dot(-eyeDirection, N));
+	float fresnel = WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f);
+
+	// The ray, from the surface to MaxDistance or to just in front of the camera, whichever is
+	// nearer; then as a segment on the screen, cut where it leaves the screen. Along the segment,
+	// uv moves linearly and 1/depth does (perspective).
+	float rayForward = dot(R, camForward);
+	float rayLength = maxDistance;
+	if (rayForward < 0.0f) rayLength = min(rayLength, (depth - nearZ * 2.0f - 1.0f) / -rayForward);
+	float3 start = toScreen(surface);
+	float3 end = toScreen(surface + R * max(rayLength, 1.0f));
+	float2 delta = end.xy - start.xy;
+	float tMax = 1.0f;
+	if (delta.x > 0.0f) tMax = min(tMax, (1.0f - start.x) / delta.x);
+	if (delta.x < 0.0f) tMax = min(tMax, -start.x / delta.x);
+	if (delta.y > 0.0f) tMax = min(tMax, (1.0f - start.y) / delta.y);
+	if (delta.y < 0.0f) tMax = min(tMax, -start.y / delta.y);
+	float2 pixels = abs(delta * tMax) / TESR_ReciprocalResolution.xy;
+	float directionFade = smoothstep(-0.9f, -0.5f, rayForward);
+
+	float status = 0.0f;                                        // 0 not marched, 1 nothing found, 2 hit
+	float hitT = 0.0f;
+	float confidence = 0.0f;
+	if (rayLength > 1.0f && max(pixels.x, pixels.y) > 2.0f && directionFade > 0.0f) {
+		status = 1.0f;
+		float k0 = 1.0f / start.z;
+		float k1 = 1.0f / end.z;
+		float jitter = getNoise(uv / TESR_ReciprocalResolution.xy);
+		float before = 0.0f;
+		float beforeZ = start.z;
+		float after = -1.0f;
+
+		[loop]
+		for (int i = 1; i <= SSR_STEPS; i++) {
+			float t = tMax * (i - 1.0f + jitter) / (SSR_STEPS - 1.0f + jitter);
+			float2 rayUV = lerp(start.xy, end.xy, t);
+			float rayZ = 1.0f / lerp(k0, k1, t);
+			float sceneZ = readDepthLod(rayUV);
+			float thickness = max(abs(rayZ - beforeZ) * 1.5f, 30.0f + rayZ * 0.01f);
+			float behind = rayZ - sceneZ;
+			// Behind what the screen shows there, but not so far that the ray passed behind it; and
+			// not the water itself (it cannot reflect itself).
+			if (behind > 0.0f && behind < thickness && !isWaterHeight(TESR_CameraPosition.z + toWorld(rayUV).z * sceneZ, sceneZ)) {
+				after = t;
+				break;
+			}
+			before = t;
+			beforeZ = rayZ;
+		}
+
+		if (after > 0.0f) {
+			// Close in on where the ray passes behind the surface.
+			[unroll]
+			for (int j = 0; j < SSR_REFINE; j++) {
+				float t = (before + after) * 0.5f;
+				float rayZ = 1.0f / lerp(k0, k1, t);
+				if (rayZ > readDepthLod(lerp(start.xy, end.xy, t))) after = t;
+				else before = t;
+			}
+			hitT = after;
+			float2 hitUV = lerp(start.xy, end.xy, hitT);
+			if (!isViewModel(hitUV)) {
+				status = 2.0f;
+				float hitZ = 1.0f / lerp(k0, k1, hitT);
+				float along = abs(end.z - start.z) > 1.0f ? saturate((hitZ - start.z) / (end.z - start.z)) : hitT;
+				float2 edge = min(hitUV, 1.0f - hitUV);
+				float edgeFade = smoothstep(0.0f, 0.08f, min(edge.x, edge.y));
+				float distanceFade = 1.0f - smoothstep(0.7f, 1.0f, along);
+				confidence = edgeFade * distanceFade * directionFade;
+			}
+		}
+	}
+
+	if (debugView == 2) return status == 2.0f ? float4(0.0f, confidence, 0.0f, 1.0f) : (status == 1.0f ? float4(0.3f, 0.0f, 0.0f, 1.0f) : black);
+	if (confidence <= 0.0f) return debugView >= 3 ? black : color;
+
+	float2 reflectedUV = lerp(start.xy, end.xy, hitT);
+	float3 reflection = linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV, 0.0f, 0.0f)).rgb);
+	float amount = saturate(fresnel * confidence * strength);
+	if (debugView == 3) return float4(delinearize(reflection), 1.0f);
+	if (debugView == 4) return float4(amount.xxx, 1.0f);
+
+	float3 base = linearize(color.rgb);
+	return float4(delinearize(lerp(base, reflection, amount)), color.a);
+}
+
+technique
+{
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 WaterReflections();
+	}
+}
