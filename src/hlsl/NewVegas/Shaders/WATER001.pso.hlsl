@@ -95,7 +95,7 @@ PS_OUTPUT main(PS_INPUT IN, float2 PixelPos : VPOS) {
     float3 transmittance;
     float2 waterPath = getWaterPath(refractionPos, IN.LTEXCOORD_0.xyz);   // through the water to the bed, and straight down
     float2 straightPath = getWaterPath(screenPos, IN.LTEXCOORD_0.xyz);    // the same, right under this pixel: shore and foam
-    float foam = getFoamMask(IN.LTEXCOORD_7, straightPath.y, TESR_PlacedWaveParams);
+    float foam = getFoamMask(IN.LTEXCOORD_7, straightPath.x, TESR_PlacedWaveParams);
 
     float4 color = linearize(tex2Dproj(RefractionMap, refractionPos));
     color = getWaterBody(color, refractedDepth, waterPath.x, linShallowColor, linDeepColor, sunLuma, TESR_PlacedWaterSettings, sunLuma * lerp(0.4f, 1.0f, shadow), transmittance);

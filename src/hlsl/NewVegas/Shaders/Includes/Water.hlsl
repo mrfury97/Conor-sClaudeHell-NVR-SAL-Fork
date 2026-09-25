@@ -246,10 +246,14 @@ float4 getBlurredReflection(float4 reflectionPos, float3 surfaceNormal){
 // Foam (Foam, FoamWidth): where the water is shallowest -- along the shore, and around anything
 // standing in the water -- solid at the edge and breaking up into patches further out, drifting
 // with the waves. The patches come from the wave texture itself, at two other sizes, so no foam
-// texture is needed. waterDepth: the water's depth straight down at this pixel (getWaterPath).
-// tex2D: top level only.
-float getFoamMask(float2 texPos, float waterDepth, float4 waveParams){
-    float band = 1.0f - saturate(waterDepth / TESR_WaterLighting3.w);
+// texture is needed. waterPathLength: how far the view travels through the water at this pixel to
+// what is behind it (getWaterPath's x). Not the depth straight down there: for the water in front
+// of a pier post that is the small drop to the post's submerged side, all the way down it, which
+// painted foam down the whole post, and on a gently sloping beach a band of depth is metres of
+// sand wide. Squared, so the foam hugs the edge and thins quickly. tex2D: top level only.
+float getFoamMask(float2 texPos, float waterPathLength, float4 waveParams){
+    float band = 1.0f - saturate(waterPathLength / TESR_WaterLighting3.w);
+    band *= band;
     float speed = TESR_GameTime.x * 0.002f * waveParams.z;
     float2 p = texPos * waveParams.y;
     float n = tex2D(TESR_samplerWater, rotateWaveUV(p * 3.0f, 0.4f) + float2(0.7f, 0.3f) * speed).x

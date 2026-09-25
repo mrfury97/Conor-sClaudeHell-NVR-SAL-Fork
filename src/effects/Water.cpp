@@ -118,11 +118,11 @@ void WaterShaders::UpdateSettings() {
 	float colorBrightness = TheSettingManager->GetSettingF(Section, "WaterColorBrightness");
 	Constants.Lighting3.x = colorBrightness > 0.0f ? std::clamp(colorBrightness, 0.1f, 5.0f) : 1.0f;
 	// Waves by distance without visible tiling, foam, the shoreline fade and the reflection blur: each
-	// off at 0 (also a missing key, which leaves the old look); a missing foam width means 40 units.
+	// off at 0 (also a missing key, which leaves the old look); a missing foam width means 15 units.
 	Constants.Lighting3.y = std::clamp(TheSettingManager->GetSettingF(Section, "WaveDetail"), 0.0f, 1.0f);
 	Constants.Lighting3.z = std::clamp(TheSettingManager->GetSettingF(Section, "Foam"), 0.0f, 1.0f);
 	float foamWidth = TheSettingManager->GetSettingF(Section, "FoamWidth");
-	Constants.Lighting3.w = foamWidth > 0.0f ? std::clamp(foamWidth, 5.0f, 400.0f) : 40.0f;
+	Constants.Lighting3.w = foamWidth > 0.0f ? std::clamp(foamWidth, 2.0f, 400.0f) : 15.0f;
 	Constants.Lighting4.x = std::clamp(TheSettingManager->GetSettingF(Section, "ShoreFadeWidth"), 0.0f, 300.0f);
 	Constants.Lighting4.y = std::clamp(TheSettingManager->GetSettingF(Section, "ReflectionBlur"), 0.0f, 3.0f);
 }
