@@ -339,53 +339,71 @@ float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
 // covers, so distant water does not alias. The normal-map waves ride on top as the fine detail.
 // ---------------------------------------------------------------------------------------------
 #define GERSTNER_WAVES 12
-static const float GerstnerLength[GERSTNER_WAVES] = { 1.0f, 0.62f, 0.41f, 0.27f, 0.17f, 0.11f, 0.81f, 0.5f, 0.33f, 0.22f, 0.14f, 0.09f };
-static const float GerstnerAngle[GERSTNER_WAVES]  = { 0.0f, 0.3f, -0.25f, 0.55f, -0.5f, 0.8f, -0.12f, 0.62f, -0.7f, 0.18f, 0.95f, -0.9f };
-static const float GerstnerPhase[GERSTNER_WAVES]  = { 0.0f, 1.7f, 4.1f, 2.6f, 5.3f, 0.9f, 3.3f, 5.9f, 1.2f, 4.6f, 2.1f, 0.4f };
+// Length (against WaveLength), angle off the wind (radians) and starting phase of each wave, four to
+// a vector: the waves are worked out four at a time. (As arrays, twelve of each would not fit in the
+// pixel shader's registers.)
+static const float4 GerstnerLengthA = float4(1.0f, 0.62f, 0.41f, 0.27f);
+static const float4 GerstnerLengthB = float4(0.17f, 0.11f, 0.81f, 0.5f);
+static const float4 GerstnerLengthC = float4(0.33f, 0.22f, 0.14f, 0.09f);
+static const float4 GerstnerAngleA  = float4(0.0f, 0.3f, -0.25f, 0.55f);
+static const float4 GerstnerAngleB  = float4(-0.5f, 0.8f, -0.12f, 0.62f);
+static const float4 GerstnerAngleC  = float4(-0.7f, 0.18f, 0.95f, -0.9f);
+static const float4 GerstnerPhaseA  = float4(0.0f, 1.7f, 4.1f, 2.6f);
+static const float4 GerstnerPhaseB  = float4(5.3f, 0.9f, 3.3f, 5.9f);
+static const float4 GerstnerPhaseC  = float4(1.2f, 4.6f, 2.1f, 0.4f);
 // Scales the twelve so together they reach the height one set of six did (their lengths add to 4.67,
 // the six's to 2.58): WaveHeight keeps its meaning.
 #define GERSTNER_NORM (2.58f / 4.67f)
 #define WATER_GRAVITY (9.8f * WATER_UNITS_PER_METRE)   // units per second squared
 
-// One wave's direction, wave number, amplitude and phase at worldPos. fade: 0-1, the pixel-size fade.
-void getGerstnerWave(int i, float2 worldPos, float time, float pixelSize, float heightScale,
-                     out float2 dir, out float k, out float amplitude, out float phase){
-    float wavelength = TESR_WaterWaves.y * GerstnerLength[i];
-    float angle = TESR_WaterWaves.z + GerstnerAngle[i];
-    dir = float2(cos(angle), sin(angle));
+// Four waves at worldPos: their directions (dirX, dirY), wave numbers, amplitudes, pixel-size fades
+// (0-1: each wave fades out once it is too short for the pixels it covers) and phases.
+void getGerstnerWaves(float4 lengths, float4 angles, float4 phases, float2 worldPos, float time, float pixelSize, float heightScale,
+                      out float4 dirX, out float4 dirY, out float4 k, out float4 amplitude, out float4 fade, out float4 phase){
+    float4 wavelength = TESR_WaterWaves.y * lengths;
+    float4 angle = TESR_WaterWaves.z + angles;
+    dirX = cos(angle);
+    dirY = sin(angle);
     k = 6.2831853f / wavelength;
-    float fade = saturate(wavelength / (pixelSize * 8.0f) - 1.0f);
-    amplitude = TESR_WaterWaves.x * heightScale * GerstnerLength[i] * GERSTNER_NORM * fade;
-    phase = k * dot(dir, worldPos) - sqrt(WATER_GRAVITY * k) * time + GerstnerPhase[i];
+    fade = saturate(wavelength / (pixelSize * 8.0f) - 1.0f);
+    amplitude = TESR_WaterWaves.x * heightScale * GERSTNER_NORM * lengths * fade;
+    phase = k * (dirX * worldPos.x + dirY * worldPos.y) - sqrt(WATER_GRAVITY * k) * time + phases;
+}
+
+float getGerstnerWavesHeight(float4 lengths, float4 angles, float4 phases, float2 worldPos, float time, float pixelSize, float heightScale){
+    float4 dirX, dirY, k, amplitude, fade, phase;
+    getGerstnerWaves(lengths, angles, phases, worldPos, time, pixelSize, heightScale, dirX, dirY, k, amplitude, fade, phase);
+    return dot(amplitude, sin(phase));
 }
 
 // Height alone, for the parallax search.
 float getGerstnerHeight(float2 worldPos, float time, float pixelSize, float heightScale){
-    float height = 0.0f;
-    [unroll]
-    for (int i = 0; i < GERSTNER_WAVES; i++) {
-        float2 dir; float k; float amplitude; float phase;
-        getGerstnerWave(i, worldPos, time, pixelSize, heightScale, dir, k, amplitude, phase);
-        height += amplitude * sin(phase);
-    }
-    return height;
+    return getGerstnerWavesHeight(GerstnerLengthA, GerstnerAngleA, GerstnerPhaseA, worldPos, time, pixelSize, heightScale)
+         + getGerstnerWavesHeight(GerstnerLengthB, GerstnerAngleB, GerstnerPhaseB, worldPos, time, pixelSize, heightScale)
+         + getGerstnerWavesHeight(GerstnerLengthC, GerstnerAngleC, GerstnerPhaseC, worldPos, time, pixelSize, heightScale);
+}
+
+// Adds four waves' height, and their slope and crest sharpening into the surface vector n.
+void addGerstnerWaves(float4 lengths, float4 angles, float4 phases, float2 worldPos, float time, float pixelSize, float heightScale,
+                      float steepness, inout float height, inout float3 n){
+    float4 dirX, dirY, k, amplitude, fade, phase;
+    getGerstnerWaves(lengths, angles, phases, worldPos, time, pixelSize, heightScale, dirX, dirY, k, amplitude, fade, phase);
+    float4 s = sin(phase);
+    float4 slope = k * amplitude * cos(phase);
+    height += dot(amplitude, s);
+    n.x -= dot(dirX, slope);
+    n.y -= dot(dirY, slope);
+    n.z -= steepness * dot(fade, s);   // sharpening fades with the wave
 }
 
 // Height, and the surface slope (dh/dx, dh/dy) with the Gerstner crest sharpening folded in.
 float getGerstner(float2 worldPos, float time, float pixelSize, float heightScale, out float2 slope){
     float height = 0.0f;
     float3 n = float3(0.0f, 0.0f, 1.0f);
-    float steepness = saturate(TESR_WaterWaves.w) / GERSTNER_WAVES;
-    [unroll]
-    for (int i = 0; i < GERSTNER_WAVES; i++) {
-        float2 dir; float k; float amplitude; float phase;
-        getGerstnerWave(i, worldPos, time, pixelSize, heightScale, dir, k, amplitude, phase);
-        float s = sin(phase);
-        float c = cos(phase);
-        height += amplitude * s;
-        n.xy -= dir * (k * amplitude * c);
-        n.z -= steepness * saturate(amplitude / max(TESR_WaterWaves.x * heightScale * GerstnerLength[i] * GERSTNER_NORM, 1e-4f)) * s;   // sharpening fades with the wave
-    }
+    float steepness = TESR_WaterWaves.x > 0.0f ? saturate(TESR_WaterWaves.w) / GERSTNER_WAVES : 0.0f;
+    addGerstnerWaves(GerstnerLengthA, GerstnerAngleA, GerstnerPhaseA, worldPos, time, pixelSize, heightScale, steepness, height, n);
+    addGerstnerWaves(GerstnerLengthB, GerstnerAngleB, GerstnerPhaseB, worldPos, time, pixelSize, heightScale, steepness, height, n);
+    addGerstnerWaves(GerstnerLengthC, GerstnerAngleC, GerstnerPhaseC, worldPos, time, pixelSize, heightScale, steepness, height, n);
     slope = -n.xy / max(n.z, 0.1f);
     return height;
 }
