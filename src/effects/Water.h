@@ -42,6 +42,8 @@ public:
 		D3DXVECTOR4		Lighting4;		// TESR_WaterLighting4: x caustics, y caustics scale, z 1 outdoors (set per frame)
 		D3DXVECTOR4		ScatterColor;	// TESR_WaterScatterColor: rgb water body colour, w 1 when set
 		D3DXVECTOR4		Absorption;		// TESR_WaterAbsorption: rgb absorption rates
+		D3DXVECTOR4		Waves;			// TESR_WaterWaves: x height, y length, z direction (radians), w steepness
+		D3DXVECTOR4		Waves2;			// TESR_WaterWaves2: x whitecaps, y parallax
 	};
 	WaterConstants		Constants;
 

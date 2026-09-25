@@ -41,6 +41,13 @@
     #define WATER_BELOW 0
 #endif
 #define WATER_SUNLIT (!WATER_INTERIOR)
+// The Gerstner wave height on this kind of water, against WaveHeight: pools and interior water are
+// small and sheltered.
+#if WATER_PLACED || WATER_INTERIOR
+    #define WATER_WAVE_SCALE 0.3f
+#else
+    #define WATER_WAVE_SCALE 1.0f
+#endif
 
 // The engine's water constants, the same registers in every vanilla water shader.
 float4 EyePos      : register(c1);
@@ -131,8 +138,15 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
     float brightness = TESR_WaterLighting.z;
 
-    // Waves.
-    float3 N = getWaveNormal(IN.LTEXCOORD_7, distance, waveParams);
+    // Waves: the Gerstner shape, seen where the view ray really meets it (parallax), with the
+    // normal-map detail on top. Derivatives first, at the top level.
+    float time = TESR_GameTime.x * 0.001f;                                  // seconds
+    float2 flatPos = surface.xy + TESR_CameraPosition.xy;                    // world position on the flat mesh
+    float pixelSize = max(length(ddx(flatPos)), length(ddy(flatPos)));       // world units per pixel here
+    float2 wavePos = getWaveParallax(flatPos, eyeDirection, time, pixelSize, WATER_WAVE_SCALE, distance);
+    float2 waveTexPos = getWaveTextureShift(IN.LTEXCOORD_7, flatPos, wavePos - flatPos);
+    float waveHeight;                                                        // -1 trough to 1 crest
+    float3 N = getWaves(waveTexPos, wavePos, distance, waveParams, time, pixelSize, WATER_WAVE_SCALE, waveHeight);
 #if !WATER_INTERIOR && !WATER_LOD
     N = getRainRipples(IN.LTEXCOORD_7, N, distance, TESR_WetWorldData.x);
 #endif
@@ -150,6 +164,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     debug.shadow = 1.0f;
     debug.transmittance = 1.0f;
     debug.roughness = roughness;
+    debug.waveHeight = waveHeight;
 
 #if WATER_BELOW
     // ---- Underwater, looking up at the surface --------------------------------------------------
@@ -186,7 +201,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 reflection = linearize(tex2Dproj(ReflectionMap, getReflectionScreenPos(IN, N.xy * lookupOffset))).rgb;
     float3 waterColor = getWaterColor(linearize(ShallowColor).rgb, linearize(DeepColor).rgb, 1e6f);
     float3 color = waterColor * (luma(sunLight) + luma(skyLight) * 0.5f) * brightness;
-    float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight, waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f));
+    float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight, waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f), waveHeight);
     color += scattering;
     float fresnel = getFresnel(N, eyeDirection, waveParams.w);
     color = lerp(color, reflection, fresnel);
@@ -222,7 +237,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 #else
     float shadow = 1.0f;
 #endif
-    float foam = getFoamMask(IN.LTEXCOORD_7, straightPath.x, waveParams);
+    // Foam: along the edge, and whitecaps on the tallest crests.
+    float foamNoise = getFoamNoise(waveTexPos, waveParams);
+    float foam = max(getFoamMask(straightPath.x, foamNoise), getWhitecaps(waveHeight, foamNoise));
 
     // The water body. The bed, with caustics on it where the sun reaches it, loses its colours one
     // by one over the path through the water; the water's own glow, lit by the sun and the sky,
@@ -236,13 +253,14 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
     float3 transmittance = getTransmittance(path.x);
     float3 waterColor = getWaterColor(linearize(ShallowColor).rgb, linearize(DeepColor).rgb, path.y);
-    float bodyLight = luma(sunLight) * lerp(0.4f, 1.0f, shadow) + luma(skyLight) * 0.5f;
+    // Lit by the sun and the sky; less down in the troughs, which the waves around them shade.
+    float bodyLight = (luma(sunLight) * lerp(0.4f, 1.0f, shadow) + luma(skyLight) * 0.5f) * lerp(1.0f, 0.75f, saturate(-waveHeight));
     float3 color = bed * transmittance + waterColor * bodyLight * brightness * (1.0f - transmittance);
 
     // The surface: light through the wave crests, the reflection (none right at the waterline,
     // where the surface is too thin to hold a mirror), the sun, the point lights.
     float3 waterHue = waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f);
-    float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight * shadow, waterHue);
+    float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight * shadow, waterHue, waveHeight);
     color += scattering;
     float fresnel = getFresnel(N, eyeDirection, waveParams.w) * saturate(straightPath.y / 30.0f);
     color = lerp(color, reflection, fresnel);

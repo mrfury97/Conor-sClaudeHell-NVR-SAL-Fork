@@ -1055,6 +1055,12 @@ AbsorptionColorR = 1.0               # [0.0-5.0] How fast the water absorbs each
 AbsorptionColorG = 0.25
 AbsorptionColorB = 0.3
 AbsorptionDepth = 1.0                # [0.1-5.0] How fast light is absorbed over the real depth of water the view passes through. At 1, 5 m of water still shows the bed clearly, 20 m barely. Higher is murkier, lower clearer.
+WaveHeight = 8.0                     # [0-60] Height of the rolling waves, in game units (about 70 to a metre): real wave shapes with sharp crests and broad troughs, moving at the speed real water waves of their size do. Pools and interior water get a third of it. 0 leaves only the fine wave texture.
+WaveLength = 600.0                   # [50-5000] Length of the longest waves, in game units. Shorter waves roll in with it.
+WaveDirection = 45.0                 # [0-360] Direction the waves roll toward, in degrees.
+WaveSteepness = 0.6                  # [0.0-1.0] How sharp the wave crests are: 0 smooth, rounded swells; 1 peaked crests between broad flat troughs.
+Whitecaps = 0.3                      # [0.0-1.0] The tallest crests break into foam. More starts it lower on the waves. 0 off.
+WaveParallax = 1.0                   # [0.0-2.0] Waves stand up from the surface: seen at a low angle the crests hide the troughs behind them. 0 off.
 Caustics = 0.8                       # [0.0-3.0] Sunlight focused by the waves into bright rippling lines on the bed in shallow water. 0 off.
 CausticsScale = 350.0                # [50-3000] Size of the caustic pattern on the bed, in game units (about 70 to a metre).
 SunShadows = 1.0                     # [0.0-1.0] How much the sun shadow takes off the water where something shades it: the sun glint, the caustics, the glow through the waves and the sunlit water colour. The reflection stays. Needs ForwardShadows ([Shaders.ShadowsExteriors.Main]). 0 off.
@@ -1066,7 +1072,7 @@ ReflectionBlur = 0.5                 # [0.0-3.0] Blurs the reflection where the 
 Foam = 0.8                           # [0.0-1.0] Foam where the water meets the shore and around anything standing in it: solid at the edge, breaking into drifting patches further out. 0 off.
 FoamWidth = 15.0                     # [2-400] How far out from the edge the foam reaches: the distance the view passes through the water there (game units, about 70 to a metre).
 ShoreFadeWidth = 20.0                # [0-300] The water fades out softly over this much depth at the shoreline, lapping gently in and out (shoreMovement sets the speed). 0: no fade.
-DebugView = 0                        # [0-11] Shows one term on its own. 1 sun shadow on the surface (black in shadow). 2 what still shows through the water, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white widened). 6 point-light glints. 7 the path the view takes through the water (black 0, white 20 m). 8 the depth below the surface (black 0, white 20 m). 9 foam. 10 shoreline fade (black see-through, white solid). 11 caustics. 0 off.
+DebugView = 0                        # [0-12] Shows one term on its own. 1 sun shadow on the surface (black in shadow). 2 what still shows through the water, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white widened). 6 point-light glints. 7 the path the view takes through the water (black 0, white 20 m). 8 the depth below the surface (black 0, white 20 m). 9 foam. 10 shoreline fade (black see-through, white solid). 11 caustics. 12 wave height (black trough, white crest). 0 off.
 
 [_Shaders.Water.Default]
 choppiness = 0.7                    # Outdoor water. Wave steepness: higher gives more defined wave crests.

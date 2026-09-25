@@ -23,6 +23,8 @@ void WaterShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WaterLighting4", &Constants.Lighting4);
 	TheShaderManager->RegisterConstant("TESR_WaterScatterColor", &Constants.ScatterColor);
 	TheShaderManager->RegisterConstant("TESR_WaterAbsorption", &Constants.Absorption);
+	TheShaderManager->RegisterConstant("TESR_WaterWaves", &Constants.Waves);
+	TheShaderManager->RegisterConstant("TESR_WaterWaves2", &Constants.Waves2);
 }
 
 
@@ -119,13 +121,21 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting2.x = Read("SpecularAA", 0.0f, 1.0f);
 	Constants.Lighting2.y = Read("PointLights", 0.0f, 3.0f);
 	Constants.Lighting2.z = Read("SunGlitter", 0.0f, 3.0f);
-	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 11);
+	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 12);
 	Constants.Lighting3.x = Read("Foam", 0.0f, 1.0f);
 	Constants.Lighting3.y = ReadOr("FoamWidth", 2.0f, 400.0f, 15.0f);
 	Constants.Lighting3.z = Read("ShoreFadeWidth", 0.0f, 300.0f);
 	Constants.Lighting3.w = Read("ReflectionBlur", 0.0f, 3.0f);
 	Constants.Lighting4.x = Read("Caustics", 0.0f, 3.0f);
 	Constants.Lighting4.y = ReadOr("CausticsScale", 50.0f, 3000.0f, 350.0f);
+
+	// Wave shape: off at WaveHeight 0 (also missing), which leaves the normal-map waves alone.
+	Constants.Waves.x = Read("WaveHeight", 0.0f, 60.0f);
+	Constants.Waves.y = ReadOr("WaveLength", 50.0f, 5000.0f, 600.0f);
+	Constants.Waves.z = Read("WaveDirection", 0.0f, 360.0f) * 0.0174532925f;
+	Constants.Waves.w = Read("WaveSteepness", 0.0f, 1.0f);
+	Constants.Waves2.x = Read("Whitecaps", 0.0f, 1.0f);
+	Constants.Waves2.y = Read("WaveParallax", 0.0f, 2.0f);
 
 	// The water body's glow colour. All three 0 (also missing) means the water form's own colours.
 	D3DXVECTOR4 scatter(Read("ScatterColorR", 0.0f, 2.0f), Read("ScatterColorG", 0.0f, 2.0f), Read("ScatterColorB", 0.0f, 2.0f), 1.0f);
