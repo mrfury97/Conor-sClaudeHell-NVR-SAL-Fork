@@ -237,6 +237,13 @@ PS_OUTPUT main(PS_INPUT IN) {
 #else
     float3 reflection = getBlurredReflection(reflectionPos, N);
 #endif
+    // What the screen itself shows along the reflected ray, where it can be found there.
+    WaterProjector projector = getWaterProjector(IN);   // derivatives: top level
+    float3 reflectedRay = reflect(-eyeDirection, N);
+    reflectedRay = normalize(float3(reflectedRay.xy, max(reflectedRay.z, 0.02f)));
+    float screenReflectionAmount;
+    float3 screenReflection = getScreenSpaceReflection(IN, projector, screenMap, reflectedRay, screenReflectionAmount);
+    reflection = lerp(reflection, screenReflection, screenReflectionAmount);
 
     // Sun shadow on the surface, and foam (top level: texture reads).
 #if WATER_SUNLIT
@@ -299,6 +306,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     debug.straightDepth = straightPath.y;
     debug.sceneEmpty = getSceneEmpty(screenMap, straightUV);
     debug.depthCopies = getDepthCopies(screenMap, surface, straightUV);
+    debug.screenReflection = screenReflection * screenReflectionAmount;
 #endif
 
     OUT.color_0 = float4(applyDistanceFog(color, eyeDistance), alpha);

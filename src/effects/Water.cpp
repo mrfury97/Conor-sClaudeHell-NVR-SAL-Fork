@@ -121,13 +121,14 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting2.x = Read("SpecularAA", 0.0f, 1.0f);
 	Constants.Lighting2.y = Read("PointLights", 0.0f, 3.0f);
 	Constants.Lighting2.z = Read("SunGlitter", 0.0f, 3.0f);
-	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 15);
+	Constants.Lighting2.w = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 16);
 	Constants.Lighting3.x = Read("Foam", 0.0f, 1.0f);
 	Constants.Lighting3.y = ReadOr("FoamWidth", 2.0f, 400.0f, 12.0f);
 	Constants.Lighting3.z = Read("ShoreFadeWidth", 0.0f, 300.0f);
 	Constants.Lighting3.w = Read("ReflectionBlur", 0.0f, 3.0f);
 	Constants.Lighting4.x = Read("Caustics", 0.0f, 3.0f);
 	Constants.Lighting4.y = ReadOr("CausticsScale", 50.0f, 3000.0f, 220.0f);
+	Constants.Lighting4.w = Read("ScreenSpaceReflections", 0.0f, 1.0f);
 
 	// Wave shape: off at WaveHeight 0 (also missing), which leaves the normal-map waves alone.
 	Constants.Waves.x = Read("WaveHeight", 0.0f, 60.0f);

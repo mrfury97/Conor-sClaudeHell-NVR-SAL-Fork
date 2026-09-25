@@ -25,7 +25,7 @@ struct PS_OUTPUT {
 //   TESR_WaterLighting     x: SunShadows      y: AbsorptionDepth  z: WaterColorBrightness  w: WaveScattering
 //   TESR_WaterLighting2    x: SpecularAA      y: PointLights      z: SunGlitter            w: DebugView
 //   TESR_WaterLighting3    x: Foam            y: FoamWidth        z: ShoreFadeWidth        w: ReflectionBlur
-//   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)
+//   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)  w: ScreenSpaceReflections
 //   TESR_WaterScatterColor rgb: ScatterColor, w: 1 when set (else the water form's own colours)
 //   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
 //   TESR_WaterWaves        x: WaveHeight (units, trough to crest)  y: WaveLength (units, crest to crest)  z: WaveDirection (radians)  w: WaveSteepness
@@ -281,6 +281,100 @@ float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, Wate
     path = getWaterPathTo(bed, waterPoint);
     return uv;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Screen-space reflections (ScreenSpaceReflections). The game's reflection map is its own lower-detail
+// render of the world: it drops small objects and actors, and is only a flat mirror image bent a
+// little by the waves. The reflected view ray is followed through the scene as it stands on the
+// screen instead -- through TESR_RenderedBuffer, the frame drawn so far, and the depth buffer -- so
+// the pier, the posts and whoever stands on them reflect, at the angle the waves really send the ray.
+// Where the ray leaves the screen, passes behind everything, or heads back toward the camera, the
+// reflection map (or sky, or room) takes over, faded in so there is no edge.
+//
+// Points along the ray are projected with the water's own projection (the vertex shader's four
+// rows, which work in the water mesh's own space): a world offset turns into a mesh offset by the
+// water's scale, and horizontally by how the two change from pixel to pixel (a placed water may be
+// turned against the world).
+// ---------------------------------------------------------------------------------------------
+#if !WATER_LOD && !WATER_BELOW
+// MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
+sampler2D TESR_RenderedBuffer : register(s12) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+
+struct WaterProjector {
+    float4 toMeshXY;    // mesh offset per world x (xy) and per world y (zw)
+    float toMeshZ;      // mesh offset per world z
+};
+
+// Top level only (derivatives).
+WaterProjector getWaterProjector(PS_INPUT IN){
+    WaterProjector projector;
+    float2 wx = ddx(IN.LTEXCOORD_0.xy);
+    float2 wy = ddy(IN.LTEXCOORD_0.xy);
+    float2 lx = ddx(IN.LTEXCOORD_1.xy);
+    float2 ly = ddy(IN.LTEXCOORD_1.xy);
+    float det = wx.x * wy.y - wy.x * wx.y;
+    float invScale = 1.0f / max(IN.LTEXCOORD_0.w, 1e-4f);
+    projector.toMeshXY = abs(det) > 1e-8f ? float4((lx * wy.y - ly * wx.y) / det, (ly * wx.x - lx * wy.x) / det)
+                                          : float4(invScale, 0.0f, 0.0f, invScale);
+    projector.toMeshZ = invScale;
+    return projector;
+}
+
+// Screen position (xy) and distance along the view axis (z) of the point worldOffset away from the pixel.
+float3 projectFromWater(PS_INPUT IN, WaterProjector projector, float3 worldOffset){
+    float3 mesh = float3(projector.toMeshXY.xy * worldOffset.x + projector.toMeshXY.zw * worldOffset.y, worldOffset.z * projector.toMeshZ);
+    float4 p = float4(IN.LTEXCOORD_1.xyz + mesh, 1.0f);
+    float w = dot(IN.LTEXCOORD_5, p);
+    float x = dot(IN.LTEXCOORD_2, p);
+    float y = w - dot(IN.LTEXCOORD_3, p);
+    return float3(float2(x, y) / max(w, 1e-3f), w);
+}
+
+// The reflection along R from the water pixel, and how far it can be trusted (confidence, 0-1).
+float3 getScreenSpaceReflection(PS_INPUT IN, WaterProjector projector, WaterScreenMap map, float3 R, out float confidence){
+    const float maxDistance = 4000.0f;
+    confidence = 0.0f;
+    // Rays heading back toward the camera find the backs of things, which are not on the screen.
+    float towardScreen = (projectFromWater(IN, projector, R * 100.0f).z - map.viewZ) / 100.0f;
+    float directionFade = saturate(towardScreen * 4.0f + 1.0f);
+    if (TESR_WaterLighting4.w <= 0.0f || directionFade <= 0.0f) return 0.0f;
+
+    float before = 0.0f;
+    float after = 0.0f;
+    bool hit = false;
+    [loop]
+    for (int i = 1; i <= 16; i++) {
+        float t = maxDistance * (i * i) / 256.0f;   // finer steps near the surface
+        float3 ray = projectFromWater(IN, projector, R * t);
+        if (ray.z <= 1.0f || any(ray.xy != saturate(ray.xy))) break;
+        float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(ray.xy, 0.0f, 0.0f)).x);
+        // Behind what is on the screen there, but not so far behind that it passed behind it.
+        if (ray.z > sceneZ && ray.z - sceneZ < 40.0f + t * 0.1f) {
+            after = t;
+            hit = true;
+            break;
+        }
+        before = t;
+    }
+    if (!hit) return 0.0f;
+
+    // Close in on where the ray meets the surface.
+    [loop]
+    for (int j = 0; j < 5; j++) {
+        float t = 0.5f * (before + after);
+        float3 ray = projectFromWater(IN, projector, R * t);
+        float sceneZ = getViewZFromDepth(map, tex2Dlod(TESR_DepthBufferWorld, float4(ray.xy, 0.0f, 0.0f)).x);
+        if (ray.z > sceneZ) after = t;
+        else before = t;
+    }
+    float3 hitPoint = projectFromWater(IN, projector, R * after);
+    float2 edge = min(hitPoint.xy, 1.0f - hitPoint.xy);
+    float edgeFade = saturate(min(edge.x, edge.y) * 10.0f);
+    float distanceFade = 1.0f - smoothstep(0.6f, 1.0f, after / maxDistance);
+    confidence = edgeFade * distanceFade * directionFade * saturate(TESR_WaterLighting4.w);
+    return linearize(tex2Dlod(TESR_RenderedBuffer, float4(hitPoint.xy, 0.0f, 0.0f))).rgb;
+}
+#endif
 
 // The bed as seen through the water. Blurred the more water it is seen through (RefractionBlur),
 // as fine particles in the water soften what lies deep; and split slightly by colour along the bend
@@ -734,6 +828,8 @@ float getWaterSunShadow(float3 surfaceFromCamera){
 //     depth taken before any water; blue where the first shows the water itself (the second is
 //     used there). Yellow-grey: both agree. Green: something drawn in between is in front (the pier,
 //     or other water at another height)
+//  16 screen-space reflections: what they found, weighted by how far they are trusted (black: the
+//     reflection map, sky or room is used there)
 // ---------------------------------------------------------------------------------------------
 struct WaterDebug {
     float shadow;
@@ -751,6 +847,7 @@ struct WaterDebug {
     float straightDepth;
     float sceneEmpty;
     float3 depthCopies;
+    float3 screenReflection;
 };
 
 float3 getWaterDebugView(float view, WaterDebug d){
@@ -769,5 +866,6 @@ float3 getWaterDebugView(float view, WaterDebug d){
     result = view > 12.5f ? saturate(d.depthCalibration * 0.5f) : result;
     result = view > 13.5f ? (d.sceneEmpty > 0.5f ? float3(1.0f, 0.0f, 0.0f) : saturate(d.straightDepth / (100.0f * WATER_UNITS_PER_METRE)).xxx) : result;
     result = view > 14.5f ? float3(saturate(d.depthCopies.xy / (20.0f * WATER_UNITS_PER_METRE)), d.depthCopies.z) : result;
+    result = view > 15.5f ? saturate(d.screenReflection) : result;
     return result;
 }
