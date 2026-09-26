@@ -1061,6 +1061,7 @@ WaveDirection = 45.0                 # [0-360] Direction the waves travel toward
 WaveDirectionFromWind = true         # The waves travel with the weather's wind instead of WaveDirection, turning with it (2 degrees a second, in place around the player) when the weather changes. The wind the game reports is written to the NVR log when it changes.
 WindDirectionOffset = 0.0            # [-360-360] Degrees added to the wind's direction: set 180 if the waves run against the clouds instead of with them.
 WaveSteepness = 0.4                  # [0.0-1.0] How steep the waves look: how strongly their slopes shade and glint. 0.5 is the waves as they are.
+CrestSharpness = 0.6                 # [0.0-1.0] How pointed the wave crests are: real wind waves come to a peak with broad, flat troughs between them (the Stokes shape). Also shapes the parallax, so the crests stand up in silhouette. 0 round, symmetric waves.
 Whitecaps = 0.2                      # [0.0-1.0] Where the wave crests fold over, they break into foam. More takes less folding. 0 off.
 WaveParallax = 1.0                   # [0.0-2.0] Waves stand up from the surface: seen at a low angle the crests hide the troughs behind them. 0 off.
 Ripples = 0.5                        # [0.0-2.0] Strength of the fine ripples riding on the waves (the normal-map detail), which glint and shade the surface. They travel downwind with the waves. 0 off. (Replaces the water sections' choppiness, which Complex Water no longer uses.)

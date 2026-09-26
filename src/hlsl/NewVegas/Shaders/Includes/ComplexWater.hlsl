@@ -23,7 +23,7 @@ struct PS_OUTPUT {
 // engine's water constants (c0-c13), of the template's own (c14-c72), of Shadow.hlsl (c100-c133)
 // and of the scene-depth constants below (c192-c201).
 //   TESR_WaterLighting     x: SunShadows      y: AbsorptionDepth  z: WaterColorBrightness  w: WaveScattering
-//   TESR_WaterLighting2    x: SpecularAA      y: PointLights      z: SunGlitter
+//   TESR_WaterLighting2    x: SpecularAA      y: PointLights      z: SunGlitter            w: CrestSharpness
 //   TESR_WaterLighting3    x: Foam            y: FoamWidth        z: ShoreFadeWidth        w: ReflectionBlur
 //   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)  w: RippleSize
 //   TESR_WaterScatterColor rgb: ScatterColor, w: 1 when set (else the water form's own colours)
@@ -426,15 +426,32 @@ float4 sampleWaveLayer(float2 worldPos, float2 dir, float tile, float2 offset, f
 }
 
 // The height of the waves at worldPos, for the parallax trace.
+// Crest sharpness (CrestSharpness): real wind waves are not symmetric -- the crests come to a point
+// and the troughs are broad and flat. The second-order (Stokes) correction does just that: a term in
+// the height squared lifts the crests and fills the troughs, less the mean it adds, so the water
+// level stays where it was. h + s (h^2 / r - mean), s up to 0.5 of the tallest height r, so the
+// slope (times 1 + 2 s h / r) never turns over in the deepest trough. slopeFactor: what the slopes
+// are scaled by at this height.
+float shapeWaveCrest(WaveField field, float h, out float slopeFactor){
+    float r = max(field.height * (1.0f + WAVE_LAYER_B_SCALE), 1e-3f);
+    float s = 0.5f * saturate(TESR_WaterLighting2.w);
+    float sigma = field.height / WAVE_TEX_HEIGHT_MAX;
+    float meanSquare = sigma * sigma * (1.0f + WAVE_LAYER_B_SCALE * WAVE_LAYER_B_SCALE) / r;
+    slopeFactor = 1.0f + 2.0f * s * h / r;
+    return h + s * (h * h / r - meanSquare);
+}
+
 float getWaveFieldHeight(WaveField field, float2 worldPos){
     float a = sampleWaveLayer(worldPos - TESR_WaterWaveOrigin.xy, field.dirA, field.tileA, 0.0f, field.timeA, field.lodA).b;
     float b = sampleWaveLayer(worldPos - TESR_WaterWaveOrigin.zw, field.dirB, field.tileB, WAVE_LAYER_B_OFFSET, field.timeB, field.lodB).b;
-    return field.height * ((a * 2.0f - 1.0f) + WAVE_LAYER_B_SCALE * (b * 2.0f - 1.0f));
+    float slopeFactor;
+    return shapeWaveCrest(field, field.height * ((a * 2.0f - 1.0f) + WAVE_LAYER_B_SCALE * (b * 2.0f - 1.0f)), slopeFactor);
 }
 
 // The tallest the waves can reach.
 float getWaveFieldRange(WaveField field){
-    return max(field.height * (1.0f + WAVE_LAYER_B_SCALE), 1e-3f);
+    // The sharpened crests reach up to (1 + s) of the unshaped height (shapeWaveCrest).
+    return max(field.height * (1.0f + WAVE_LAYER_B_SCALE) * (1.0f + 0.5f * saturate(TESR_WaterLighting2.w)), 1e-3f);
 }
 
 // Height, world slope (dh/dx, dh/dy) and crest folding at worldPos.
@@ -447,7 +464,10 @@ float getWaveFieldSurface(WaveField field, float2 worldPos, out float2 slope, ou
     slope = field.slope * (slopeA.x * field.dirA + slopeA.y * float2(-field.dirA.y, field.dirA.x)
                          + slopeB.x * field.dirB + slopeB.y * float2(-field.dirB.y, field.dirB.x));
     fold = max(a.a, b.a * 0.7f);
-    return field.height * ((a.b * 2.0f - 1.0f) + WAVE_LAYER_B_SCALE * (b.b * 2.0f - 1.0f));
+    float slopeFactor;
+    float height = shapeWaveCrest(field, field.height * ((a.b * 2.0f - 1.0f) + WAVE_LAYER_B_SCALE * (b.b * 2.0f - 1.0f)), slopeFactor);
+    slope *= slopeFactor;
+    return height;
 }
 
 // Parallax (WaveParallax): a wave standing up hides what is behind it, and seen at a low angle the
