@@ -371,8 +371,8 @@ sampler3D TESR_WaterWavesMap : register(s11) < string ResourceName = "Water\NVR_
 #define WAVE_TEX_PATCH       15.0f     // metres the patch spans
 #define WAVE_TEX_PERIOD      12.0f     // seconds its loop lasts at that size
 #define WAVE_TEX_PEAK        3.0f      // patch size over the peak wavelength
-#define WAVE_TEX_HEIGHT_MAX  3.4428f   // stored height 1 over the height's standard deviation
-#define WAVE_TEX_SLOPE_SCALE 126.5689f // slope_max * patch / standard deviation
+#define WAVE_TEX_HEIGHT_MAX  3.5205f   // stored height 1 over the height's standard deviation
+#define WAVE_TEX_SLOPE_SCALE 147.9828f // slope_max * patch / standard deviation
 // The second layer: its size and height against the first, its turn, and offsets in place and time.
 #define WAVE_LAYER_B_SCALE   0.37f
 #define WAVE_LAYER_B_ANGLE   0.55f

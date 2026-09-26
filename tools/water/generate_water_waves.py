@@ -33,7 +33,7 @@ FRAMES = 192           # frames over the loop: enough that blending between them
 PATCH = 15.0           # metres across the patch
 PERIOD = 12.0          # seconds the loop lasts
 PEAK_WAVELENGTH = 5.0  # metres: the spectrum's peak (a light breeze over a lake)
-MIN_WAVELENGTH = 1.0   # metres: shorter waves are left to the detail normal map
+MIN_WAVELENGTH = 0.6   # metres: shorter waves are left to the detail normal map
 GRAVITY = 9.81
 SEED = 1234
 TARGET_MIN_JACOBIAN = 0.15  # how far the choppiness pulls the crests together (1 none, 0 folds)
@@ -53,10 +53,13 @@ def spectrum():
     big_l = 1.0 / (np.sqrt(2.0) * k_peak)
     phillips = np.exp(-1.0 / (k_safe * big_l) ** 2) / k_safe ** 4
 
-    # Direction: mostly along the wind (cos^4), a little across it, little against it.
+    # Direction: along the wind, spread as cos^8 (half the energy within about 30 degrees of it), so
+    # the crests run in long rows across the wind; next to nothing against it. Waves meeting their
+    # like from the other way stand -- the surface bobs up and down in place like jelly instead of
+    # travelling -- which an earlier 22% against the wind (and 8% every way) did.
     c = kx / k_safe
-    along = np.where(c >= 0.0, c ** 4, 0.15 * c ** 4)
-    phillips *= 0.92 * along + 0.08
+    along = np.where(c >= 0.0, c ** 8, 0.01 * c ** 8)
+    phillips *= 0.99 * along + 0.01
 
     # Leave the waves shorter than MIN_WAVELENGTH out, smoothly.
     k_cut = 2.0 * np.pi / MIN_WAVELENGTH
