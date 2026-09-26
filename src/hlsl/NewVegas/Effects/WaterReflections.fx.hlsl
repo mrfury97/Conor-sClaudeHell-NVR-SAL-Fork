@@ -6,11 +6,6 @@
 // water takes that pixel's colour in proportion to the Fresnel reflectance; where it finds nothing
 // (the sky, anything off screen) the water keeps the reflection it was drawn with.
 //
-// Two passes. The first traces only every other water pixel, in a checkerboard; the second fills the
-// pixels between from what the reflection added to their four traced neighbours (added to their own
-// colour, so the water under it stays sharp): half the rays for a reflection the 4-tap blur already
-// softens that much. Debug views trace every pixel.
-//
 // TESR_WaterReflectionsData  x: Strength  y: MaxDistance (units)  z: Distortion (0-1, how much the
 //                            waves bend the reflection)  w: DebugView
 //   DebugView 1: water mask (white where the effect runs)
@@ -39,7 +34,6 @@ float4 TESR_WaterReflectionsData;
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBufferViewModel : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
-sampler2D TESR_RenderedBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler3D TESR_WaterWavesMap : register(s3) < string ResourceName = "Water\NVR_WaterWaves.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 struct VSOUT
@@ -152,19 +146,6 @@ float getNoise(float2 pixel){
 	return frac(52.9829189f * frac(dot(pixel, float2(0.06711056f, 0.00583715f))));
 }
 
-// Whether the first pass traces this pixel: every other one, in a checkerboard; all of them in a
-// debug view.
-bool isTracedPixel(float2 uv){
-	float2 pixel = floor(uv / TESR_ReciprocalResolution.xy);
-	return debugView > 0 || fmod(pixel.x + pixel.y, 2.0f) < 0.5f;
-}
-
-// The water, found by the depth buffer: a surface at the water height, below the camera.
-bool isWaterAt(float2 uv, float depth){
-	float3 surface = toWorld(uv) * depth;
-	return depth < farZ * 0.99f && surface.z < 0.0f && isWaterHeight(surface.z + TESR_CameraPosition.z, depth);
-}
-
 float4 WaterReflections(VSOUT IN) : COLOR0
 {
 	float2 uv = IN.UVCoord;
@@ -178,8 +159,6 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	bool water = depth < farZ * 0.99f && surface.z < 0.0f && isWaterHeight(worldPos.z, depth);
 	if (debugView == 1) return water ? white : black;
 	if (!water) return color;
-	// The pixels between are filled by the second pass.
-	if (!isTracedPixel(uv)) return color;
 	if (debugView == 5) {
 		float3 above = toScreen(surface + float3(0.0f, 0.0f, 105.0f));
 		return all(above.xy == saturate(above.xy)) ? tex2Dlod(TESR_SourceBuffer, float4(above.xy, 0.0f, 0.0f)) : magenta;
@@ -328,27 +307,6 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	return float4(delinearize(lerp(base, reflection, amount)), 1.0f);
 }
 
-// Second pass: the water pixels the first skipped take the average of what the reflection added to
-// their four neighbours (all traced, on a checkerboard), on top of their own colour. Linear, as the
-// first pass blends. Everything else stays as the first pass left it.
-float4 WaterReflectionsFill(VSOUT IN) : COLOR0
-{
-	float2 uv = IN.UVCoord;
-	float4 rendered = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0.0f, 0.0f));
-	if (isTracedPixel(uv) || !isWaterAt(uv, readDepthLod(uv))) return rendered;
-
-	float2 texel = TESR_ReciprocalResolution.xy;
-	float3 added = 0.0f;
-	[unroll]
-	for (int i = 0; i < 4; i++) {
-		float2 offset = i == 0 ? float2(texel.x, 0.0f) : (i == 1 ? float2(-texel.x, 0.0f) : (i == 2 ? float2(0.0f, texel.y) : float2(0.0f, -texel.y)));
-		float4 neighbour = float4(uv + offset, 0.0f, 0.0f);
-		added += linearize(tex2Dlod(TESR_RenderedBuffer, neighbour).rgb) - linearize(tex2Dlod(TESR_SourceBuffer, neighbour).rgb);
-	}
-	float3 base = linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb);
-	return float4(delinearize(max(base + added * 0.25f, 0.0f)), 1.0f);
-}
-
 technique
 {
 	pass
@@ -357,13 +315,6 @@ technique
 		PixelShader = compile ps_3_0 WaterReflections();
 		// Written as is: whatever blending or alpha test the frame left on would otherwise weigh the
 		// result by the water's alpha (its shoreline fade), as SMAA also guards against.
-		AlphaBlendEnable = false;
-		AlphaTestEnable = false;
-	}
-	pass
-	{
-		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 WaterReflectionsFill();
 		AlphaBlendEnable = false;
 		AlphaTestEnable = false;
 	}
