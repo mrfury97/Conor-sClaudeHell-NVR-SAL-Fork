@@ -29,8 +29,8 @@ float4 TESR_WaterSettings;        // x: water height
 float4 TESR_WaterWaves;           // x: WaveHeight  y: WaveLength  z: WaveDirection  w: WaveSteepness
 float4 TESR_WaterWaveOrigin;      // xy the first wave layer's origin in the world, zw the second's
 float4 TESR_WaterLighting3;       // w: ReflectionBlur
-float4 TESR_WaterLighting4;       // z: 1 outdoors, 0 indoors  w: RippleSize
-float4 TESR_WaterLighting5;       // x: 1 when the game's reflection map is drawn (GameReflections)  w: Ripples
+float4 TESR_WaterLighting4;       // z: 1 outdoors, 0 indoors
+float4 TESR_WaterLighting5;       // x: 1 when the game's reflection map is drawn (GameReflections)
 float4 TESR_SkyColor;
 float4 TESR_SkyLowColor;
 float4 TESR_HorizonColor;
@@ -39,7 +39,6 @@ float4 TESR_WaterReflectionsData;
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBufferViewModel : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
-sampler2D TESR_samplerWater : register(s4) < string ResourceName = "Water\water_NRM.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler3D TESR_WaterWavesMap : register(s3) < string ResourceName = "Water\NVR_WaterWaves.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 struct VSOUT
@@ -130,49 +129,6 @@ float2 getWaveSlope(float2 worldPos, float pixelSize){
 	                   + sampleWaveSlope(worldPos - TESR_WaterWaveOrigin.zw, dirB, tileB, WAVE_LAYER_B_OFFSET, timeB, lodB));
 }
 
-float2 rotateWaterUV(float2 uv, float angle){
-	float s = sin(angle);
-	float c = cos(angle);
-	return float2(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
-}
-
-// The gusts of the water shader (getWaveGusts): a factor on the slopes, 0.65 to 1.35.
-float getWaveGusts(float2 worldPos){
-	float angle = TESR_WaterWaves.z;
-	float2 dirA = float2(cos(angle), sin(angle));
-	float tileA = max(TESR_WaterWaves.y, 1.0f) * WAVE_TEX_PEAK;
-	float2 p = worldPos - TESR_WaterWaveOrigin.xy;
-	float2 uv = float2(dot(p, dirA), dot(p, float2(-dirA.y, dirA.x))) / (tileA * 24.0f) + float2(0.5f, 0.25f);
-	float g = tex3Dlod(TESR_WaterWavesMap, float4(uv, TESR_GameTime.z / 600.0f, 3.0f)).b;
-	return lerp(0.65f, 1.35f, saturate((g - 0.5f) * 2.5f + 0.5f));
-}
-
-// The ripples of the water shader (getWaveNormal: Ripples, RippleSize), as a world slope, so the
-// reflection wobbles with the same ripples the water is shaded with. tex2Dgrad, the gradients from
-// the pixel's world footprint (dwx, dwy: ddx and ddy of the world position, taken at the top).
-float2 getRippleSlope(float2 worldPos, float2 dwx, float2 dwy, float distance){
-	float size = max(TESR_WaterWaves.y, 1.0f) * max(TESR_WaterLighting4.w, 0.05f);
-	float2 p = worldPos / size;
-	float2 gx = dwx / size;
-	float2 gy = dwy / size;
-	float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
-	float time = TESR_GameTime.z;
-	#define RIPPLE_TRAVEL(s) (sqrt(109.3f * size / ((s) * 8.0f)) * time / size)
-	#define RIPPLE(s, turn, angle) expand(tex2Dgrad(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(wind, turn) * RIPPLE_TRAVEL(s)) * (s), angle), rotateWaterUV(gx * (s), angle), rotateWaterUV(gy * (s), angle)).xyz)
-	float near = 1.0f - saturate(distance / 3000.0f);
-	float3 swell  = RIPPLE(0.15f,  0.10f, 0.61f);
-	float3 large  = RIPPLE(0.5f,   0.25f, 1.23f);
-	float3 medium = RIPPLE(2.0f,  -0.30f, 2.17f);
-	float3 micro  = RIPPLE(4.0f,   0.45f, 2.89f);
-	float patches = 0.6f + 0.8f * saturate(tex2Dgrad(TESR_samplerWater, (p - wind * RIPPLE_TRAVEL(0.15f) * 0.2f) * 0.03f, gx * 0.03f, gy * 0.03f).x);
-	#undef RIPPLE
-	#undef RIPPLE_TRAVEL
-	float2 tilt = (swell.xy * 0.3f + large.xy + medium.xy * 0.5f + micro.xy * 0.3f * near) * patches;
-	float up = (swell.z * 0.3f + large.z + medium.z * 0.5f + micro.z * 0.3f * near) / max(TESR_WaterLighting5.w, 1e-6f);
-	float3 n = normalize(float3(tilt, up));
-	return n.xy / max(n.z, 0.1f);
-}
-
 // The water shader's sky along a reflected ray (getSkyReflection), what outdoor water reflects when
 // the game's reflection map is not drawn. Linear.
 float3 getSkyReflection(float3 R){
@@ -210,9 +166,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	float depth = readDepth(uv);
 	float3 surface = toWorld(uv) * depth;                        // camera-relative
 	float3 worldPos = surface + TESR_CameraPosition.xyz;
-	float2 dwx = ddx(worldPos.xy);
-	float2 dwy = ddy(worldPos.xy);
-	float pixelSize = max(length(dwx), length(dwy));
+	float pixelSize = max(length(ddx(worldPos.xy)), length(ddy(worldPos.xy)));
 
 	bool water = depth < farZ * 0.99f && surface.z < 0.0f && isWaterHeight(worldPos.z, depth);
 	if (debugView == 1) return water ? white : black;
@@ -225,22 +179,15 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// The normal of the waves, and the view ray turned off it. Kept pointing up: a ray turned into
 	// the water would have nothing to reflect.
 	float3 eyeDirection = normalize(surface);                   // camera to surface
-	// The waves (the wave field, scaled by the gusts, as the water shader has them) aim the reflected
-	// ray. The fine ripples on them do not: each pixel following its own ripple splinters a reflection
-	// into long jagged streaks, where on real water thousands of them only smear it -- so they widen
-	// the blur (rippleSlope, below) and weigh the reflection (the Fresnel, on the full normal).
+	// The normal of the waves (the wave field alone), and the view ray turned off it. Kept pointing
+	// up: a ray turned into the water would have nothing to reflect.
 	float2 slope = 0.0f;
-	float2 rippleSlope = 0.0f;
-	[branch] if (distortion > 0.0f) {
-		float gust = getWaveGusts(worldPos.xy);
-		slope = getWaveSlope(worldPos.xy, pixelSize) * gust * distortion;
-		[branch] if (TESR_WaterLighting5.w > 0.0f) rippleSlope = getRippleSlope(worldPos.xy, dwx, dwy, length(surface.xy)) * gust;
-	}
+	[branch] if (distortion > 0.0f) slope = getWaveSlope(worldPos.xy, pixelSize) * distortion;
 	float3 N = normalize(float3(-slope, 1.0f));
 	float3 R = reflect(eyeDirection, N);
 	R = normalize(float3(R.xy, max(R.z, 0.02f)));
 
-	float cosTheta = saturate(dot(-eyeDirection, normalize(float3(-slope - rippleSlope * distortion, 1.0f))));
+	float cosTheta = saturate(dot(-eyeDirection, N));
 	// As the water shader weighs its own reflection (getFresnel): real water's.
 	float fresnel = WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f);
 	// Too little reflection to see (looking steeply down, or a low Strength): not
@@ -360,12 +307,12 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 
 	// Blurred as rippled water blurs a reflection: by a cone around the ray, so sharp where a post
 	// meets the water and softer up it, the further the ray went (the cone widens with the water's
-	// ReflectionBlur, the slope here, and most with the ripples). Eight taps, in two rings. Wider where the front stands in
+	// ReflectionBlur and the slope here). Eight taps, in two rings. Wider where the front stands in
 	// for an underside, whose single edge row would otherwise streak down the water; that underside is
 	// in its own shade (the pier's, over the water), so it is taken darker than the lit front.
 	float2 reflectedUV = lerp(start.xy, end.xy, hitT);
 	float worldPerPixel = hitDepth * 2.0f * TESR_ReciprocalResolution.y / TESR_ProjectionTransform[1][1];
-	float cone = 0.01f + 0.03f * saturate(TESR_WaterLighting3.w / 3.0f) + length(slope) * 0.05f + length(rippleSlope) * 0.25f;
+	float cone = 0.01f + 0.03f * saturate(TESR_WaterLighting3.w / 3.0f) + length(slope) * 0.1f;
 	float radius = clamp(hitDistance * cone / max(worldPerPixel, 1e-3f), loose ? 4.0f : 1.0f, 16.0f);
 	float2 r1 = TESR_ReciprocalResolution.xy * radius * 0.7071f;
 	float2 r2 = TESR_ReciprocalResolution.xy * radius * 0.5f;
