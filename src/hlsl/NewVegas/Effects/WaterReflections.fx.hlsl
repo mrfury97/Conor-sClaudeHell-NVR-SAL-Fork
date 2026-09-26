@@ -6,6 +6,15 @@
 // water takes that pixel's colour in proportion to the Fresnel reflectance; where it finds nothing
 // (the sky, anything off screen) the water keeps the reflection it was drawn with.
 //
+// Two passes. The first traces only every other water pixel, in a checkerboard; the second fills the
+// pixels between from what the reflection added to their four traced neighbours (added to their own
+// colour, so the water under it stays sharp): half the rays for a reflection the 4-tap blur already
+// softens that much. Debug views trace every pixel.
+//
+// Shore: the depth of water under each point (the depth taken before any water was drawn) calms the
+// waves' bend in the shallows as the water shader calms them (ShallowWaves), and fades the reflection
+// out over the last 30 units to the waterline, as the water shader fades its own.
+//
 // TESR_WaterReflectionsData  x: Strength  y: MaxDistance (units)  z: Distortion (0-1, how much the
 //                            waves bend the reflection)  w: DebugView
 //   DebugView 1: water mask (white where the effect runs)
@@ -22,18 +31,24 @@
 //                off the screen) -- checks the projection on its own
 //             6: the ray's first step that went behind something (not the water): its distance behind, over the
 //                thickness allowed (green within, red beyond; black never behind)
+//             7: the depth of water under each point, black 0 to white 20 m (as the water shader's
+//                DebugView 8 near the pixel): checks the depth taken before the water
 
 float4 TESR_ReciprocalResolution;
 float4 TESR_GameTime;
 float4 TESR_WaterSettings;        // x: water height
 float4 TESR_WaterReflectionsWaves;  // the cell's water's Complex Water waves: x WaveHeight  y WaveLength  z WaveDirection  w WaveSteepness
 float4 TESR_WaterWaveOrigin;      // xy the first wave layer's origin in the world, zw the second's
-float4 TESR_WaterReflectionsBlur;   // w: the cell's water's ReflectionBlur
+float4 TESR_WaterReflectionsBlur;   // x: the cell's water's ShallowWaves (units), w: its ReflectionBlur
 float4 TESR_WaterReflectionsData;
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBufferViewModel : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_RenderedBuffer : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+// The depth buffer as it was before the first water was drawn (ShaderRecord::SetCT), raw: what lies
+// under the water.
+sampler2D TESR_DepthBufferBeforeWater : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler3D TESR_WaterWavesMap : register(s3) < string ResourceName = "Water\NVR_WaterWaves.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 struct VSOUT
@@ -146,6 +161,30 @@ float getNoise(float2 pixel){
 	return frac(52.9829189f * frac(dot(pixel, float2(0.06711056f, 0.00583715f))));
 }
 
+// Whether the first pass traces this pixel: every other one, in a checkerboard; all of them in a
+// debug view.
+bool isTracedPixel(float2 uv){
+	float2 pixel = floor(uv / TESR_ReciprocalResolution.xy);
+	return debugView > 0 || fmod(pixel.x + pixel.y, 2.0f) < 0.5f;
+}
+
+// The water, found by the depth buffer: a surface at the water height, below the camera.
+bool isWaterAt(float2 uv, float depth){
+	float3 surface = toWorld(uv) * depth;
+	return depth < farZ * 0.99f && surface.z < 0.0f && isWaterHeight(surface.z + TESR_CameraPosition.z, depth);
+}
+
+// How deep the water is under the point seen at uv: the depth taken before the water was drawn, turned
+// into a distance along the view axis the way CombineDepth builds TESR_DepthBuffer from the raw
+// buffer (so the two agree), and followed down the same view ray. Nothing behind the water reads as
+// the far plane: deep.
+float getDepthBelow(float2 uv){
+	float raw = tex2Dlod(TESR_DepthBufferBeforeWater, float4(uv, 0.0f, 0.0f)).x;
+	float bedZ = nearZ * farZ / (nearZ + raw * (farZ - nearZ));
+	float bedHeight = TESR_CameraPosition.z + toWorld(uv).z * bedZ;
+	return max(TESR_WaterSettings.x - bedHeight, 0.0f);
+}
+
 float4 WaterReflections(VSOUT IN) : COLOR0
 {
 	float2 uv = IN.UVCoord;
@@ -159,6 +198,16 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	bool water = depth < farZ * 0.99f && surface.z < 0.0f && isWaterHeight(worldPos.z, depth);
 	if (debugView == 1) return water ? white : black;
 	if (!water) return color;
+	// The pixels between are filled by the second pass.
+	if (!isTracedPixel(uv)) return color;
+
+	// The depth of water here: the waves calm in the shallows (as getShallowWaves in the water
+	// shader), and the reflection fades out toward the waterline (as the water shader's does).
+	float depthBelow = getDepthBelow(uv);
+	if (debugView == 7) return float4(saturate(depthBelow / 1400.0f).xxx, 1.0f);
+	float shallowWaves = TESR_WaterReflectionsBlur.x;
+	float shallow = shallowWaves > 0.0f ? smoothstep(0.0f, shallowWaves, depthBelow) : 1.0f;
+	float shoreFade = saturate(depthBelow / 30.0f);
 	if (debugView == 5) {
 		float3 above = toScreen(surface + float3(0.0f, 0.0f, 105.0f));
 		return all(above.xy == saturate(above.xy)) ? tex2Dlod(TESR_SourceBuffer, float4(above.xy, 0.0f, 0.0f)) : magenta;
@@ -168,7 +217,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// the water would have nothing to reflect.
 	float3 eyeDirection = normalize(surface);                   // camera to surface
 	float2 slope = 0.0f;
-	[branch] if (distortion > 0.0f) slope = getWaveSlope(worldPos.xy, pixelSize) * distortion;
+	[branch] if (distortion * shallow > 0.0f) slope = getWaveSlope(worldPos.xy, pixelSize) * distortion * shallow;
 	float3 N = normalize(float3(-slope, 1.0f));
 	float3 R = reflect(eyeDirection, N);
 	R = normalize(float3(R.xy, max(R.z, 0.02f)));
@@ -178,7 +227,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	float fresnel = WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f);
 	// Too little reflection to see (looking steeply down, or a low Strength): not
 	// worth the search. Its whole result would change the water by under 2%.
-	if (debugView == 0 && fresnel * strength < 0.02f) return color;
+	if (debugView == 0 && fresnel * strength * shoreFade < 0.02f) return color;
 
 	// The ray, from the surface to MaxDistance or to just in front of the camera, whichever is
 	// nearer; then as a segment on the screen, cut where it leaves the screen. Along the segment,
@@ -297,7 +346,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x,  spread.y), 0.0f, 0.0f)).rgb)
 	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( spread.x,  spread.y), 0.0f, 0.0f)).rgb);
 	reflection *= loose ? 0.25f * 0.3f : 0.25f;
-	float amount = saturate(fresnel * confidence * strength);
+	float amount = saturate(fresnel * confidence * strength * shoreFade);
 	if (debugView == 3) return float4(delinearize(reflection), 1.0f);
 	if (debugView == 4) return float4(amount.xxx, 1.0f);
 
@@ -305,6 +354,27 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// Alpha 1, as every effect writes: the frame's own alpha on the water is the water shader's
 	// shoreline fade, and blending by it would throw the reflection away.
 	return float4(delinearize(lerp(base, reflection, amount)), 1.0f);
+}
+
+// Second pass: the water pixels the first skipped take the average of what the reflection added to
+// their four neighbours (all traced, on a checkerboard), on top of their own colour. Linear, as the
+// first pass blends. Everything else stays as the first pass left it.
+float4 WaterReflectionsFill(VSOUT IN) : COLOR0
+{
+	float2 uv = IN.UVCoord;
+	float4 rendered = tex2Dlod(TESR_RenderedBuffer, float4(uv, 0.0f, 0.0f));
+	if (isTracedPixel(uv) || !isWaterAt(uv, readDepthLod(uv))) return rendered;
+
+	float2 texel = TESR_ReciprocalResolution.xy;
+	float3 added = 0.0f;
+	[unroll]
+	for (int i = 0; i < 4; i++) {
+		float2 offset = i == 0 ? float2(texel.x, 0.0f) : (i == 1 ? float2(-texel.x, 0.0f) : (i == 2 ? float2(0.0f, texel.y) : float2(0.0f, -texel.y)));
+		float4 neighbour = float4(uv + offset, 0.0f, 0.0f);
+		added += linearize(tex2Dlod(TESR_RenderedBuffer, neighbour).rgb) - linearize(tex2Dlod(TESR_SourceBuffer, neighbour).rgb);
+	}
+	float3 base = linearize(tex2Dlod(TESR_SourceBuffer, float4(uv, 0.0f, 0.0f)).rgb);
+	return float4(delinearize(max(base + added * 0.25f, 0.0f)), 1.0f);
 }
 
 technique
@@ -315,6 +385,13 @@ technique
 		PixelShader = compile ps_3_0 WaterReflections();
 		// Written as is: whatever blending or alpha test the frame left on would otherwise weigh the
 		// result by the water's alpha (its shoreline fade), as SMAA also guards against.
+		AlphaBlendEnable = false;
+		AlphaTestEnable = false;
+	}
+	pass
+	{
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 WaterReflectionsFill();
 		AlphaBlendEnable = false;
 		AlphaTestEnable = false;
 	}

@@ -9,10 +9,11 @@ void WaterReflectionsEffect::UpdateConstants() {
 	const WaterShaders::ComplexWaterStruct& cellWater = water->CellWater();
 	Constants.Waves = cellWater.Waves;
 	Constants.Blur = cellWater.Lighting3;
+	Constants.Blur.x = cellWater.Absorption.w;	// ShallowWaves, for the calmer shallows (x is Foam, unused here)
 }
 
 void WaterReflectionsEffect::UpdateSettings() {
-	float debugView = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.WaterReflections.Main", "DebugView"), 0, 6);
+	float debugView = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.WaterReflections.Main", "DebugView"), 0, 7);
 	auto Read = [debugView](const char* Section) {
 		return D3DXVECTOR4(
 			TheSettingManager->GetSettingF(Section, "Strength"),
