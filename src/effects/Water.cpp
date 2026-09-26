@@ -193,6 +193,10 @@ void WaterShaders::UpdateSettings() {
 	Constants.Lighting5.x = SkipReflectionPass ? 0.0f : 1.0f;
 	Constants.Lighting5.y = ReadOr("FoamScale", 20.0f, 5000.0f, 250.0f);
 	Constants.Lighting5.z = Read("SkyTint", 0.0f, 1.0f);
+	// The detail ripples, from Complex Water's own settings (not the water forms' choppiness,
+	// waveWidth and waveSpeed): their strength, and their size against WaveLength.
+	Constants.Lighting5.w = Read("Ripples", 0.0f, 2.0f);
+	Constants.Lighting4.w = ReadOr("RippleSize", 0.25f, 4.0f, 1.0f);
 
 	// Wave shape: off at WaveHeight 0 (also missing), which leaves the normal-map waves alone.
 	Constants.Waves.x = Read("WaveHeight", 0.0f, 60.0f);

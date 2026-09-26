@@ -25,12 +25,12 @@ struct PS_OUTPUT {
 //   TESR_WaterLighting     x: SunShadows      y: AbsorptionDepth  z: WaterColorBrightness  w: WaveScattering
 //   TESR_WaterLighting2    x: SpecularAA      y: PointLights      z: SunGlitter
 //   TESR_WaterLighting3    x: Foam            y: FoamWidth        z: ShoreFadeWidth        w: ReflectionBlur
-//   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)
+//   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)  w: RippleSize
 //   TESR_WaterScatterColor rgb: ScatterColor, w: 1 when set (else the water form's own colours)
 //   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
 //   TESR_WaterWaves        x: WaveHeight (units, trough to crest)  y: WaveLength (units, crest to crest)  z: WaveDirection (radians)  w: WaveSteepness
 //   TESR_WaterWaves2       x: Whitecaps       y: WaveParallax     z: RefractionBlur        w: RefractionDispersion
-//   TESR_WaterLighting5    x: 1 when the game's reflection map is rendered (WaterReflections GameReflections on)  y: FoamScale (units)  z: SkyTint
+//   TESR_WaterLighting5    x: 1 when the game's reflection map is rendered (WaterReflections GameReflections on)  y: FoamScale (units)  z: SkyTint  w: Ripples
 // The DLL keeps the ones that must never be 0 (AbsorptionDepth, WaterColorBrightness, FoamWidth,
 // CausticsScale) off 0.
 // ---------------------------------------------------------------------------------------------
@@ -331,31 +331,36 @@ float3 getRefractedBed(float2 uv, float2 straightUV, float pathLength){
 }
 
 // ---------------------------------------------------------------------------------------------
-// Waves. One normal texture (water_NRM, watercalm_NRM for placed water) in four layers, each turned
-// to its own angle so the texture repeat never lines up across the water: a broad swell, large and
-// medium waves, and fine ripples that fade out with distance, where they would only shimmer. A very
-// large, slow pattern varies the wave strength into rougher and calmer patches. choppiness,
-// waveWidth and waveSpeed from the water's own section. tex2D: top level only.
-// Every layer travels downwind (windTex: the wind's direction in texture space), each a little to
-// one side of it, the bigger ones faster (a water wave's speed goes with the square root of its
-// length): ripples running every which way across each other stand and wobble in place, like jelly.
-// The broad swell is kept weak; the wave field is what carries that size now.
+// Ripples (Ripples, RippleSize). One normal texture (water_NRM, watercalm_NRM for placed water) in
+// four layers over the world, each turned to its own angle so the texture repeat never lines up
+// across the water: a broad swell, large and medium ripples, and fine ones that fade out with
+// distance, where they would only shimmer. A very large, slow pattern varies their strength into
+// rougher and calmer patches. Sized from WaveLength (RippleSize times it), so they keep to the waves
+// they ride on; every layer travels downwind, each a little to one side of it, at the speed a water
+// wave its size moves (about eight of its ripples to a texture tile): ripples running every which
+// way across each other stand and wobble in place, like jelly. In world space, so its slopes add to
+// the wave field's as they are, on placed water turned against the world too. The water forms'
+// choppiness, waveWidth and waveSpeed are not used. tex2D: top level only.
 // ---------------------------------------------------------------------------------------------
-float3 getWaveNormal(float2 texPos, float distance, float4 waveParams, float2 windTex){
-    float choppiness = waveParams.x;
-    float speed = WATER_SCROLL_TIME * 0.002f * waveParams.z;
-    float2 p = texPos * waveParams.y;
+float3 getWaveNormal(float2 worldPos, float distance){
+    float size = max(TESR_WaterWaves.y, 1.0f) * max(TESR_WaterLighting4.w, 0.05f);   // world units per unit of p
+    float2 p = worldPos / size;
+    float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
+    float time = WATER_SECONDS;
+    // How far (in p) a layer drawn at scale s has moved: a deep-water wave of length L units moves at
+    // sqrt(g L / 2 pi) = sqrt(109.3 L) units a second (70 units a metre).
+    #define RIPPLE_TRAVEL(s) (sqrt(109.3f * size / ((s) * 8.0f)) * time / size)
 
-    // Moves each layer's pattern along its direction (d, in texture space) at speed / sqrt(its scale).
     float near = 1.0f - saturate(distance / 3000.0f);
-    float3 swell  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(windTex,  0.10f) * speed * 3.64f) * 0.15f, 0.61f)).xyz);
-    float3 large  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(windTex,  0.25f) * speed * 2.00f) * 0.5f, 1.23f)).xyz);
-    float3 medium = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(windTex, -0.30f) * speed * 1.00f) * 2.0f, 2.17f)).xyz);
-    float3 micro  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(windTex,  0.45f) * speed * 0.71f) * 4.0f, 2.89f)).xyz);
-    float patches = 0.6f + 0.8f * saturate(tex2D(TESR_samplerWater, p * 0.03f - windTex * speed * 0.1f).x);
+    float3 swell  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(wind,  0.10f) * RIPPLE_TRAVEL(0.15f)) * 0.15f, 0.61f)).xyz);
+    float3 large  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(wind,  0.25f) * RIPPLE_TRAVEL(0.5f)) * 0.5f, 1.23f)).xyz);
+    float3 medium = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(wind, -0.30f) * RIPPLE_TRAVEL(2.0f)) * 2.0f, 2.17f)).xyz);
+    float3 micro  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(wind,  0.45f) * RIPPLE_TRAVEL(4.0f)) * 4.0f, 2.89f)).xyz);
+    float patches = 0.6f + 0.8f * saturate(tex2D(TESR_samplerWater, (p - wind * RIPPLE_TRAVEL(0.15f) * 0.2f) * 0.03f).x);
+    #undef RIPPLE_TRAVEL
 
     float2 tilt = (swell.xy * 0.3f + large.xy + medium.xy * 0.5f + micro.xy * 0.3f * near) * patches;
-    float up = (swell.z * 0.3f + large.z + medium.z * 0.5f + micro.z * 0.3f * near) / max(choppiness, 1e-6f);
+    float up = (swell.z * 0.3f + large.z + medium.z * 0.5f + micro.z * 0.3f * near) / max(TESR_WaterLighting5.w, 1e-6f);
     return normalize(float3(tilt, up));
 }
 
@@ -489,36 +494,17 @@ float2 getWaveParallax(float2 worldPos, float3 eyeDirection, WaveField field, fl
     return worldPos + shift * hit;
 }
 
-// Moves a wave texture position by a world-space offset, through the screen-space derivatives of
-// both (the texture may be turned or scaled against the world, on placed water especially).
-// ddx/ddy: top level only.
-float2 getWaveTextureShift(float2 texPos, float2 worldPos, float2 worldShift){
-    float2 wx = ddx(worldPos);
-    float2 wy = ddy(worldPos);
-    float det = wx.x * wy.y - wx.y * wy.x;
-    float2 screen = abs(det) > 1e-8f ? float2(worldShift.x * wy.y - worldShift.y * wy.x, wx.x * worldShift.y - wx.y * worldShift.x) / det : 0.0f;
-    return texPos + screen.x * ddx(texPos) + screen.y * ddy(texPos);
-}
-
-// The wind's direction (TESR_WaterWaves.z) in wave texture space, for the detail layers: through the
-// same derivatives, the texture may be turned or mirrored against the world. ddx/ddy: top level only.
-float2 getWindTextureDirection(float2 texPos, float2 worldPos){
-    float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
-    float2 windTex = getWaveTextureShift(texPos, worldPos, wind * 100.0f) - texPos;
-    return dot(windTex, windTex) > 1e-12f ? normalize(windTex) : wind;
-}
-
 // Waves: the wave field with the normal-map detail on it, as slopes added together. heightOut: -1
 // in a trough to 1 on a crest (half WaveHeight either way); foldOut: crest folding, 0-1, for the
-// whitecaps. texPos: the wave texture position of the shaded point. refractionNormal: the same with
+// whitecaps. worldPos: the shaded point (after the parallax). refractionNormal: the same with
 // the fine detail at 40%. The fine ripples glint and shade the surface, but at full strength they
 // would scribble the bed seen through them into squiggles; what a bed seen through real water mostly
 // follows is the larger waves.
-float3 getWaves(float2 texPos, float2 worldPos, float distance, float4 waveParams, WaveField field, float heightScale, float2 windTex, out float heightOut, out float foldOut, out float3 refractionNormal){
+float3 getWaves(float2 worldPos, float distance, WaveField field, float heightScale, out float heightOut, out float foldOut, out float3 refractionNormal){
     float2 slope;
     float height = getWaveFieldSurface(field, worldPos, slope, foldOut);
     heightOut = TESR_WaterWaves.x > 0.0f ? clamp(height / (TESR_WaterWaves.x * heightScale * 0.5f), -1.0f, 1.0f) : 0.0f;
-    float3 detail = getWaveNormal(texPos, distance, waveParams, windTex);
+    float3 detail = getWaveNormal(worldPos, distance);
     // A surface of slope s faces (-s, 1); the detail normal already faces its own way.
     float2 detailSlope = detail.xy / max(detail.z, 0.1f);
     refractionNormal = normalize(float3(-slope + detailSlope * 0.4f, 1.0f));
@@ -596,10 +582,9 @@ float3 getSunGlint(float3 N, float3 sunDirection, float3 eyeDirection, float rou
 }
 
 // How much of the reflection shows: Schlick with water's own 2%, so the water is clear looking down
-// and a mirror at low angles; reflectivity (the water's own section) scales it.
-float getFresnel(float3 N, float3 eyeDirection, float reflectivity){
-    float fresnel = WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - saturate(dot(eyeDirection, N)), 5.0f);
-    return saturate(fresnel * reflectivity);
+// and a mirror at low angles. Real water's, for every kind (the water forms' reflectivity is not used).
+float getFresnel(float3 N, float3 eyeDirection){
+    return WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - saturate(dot(eyeDirection, N)), 5.0f);
 }
 
 // Wave scattering (WaveScattering): sunlight that enters the far side of a wave, passes through its
@@ -673,8 +658,8 @@ float3 getTransmittance(float pathLength){
 // the bed in shallow water. Two layers of the wave texture drift across the bed's world position;
 // where their slopes cancel, the light converges. None at the waterline, fading out in deep water.
 // A factor on the sunlit bed. Needs TESR_CameraPosition. tex2Dlod, a level from the distance.
-float getCaustics(float3 bedFromCamera, float depthBelow, float4 waveParams){
-    float speed = WATER_SCROLL_TIME * 0.002f * waveParams.z;
+float getCaustics(float3 bedFromCamera, float depthBelow){
+    float speed = WATER_SCROLL_TIME * 0.0014f;
     float2 world = (bedFromCamera.xy + TESR_CameraPosition.xy) / TESR_WaterLighting4.y;
     float lod = log2(max(length(bedFromCamera) / (TESR_WaterLighting4.y * 2.0f), 1.0f));
     float2 a = expand(tex2Dlod(TESR_samplerWater, float4(world + float2(0.8f, 0.6f) * speed * 3.0f, 0.0f, lod))).xy;

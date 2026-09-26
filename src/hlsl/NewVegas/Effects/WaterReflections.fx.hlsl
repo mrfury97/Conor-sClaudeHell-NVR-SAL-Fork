@@ -28,7 +28,6 @@ float4 TESR_GameTime;
 float4 TESR_WaterSettings;        // x: water height
 float4 TESR_WaterWaves;           // x: WaveHeight  y: WaveLength  z: WaveDirection  w: WaveSteepness
 float4 TESR_WaterWaveOrigin;      // xy the first wave layer's origin in the world, zw the second's
-float4 TESR_WaveParams;           // w: the water's reflectivity ([Shaders.Water.Default] or .Interiors)
 float4 TESR_WaterLighting3;       // w: ReflectionBlur
 float4 TESR_WaterReflectionsData;
 
@@ -174,9 +173,9 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	R = normalize(float3(R.xy, max(R.z, 0.02f)));
 
 	float cosTheta = saturate(dot(-eyeDirection, N));
-	// As the water shader weighs its own reflection (getFresnel): times the water's reflectivity.
-	float fresnel = saturate((WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f)) * TESR_WaveParams.w);
-	// Too little reflection to see (looking steeply down, or water that reflects little): not
+	// As the water shader weighs its own reflection (getFresnel): real water's.
+	float fresnel = WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f);
+	// Too little reflection to see (looking steeply down, or a low Strength): not
 	// worth the search. Its whole result would change the water by under 2%.
 	if (debugView == 0 && fresnel * strength < 0.02f) return color;
 

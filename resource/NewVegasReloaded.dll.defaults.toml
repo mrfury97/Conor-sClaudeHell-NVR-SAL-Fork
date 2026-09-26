@@ -1063,6 +1063,8 @@ WindDirectionOffset = 0.0            # [-360-360] Degrees added to the wind's di
 WaveSteepness = 0.4                  # [0.0-1.0] How steep the waves look: how strongly their slopes shade and glint. 0.5 is the waves as they are.
 Whitecaps = 0.2                      # [0.0-1.0] Where the wave crests fold over, they break into foam. More takes less folding. 0 off.
 WaveParallax = 1.0                   # [0.0-2.0] Waves stand up from the surface: seen at a low angle the crests hide the troughs behind them. 0 off.
+Ripples = 0.5                        # [0.0-2.0] Strength of the fine ripples riding on the waves (the normal-map detail), which glint and shade the surface. They travel downwind with the waves. 0 off. (Replaces the water sections' choppiness, which Complex Water no longer uses.)
+RippleSize = 1.0                     # [0.25-4.0] Size of the ripples against WaveLength: 1 keeps them to the waves they ride on. They move at the speed real ripples their size do. (Replaces waveWidth and waveSpeed.)
 RefractionBlur = 0.4                 # [0.0-3.0] The bed softens the more water it is seen through, as fine particles in real water blur what lies deep. 0 off.
 RefractionDispersion = 0.1           # [0.0-1.0] Water bends red light a little less than blue: a faint colour split where the waves bend the view most. 0 off.
 Caustics = 0.8                       # [0.0-3.0] Sunlight focused by the waves into bright rippling lines on the bed in shallow water. 0 off.
@@ -1081,10 +1083,10 @@ ShoreFadeWidth = 25.0                # [0-300] The water fades out softly over t
 DebugView = 0                        # [0-15] Shows one term on its own, in place of the water. Restart the game to change it (it is compiled into the water shaders, so it costs nothing when off). 1 sun shadow on the surface (black in shadow). 2 what still shows through the water, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white widened). 6 point-light glints. 7 the path the view takes through the water (black 0, white 20 m). 8 the depth below the surface (black 0, white 20 m). 9 foam. 10 shoreline fade (black see-through, white solid). 11 caustics. 12 wave height (black trough, white crest). 13 depth calibration (mid-grey: the near plane matches). 14 depth below the surface over 0-100 m, red where the depth buffer holds nothing behind the water. 15 the two depth copies: red the depth taken as the water is drawn, green the depth taken before any water, blue where the first shows the water itself. 0 off.
 
 [_Shaders.Water.Default]
-choppiness = 0.7                    # Outdoor water. Wave steepness: higher gives more defined wave crests.
-waveWidth = 0.8                     # Size of the waves.
-waveSpeed = 0.7                     # Speed of the waves.
-reflectivity = 1.0                  # Strength of reflections on the surface.
+choppiness = 0.7                    # Outdoor water. Wave steepness: higher gives more defined wave crests. Not used by Complex Water (see Ripples).
+waveWidth = 0.8                     # Size of the waves. Not used by Complex Water (see RippleSize).
+waveSpeed = 0.7                     # Speed of the waves. Not used by Complex Water (ripples move at their real speed).
+reflectivity = 1.0                  # Strength of reflections on the surface. Not used by Complex Water (real water's reflectance).
 refractionPower = 1.0               # How strongly the water bends the view of the bed through the waves: 1 is real water, 0 none.
 shoreMovement = 0.3                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
 causticsStrength = 3.0              # Underwater view: caustics on the bed around you when your head is underwater (from above: Caustics in ComplexWater).
@@ -1097,20 +1099,20 @@ inExtCoeff_B = 1.0                  # Underwater view: fog tint, blue.
 inScattCoeff = 1.0                  # Underwater view: scattering; higher is darker.
 
 [_Shaders.Water.Interiors]
-choppiness = 0.5                    # Interior water. Wave steepness: higher gives more defined wave crests.
-waveWidth = 0.8                     # Size of the waves.
-waveSpeed = 0.7                     # Speed of the waves.
-reflectivity = 0.0                  # Strength of reflections on the surface.
+choppiness = 0.5                    # Interior water. Wave steepness: higher gives more defined wave crests. Not used by Complex Water (see Ripples).
+waveWidth = 0.8                     # Size of the waves. Not used by Complex Water (see RippleSize).
+waveSpeed = 0.7                     # Speed of the waves. Not used by Complex Water (ripples move at their real speed).
+reflectivity = 0.0                  # Strength of reflections on the surface. Not used by Complex Water (real water's reflectance).
 refractionPower = 1.0               # How strongly the water bends the view of the bed through the waves: 1 is real water, 0 none.
 shoreMovement = 0.6                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
 turbidity = 1.0                     # Underwater view: how murky the water is.
 depthDarkness = 10.0                # Underwater view: how much the light fades with depth.
 
 [_Shaders.Water.Placed]
-choppiness = 0.5                    # Placed water (pools, some ponds). Wave steepness: higher gives more defined wave crests.
-waveWidth = 0.8                     # Size of the waves.
-waveSpeed = 0.7                     # Speed of the waves.
-reflectivity = 0.0                  # Strength of reflections on the surface.
+choppiness = 0.5                    # Placed water (pools, some ponds). Wave steepness: higher gives more defined wave crests. Not used by Complex Water (see Ripples).
+waveWidth = 0.8                     # Size of the waves. Not used by Complex Water (see RippleSize).
+waveSpeed = 0.7                     # Speed of the waves. Not used by Complex Water (ripples move at their real speed).
+reflectivity = 0.0                  # Strength of reflections on the surface. Not used by Complex Water (real water's reflectance).
 refractionPower = 1.0               # How strongly the water bends the view of the bed through the waves: 1 is real water, 0 none.
 shoreMovement = 0.6                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
 
@@ -1128,7 +1130,7 @@ Viscosity = 0.05
 Enabled = true                      # Short refraction water drop animation on the lens when exiting water.
 
 [_Shaders.WaterReflections.Main]
-Strength = 1.0                        # [0.0-2.0] Screen-space reflections on the water, found on the finished frame: the pier and its posts, boats, people, the shore, at the angle the waves reflect them. Scales how strongly they replace the reflection the water was drawn with (which they only do where the water really reflects, at a low angle, times the water's reflectivity; blurred by ReflectionBlur). Runs with Complex Water only. Where the screen holds nothing to reflect (the sky, anything off the screen) the water keeps its own reflection.
+Strength = 1.0                        # [0.0-2.0] Screen-space reflections on the water, found on the finished frame: the pier and its posts, boats, people, the shore, at the angle the waves reflect them. Scales how strongly they replace the reflection the water was drawn with (which they only do where the water really reflects, at a low angle, as real water does; blurred by ReflectionBlur). Runs with Complex Water only. Where the screen holds nothing to reflect (the sky, anything off the screen) the water keeps its own reflection.
 GameReflections = true                # The game's own reflection pass, which draws the world a second time, mirrored, on every frame with water in view -- a large CPU cost. Off, outdoor water reflects the sky along the reflected ray, and these screen-space reflections everything on the screen; distant hills and anything off the screen no longer reflect (raise MaxDistance to reach the far shore). Only while Complex Water is on.
 MaxDistance = 8000.0                  # [500-20000] How far (game units, 70 to a metre) a reflected ray is followed. Reflections fade out towards it.
 Distortion = 0.5                      # [0.0-1.0] How much the waves bend the reflection. 0 a mirror; 1 the full slope of the Complex Water waves (WaveHeight, WaveLength, WaveSteepness).

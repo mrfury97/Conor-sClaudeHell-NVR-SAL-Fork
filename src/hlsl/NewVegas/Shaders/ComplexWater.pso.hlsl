@@ -62,17 +62,13 @@ float4 SunColor    : register(c13);
 
 // NVR's, bound by name: each water type's own section, and the world.
 #if WATER_PLACED
-float4 TESR_PlacedWaveParams            : register(c14);   // x: choppiness, y: wave width, z: wave speed, w: reflectivity
 float4 TESR_PlacedWaterSettings         : register(c15);   // w: refraction strength
 float4 TESR_PlacedWaterShorelineParams  : register(c16);   // x: shore movement
-#define WAVE_PARAMS      TESR_PlacedWaveParams
 #define WATER_SETTINGS   TESR_PlacedWaterSettings
 #define SHORELINE_PARAMS TESR_PlacedWaterShorelineParams
 #else
-float4 TESR_WaveParams                  : register(c14);
 float4 TESR_WaterSettings               : register(c15);   // x: water height, w: refraction strength
 float4 TESR_WaterShorelineParams        : register(c16);
-#define WAVE_PARAMS      TESR_WaveParams
 #define WATER_SETTINGS   TESR_WaterSettings
 #define SHORELINE_PARAMS TESR_WaterShorelineParams
 #endif
@@ -122,7 +118,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 eyeDirection = normalize(eyeVector);           // surface to camera
     float distance = length(eyeVector.xy);
     float eyeDistance = length(eyeVector);
-    float4 waveParams = WAVE_PARAMS;
 
     // Light. Outdoors: the sun (gone at night, below the horizon, and in any interior cell -- placed
     // water is drawn indoors too, where the game's time of day still runs) and the sky. Interior
@@ -145,11 +140,10 @@ PS_OUTPUT main(PS_INPUT IN) {
     float pixelSize = max(length(ddx(flatPos)), length(ddy(flatPos)));       // world units per pixel here
     WaveField waveField = getWaveField(time, pixelSize, WATER_WAVE_SCALE);
     float2 wavePos = getWaveParallax(flatPos, eyeDirection, waveField, distance);
-    float2 waveTexPos = getWaveTextureShift(IN.LTEXCOORD_7, flatPos, wavePos - flatPos);
     float waveHeight;                                                        // -1 trough to 1 crest
     float waveFold;                                                          // crest folding, for whitecaps
     float3 refractionN;                                                      // calmer: for the bed seen through
-    float3 N = getWaves(waveTexPos, wavePos, distance, waveParams, waveField, WATER_WAVE_SCALE, getWindTextureDirection(IN.LTEXCOORD_7, flatPos), waveHeight, waveFold, refractionN);
+    float3 N = getWaves(wavePos, distance, waveField, WATER_WAVE_SCALE, waveHeight, waveFold, refractionN);
 #if !WATER_INTERIOR && !WATER_LOD
     N = getRainRipples(IN.LTEXCOORD_7, N, distance, TESR_WetWorldData.x);
 #endif
@@ -205,7 +199,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight, waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f), waveHeight, waveFold);
     color += scattering;
     WATER_DEBUG(4, saturate(scattering));
-    float fresnel = getFresnel(N, eyeDirection, waveParams.w);
+    float fresnel = getFresnel(N, eyeDirection);
     WATER_DEBUG(3, fresnel);
     color = lerp(color, reflection, fresnel);
     color += getSunGlint(N, sunDirection, eyeDirection, roughness) * sunLight;
@@ -264,7 +258,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // around each grain. Over the first few units down, so the waterline shows no edge.
     bed *= lerp(1.0f, 0.7f, saturate(path.y / 10.0f));
 #if WATER_SUNLIT
-    float caustics = getCaustics(refractedBed, path.y, waveParams) * shadow;
+    float caustics = getCaustics(refractedBed, path.y) * shadow;
     bed *= 1.0f + caustics * luma(sunLight);
 #else
     float caustics = 0.0f;
@@ -286,7 +280,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight * shadow, waterHue, waveHeight, waveFold);
     color += scattering;
     WATER_DEBUG(4, saturate(scattering));
-    float fresnel = getFresnel(N, eyeDirection, waveParams.w) * saturate(straightPath.y / 30.0f);
+    float fresnel = getFresnel(N, eyeDirection) * saturate(straightPath.y / 30.0f);
     WATER_DEBUG(3, fresnel);
     color = lerp(color, reflection, fresnel);
     color += getSunGlint(N, sunDirection, eyeDirection, roughness) * sunLight * shadow;
