@@ -270,7 +270,9 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	if (debugView == 4) return float4(amount.xxx, 1.0f);
 
 	float3 base = linearize(color.rgb);
-	return float4(delinearize(lerp(base, reflection, amount)), color.a);
+	// Alpha 1, as every effect writes: the frame's own alpha on the water is the water shader's
+	// shoreline fade, and blending by it would throw the reflection away.
+	return float4(delinearize(lerp(base, reflection, amount)), 1.0f);
 }
 
 technique
