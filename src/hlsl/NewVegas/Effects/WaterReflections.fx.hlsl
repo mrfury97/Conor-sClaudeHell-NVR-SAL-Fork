@@ -166,7 +166,8 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// The normal of the waves, and the view ray turned off it. Kept pointing up: a ray turned into
 	// the water would have nothing to reflect.
 	float3 eyeDirection = normalize(surface);                   // camera to surface
-	float2 slope = getWaveSlope(worldPos.xy, pixelSize) * distortion;
+	float2 slope = 0.0f;
+	[branch] if (distortion > 0.0f) slope = getWaveSlope(worldPos.xy, pixelSize) * distortion;
 	float3 N = normalize(float3(-slope, 1.0f));
 	float3 R = reflect(eyeDirection, N);
 	R = normalize(float3(R.xy, max(R.z, 0.02f)));
@@ -174,6 +175,9 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	float cosTheta = saturate(dot(-eyeDirection, N));
 	// As the water shader weighs its own reflection (getFresnel): times the water's reflectivity.
 	float fresnel = saturate((WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f)) * TESR_WaveParams.w);
+	// Too little reflection to see (looking steeply down, or water that reflects little): not
+	// worth the search. Its whole result would change the water by under 2%.
+	if (debugView == 0 && fresnel * strength < 0.02f) return color;
 
 	// The ray, from the surface to MaxDistance or to just in front of the camera, whichever is
 	// nearer; then as a segment on the screen, cut where it leaves the screen. Along the segment,
@@ -202,6 +206,8 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 		float k0 = 1.0f / start.z;
 		float k1 = 1.0f / end.z;
 		float jitter = getNoise(uv / TESR_ReciprocalResolution.xy);
+		// As many steps as the ray is long on the screen, one about every 8 pixels (12 to 48).
+		float steps = clamp(ceil(max(pixels.x, pixels.y) / 8.0f), 12.0f, SSR_STEPS);
 		float before = 0.0f;
 		float beforeZ = start.z;
 		float after = 0.0f;
@@ -209,32 +215,36 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 
 		[loop]
 		for (int i = 1; i <= SSR_STEPS; i++) {
-			float t = tMax * (i - 1.0f + jitter) / (SSR_STEPS - 1.0f + jitter);
-			float2 rayUV = lerp(start.xy, end.xy, t);
-			float rayZ = 1.0f / lerp(k0, k1, t);
-			float sceneZ = readDepthLod(rayUV);
-			float thickness = max(abs(rayZ - beforeZ) * 1.5f, 30.0f + rayZ * 0.01f);
-			float behind = rayZ - sceneZ;
-			// Behind what the screen shows there, but not so far that the ray passed behind it; and
-			// not the water itself (it cannot reflect itself).
-			bool solid = !found && behind > 0.0f && !isWaterHeight(TESR_CameraPosition.z + toWorld(rayUV).z * sceneZ, sceneZ);
-			if (firstBehind < 0.0f && solid) firstBehind = behind / thickness;
-			// Or further behind, where what the ray can only have gone through is its back or
-			// underside (the underside of the pier, the back of a post), which the screen does not
-			// show: the surface in front stands in for it. Only for a ray heading away from the
-			// camera, and only for a surface no nearer the camera than the ray's start -- nothing
-			// nearer can be in the ray's way, so the ray passed behind it.
-			bool reached = solid && rayForward > 0.0f && sceneZ > start.z;
-			// The first such step is the hit. Recorded, not left by break: the loop runs to the end
-			// (as the water shader's own traces do), each step after the hit doing nothing.
-			if (solid && (behind < thickness || reached)) {
-				loose = behind >= thickness;
-				after = t;
-				found = true;
-			}
-			if (!found) {
-				before = t;
-				beforeZ = rayZ;
+			// The loop keeps its fixed count (no break or continue, as found explains); the steps past
+			// the ray's own count, or past the hit, skip their work.
+			[branch] if (!found && i <= steps) {
+				float t = tMax * (i - 1.0f + jitter) / (steps - 1.0f + jitter);
+				float2 rayUV = lerp(start.xy, end.xy, t);
+				float rayZ = 1.0f / lerp(k0, k1, t);
+				float sceneZ = readDepthLod(rayUV);
+				float thickness = max(abs(rayZ - beforeZ) * 1.5f, 30.0f + rayZ * 0.01f);
+				float behind = rayZ - sceneZ;
+				// Behind what the screen shows there, but not so far that the ray passed behind it; and
+				// not the water itself (it cannot reflect itself).
+				bool solid = !found && behind > 0.0f && !isWaterHeight(TESR_CameraPosition.z + toWorld(rayUV).z * sceneZ, sceneZ);
+				if (firstBehind < 0.0f && solid) firstBehind = behind / thickness;
+				// Or further behind, where what the ray can only have gone through is its back or
+				// underside (the underside of the pier, the back of a post), which the screen does not
+				// show: the surface in front stands in for it. Only for a ray heading away from the
+				// camera, and only for a surface no nearer the camera than the ray's start -- nothing
+				// nearer can be in the ray's way, so the ray passed behind it.
+				bool reached = solid && rayForward > 0.0f && sceneZ > start.z;
+				// The first such step is the hit. Recorded, not left by break: the loop runs to the end
+				// (as the water shader's own traces do), each step after the hit doing nothing.
+				if (solid && (behind < thickness || reached)) {
+					loose = behind >= thickness;
+					after = t;
+					found = true;
+				}
+				if (!found) {
+					before = t;
+					beforeZ = rayZ;
+				}
 			}
 		}
 
