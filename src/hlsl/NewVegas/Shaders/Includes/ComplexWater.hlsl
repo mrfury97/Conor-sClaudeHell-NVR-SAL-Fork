@@ -213,19 +213,29 @@ float getInvFar(){
 
 // screenPos: the water's straight screen position (getStraightScreenPos): its z is half the clip
 // depth plus half w, w the distance along the view axis.
-WaterScreenMap getWaterScreenMap(float3 surfaceFromCamera, float2 uv, float4 screenPos){
+// Only what reading the depth buffer at the pixel needs (no derivatives, so none of the offsets
+// work): for the depth under the pixel before the waves (getShallowWaves), without holding the whole
+// map through them -- the wading shader has no temp registers to spare.
+WaterScreenMap getWaterScreenDepth(float4 screenPos){
     WaterScreenMap map;
+    map.worldX = map.worldY = map.uvX = map.uvY = 0.0f;
+    map.viewZX = map.viewZY = map.det = 0.0f;
+    map.viewZ = max(screenPos.w, 1e-3f);
+    float waterDepth = 2.0f * screenPos.z / map.viewZ - 1.0f;
+    map.reversed = waterDepth < 0.5f ? 1.0f : 0.0f;
+    map.depthScale = max(getDepthFromFar(waterDepth, map.reversed), 1e-9f) / max(1.0f / map.viewZ - getInvFar(), 1e-9f);
+    return map;
+}
+
+WaterScreenMap getWaterScreenMap(float3 surfaceFromCamera, float2 uv, float4 screenPos){
+    WaterScreenMap map = getWaterScreenDepth(screenPos);
     map.worldX = ddx(surfaceFromCamera.xy);
     map.worldY = ddy(surfaceFromCamera.xy);
     map.uvX = ddx(uv);
     map.uvY = ddy(uv);
     map.det = map.worldX.x * map.worldY.y - map.worldX.y * map.worldY.x;
-    map.viewZ = max(screenPos.w, 1e-3f);
     map.viewZX = ddx(map.viewZ);
     map.viewZY = ddy(map.viewZ);
-    float waterDepth = 2.0f * screenPos.z / map.viewZ - 1.0f;
-    map.reversed = waterDepth < 0.5f ? 1.0f : 0.0f;
-    map.depthScale = max(getDepthFromFar(waterDepth, map.reversed), 1e-9f) / max(1.0f / map.viewZ - getInvFar(), 1e-9f);
     return map;
 }
 

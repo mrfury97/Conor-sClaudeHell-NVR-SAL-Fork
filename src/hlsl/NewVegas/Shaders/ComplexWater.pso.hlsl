@@ -131,14 +131,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     bool sunUp = any(sunLight > 0.0f);
 
 #if !WATER_BELOW && !WATER_LOD
-    // What lies behind the surface, and how deep the water is under this pixel: first, as the waves
-    // die down in the shallows. Derivatives: top level.
-    float4 straightPos = getStraightScreenPos(IN);
-    float2 straightUV = straightPos.xy / straightPos.w;
-    WaterScreenMap screenMap = getWaterScreenMap(surface, straightUV, straightPos);
-    float3 straightBed = getBedBehind(screenMap, surface, screenMap.viewZ, straightUV);   // what lies under this pixel
-    float2 straightPath = getWaterPathTo(straightBed, surface);   // x: path through the water, y: depth below
-    float shallow = getShallowWaves(straightPath.y);
+    // How deep the water is under this pixel, first: the waves die down in the shallows. Only the
+    // depth, so nothing else is held through the waves (the full screen map comes after them).
+    float4 shallowPos = getStraightScreenPos(IN);
+    float2 shallowUV = shallowPos.xy / shallowPos.w;
+    WaterScreenMap depthMap = getWaterScreenDepth(shallowPos);
+    float shallow = getShallowWaves(getWaterPathTo(getBedBehind(depthMap, surface, depthMap.viewZ, shallowUV), surface).y);
 #else
     float shallow = 1.0f;                                         // no depth known: open water
 #endif
@@ -232,7 +230,11 @@ PS_OUTPUT main(PS_INPUT IN) {
 
 #else
     // ---- The water surface ------------------------------------------------------------------
-    // (straightUV, screenMap, straightBed, straightPath: above, before the waves.)
+    float4 straightPos = getStraightScreenPos(IN);
+    float2 straightUV = straightPos.xy / straightPos.w;
+    WaterScreenMap screenMap = getWaterScreenMap(surface, straightUV, straightPos);   // derivatives: top level
+    float3 straightBed = getBedBehind(screenMap, surface, screenMap.viewZ, straightUV);   // what lies under this pixel
+    float2 straightPath = getWaterPathTo(straightBed, surface);   // x: path through the water, y: depth below
     WATER_DEBUG(13, saturate(getDepthCalibration(screenMap) * 0.5f));
     WATER_DEBUG(14, getSceneEmpty(screenMap, straightUV) > 0.5f ? float3(1.0f, 0.0f, 0.0f) : saturate(straightPath.y / (100.0f * WATER_UNITS_PER_METRE)).xxx);
     WATER_DEBUG(15, float3(saturate(getDepthCopies(screenMap, surface, straightUV).xy / (20.0f * WATER_UNITS_PER_METRE)), getDepthCopies(screenMap, surface, straightUV).z));
