@@ -29,11 +29,17 @@ float4 TESR_WaterSettings;        // x: water height
 float4 TESR_WaterWaves;           // x: WaveHeight  y: WaveLength  z: WaveDirection  w: WaveSteepness
 float4 TESR_WaterWaveOrigin;      // xy the first wave layer's origin in the world, zw the second's
 float4 TESR_WaterLighting3;       // w: ReflectionBlur
+float4 TESR_WaterLighting4;       // w: RippleSize
+float4 TESR_WaterLighting5;       // x: 1 when the game's reflection map is drawn (GameReflections)  w: Ripples
+float4 TESR_SkyColor;
+float4 TESR_SkyLowColor;
+float4 TESR_HorizonColor;
 float4 TESR_WaterReflectionsData;
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBufferViewModel : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_samplerWater : register(s4) < string ResourceName = "Water\water_NRM.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler3D TESR_WaterWavesMap : register(s3) < string ResourceName = "Water\NVR_WaterWaves.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; ADDRESSW = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 struct VSOUT
@@ -124,6 +130,57 @@ float2 getWaveSlope(float2 worldPos, float pixelSize){
 	                   + sampleWaveSlope(worldPos - TESR_WaterWaveOrigin.zw, dirB, tileB, WAVE_LAYER_B_OFFSET, timeB, lodB));
 }
 
+float2 rotateWaterUV(float2 uv, float angle){
+	float s = sin(angle);
+	float c = cos(angle);
+	return float2(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
+}
+
+// The gusts of the water shader (getWaveGusts): a factor on the slopes, 0.65 to 1.35.
+float getWaveGusts(float2 worldPos){
+	float angle = TESR_WaterWaves.z;
+	float2 dirA = float2(cos(angle), sin(angle));
+	float tileA = max(TESR_WaterWaves.y, 1.0f) * WAVE_TEX_PEAK;
+	float2 p = worldPos - TESR_WaterWaveOrigin.xy;
+	float2 uv = float2(dot(p, dirA), dot(p, float2(-dirA.y, dirA.x))) / (tileA * 24.0f) + float2(0.5f, 0.25f);
+	float g = tex3Dlod(TESR_WaterWavesMap, float4(uv, TESR_GameTime.z / 600.0f, 3.0f)).b;
+	return lerp(0.65f, 1.35f, saturate((g - 0.5f) * 2.5f + 0.5f));
+}
+
+// The ripples of the water shader (getWaveNormal: Ripples, RippleSize), as a world slope, so the
+// reflection wobbles with the same ripples the water is shaded with. tex2Dgrad, the gradients from
+// the pixel's world footprint (dwx, dwy: ddx and ddy of the world position, taken at the top).
+float2 getRippleSlope(float2 worldPos, float2 dwx, float2 dwy, float distance){
+	float size = max(TESR_WaterWaves.y, 1.0f) * max(TESR_WaterLighting4.w, 0.05f);
+	float2 p = worldPos / size;
+	float2 gx = dwx / size;
+	float2 gy = dwy / size;
+	float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
+	float time = TESR_GameTime.z;
+	#define RIPPLE_TRAVEL(s) (sqrt(109.3f * size / ((s) * 8.0f)) * time / size)
+	#define RIPPLE(s, turn, angle) expand(tex2Dgrad(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(wind, turn) * RIPPLE_TRAVEL(s)) * (s), angle), rotateWaterUV(gx * (s), angle), rotateWaterUV(gy * (s), angle)).xyz)
+	float near = 1.0f - saturate(distance / 3000.0f);
+	float3 swell  = RIPPLE(0.15f,  0.10f, 0.61f);
+	float3 large  = RIPPLE(0.5f,   0.25f, 1.23f);
+	float3 medium = RIPPLE(2.0f,  -0.30f, 2.17f);
+	float3 micro  = RIPPLE(4.0f,   0.45f, 2.89f);
+	float patches = 0.6f + 0.8f * saturate(tex2Dgrad(TESR_samplerWater, (p - wind * RIPPLE_TRAVEL(0.15f) * 0.2f) * 0.03f, gx * 0.03f, gy * 0.03f).x);
+	#undef RIPPLE
+	#undef RIPPLE_TRAVEL
+	float2 tilt = (swell.xy * 0.3f + large.xy + medium.xy * 0.5f + micro.xy * 0.3f * near) * patches;
+	float up = (swell.z * 0.3f + large.z + medium.z * 0.5f + micro.z * 0.3f * near) / max(TESR_WaterLighting5.w, 1e-6f);
+	float3 n = normalize(float3(tilt, up));
+	return n.xy / max(n.z, 0.1f);
+}
+
+// The water shader's sky along a reflected ray (getSkyReflection), what outdoor water reflects when
+// the game's reflection map is not drawn. Linear.
+float3 getSkyReflection(float3 R){
+	float up = saturate(R.z);
+	float3 low = lerp(linearize(TESR_HorizonColor.rgb), linearize(TESR_SkyLowColor.rgb), saturate(up * 4.0f));
+	return lerp(low, linearize(TESR_SkyColor.rgb), saturate(up * 1.5f - 0.2f));
+}
+
 // readDepth without derivatives, for the loops.
 float readDepthLod(float2 uv){
 	return tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).x * farZ;
@@ -153,7 +210,9 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	float depth = readDepth(uv);
 	float3 surface = toWorld(uv) * depth;                        // camera-relative
 	float3 worldPos = surface + TESR_CameraPosition.xyz;
-	float pixelSize = max(length(ddx(worldPos.xy)), length(ddy(worldPos.xy)));
+	float2 dwx = ddx(worldPos.xy);
+	float2 dwy = ddy(worldPos.xy);
+	float pixelSize = max(length(dwx), length(dwy));
 
 	bool water = depth < farZ * 0.99f && surface.z < 0.0f && isWaterHeight(worldPos.z, depth);
 	if (debugView == 1) return water ? white : black;
@@ -166,8 +225,13 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// The normal of the waves, and the view ray turned off it. Kept pointing up: a ray turned into
 	// the water would have nothing to reflect.
 	float3 eyeDirection = normalize(surface);                   // camera to surface
+	// The water shader's own normal: the wave field, the ripples on it, both scaled by the gusts.
 	float2 slope = 0.0f;
-	[branch] if (distortion > 0.0f) slope = getWaveSlope(worldPos.xy, pixelSize) * distortion;
+	[branch] if (distortion > 0.0f) {
+		slope = getWaveSlope(worldPos.xy, pixelSize);
+		[branch] if (TESR_WaterLighting5.w > 0.0f) slope += getRippleSlope(worldPos.xy, dwx, dwy, length(surface.xy));
+		slope *= getWaveGusts(worldPos.xy) * distortion;
+	}
 	float3 N = normalize(float3(-slope, 1.0f));
 	float3 R = reflect(eyeDirection, N);
 	R = normalize(float3(R.xy, max(R.z, 0.02f)));
@@ -201,6 +265,9 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	float confidence = 0.0f;
 	float firstBehind = -1.0f;                                  // DebugView 2 and 6: behind / thickness at the first step behind anything
 	bool loose = false;                                         // DebugView 2: a hit on the surface standing in for its back
+	float hitBehind = 0.0f;                                     // behind / thickness at the hit
+	float hitDistance = 0.0f;                                   // world units along the ray to the hit
+	float hitDepth = 1.0f;                                      // the hit's view depth
 	if (rayLength > 1.0f && max(pixels.x, pixels.y) > 2.0f && directionFade > 0.0f) {
 		status = 1.0f;
 		float k0 = 1.0f / start.z;
@@ -238,6 +305,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 				// (as the water shader's own traces do), each step after the hit doing nothing.
 				if (solid && (behind < thickness || reached)) {
 					loose = behind >= thickness;
+					hitBehind = behind / thickness;
 					after = t;
 					found = true;
 				}
@@ -267,7 +335,12 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 				float2 edge = min(hitUV, 1.0f - hitUV);
 				float edgeFade = smoothstep(0.0f, 0.08f, min(edge.x, edge.y));
 				float distanceFade = 1.0f - smoothstep(0.7f, 1.0f, along);
-				confidence = edgeFade * distanceFade * directionFade;
+				// A stand-in for an underside or a back fades the further behind the surface the ray
+				// went: its edges ease out instead of switching off where the rays start to miss.
+				float looseFade = loose ? lerp(1.0f, 0.4f, saturate((hitBehind - 1.0f) / 8.0f)) : 1.0f;
+				confidence = edgeFade * distanceFade * directionFade * looseFade;
+				hitDistance = along * rayLength;
+				hitDepth = hitZ;
 			}
 		}
 	}
@@ -281,25 +354,41 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	if (debugView == 6) return firstBehind < 0.0f ? black : (firstBehind <= 1.0f ? float4(0.0f, 1.0f - firstBehind * 0.7f, 0.0f, 1.0f) : float4(saturate(firstBehind / 10.0f) * 0.7f + 0.3f, 0.0f, 0.0f, 1.0f));
 	if (confidence <= 0.0f) return debugView >= 3 ? black : color;
 
-	// Four taps around the hit, to soften the steps' noise; wider where the front stands in for an
-	// underside, whose single edge row would otherwise streak down the water. That underside is in
-	// its own shade (the pier's, over the water), so it is taken darker than the lit front.
+	// Blurred as rippled water blurs a reflection: by a cone around the ray, so sharp where a post
+	// meets the water and softer up it, the further the ray went (the cone widens with the water's
+	// ReflectionBlur and the slope here). Eight taps, in two rings. Wider where the front stands in
+	// for an underside, whose single edge row would otherwise streak down the water; that underside is
+	// in its own shade (the pier's, over the water), so it is taken darker than the lit front.
 	float2 reflectedUV = lerp(start.xy, end.xy, hitT);
-	// Widened by the water's ReflectionBlur (0-3), as its own reflection is blurred.
-	float2 spread = TESR_ReciprocalResolution.xy * (loose ? 4.0f : 1.5f) * (1.0f + saturate(TESR_WaterLighting3.w / 3.0f) * 2.0f);
-	float3 reflection = linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x, -spread.y), 0.0f, 0.0f)).rgb)
-	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( spread.x, -spread.y), 0.0f, 0.0f)).rgb)
-	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x,  spread.y), 0.0f, 0.0f)).rgb)
-	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( spread.x,  spread.y), 0.0f, 0.0f)).rgb);
-	reflection *= loose ? 0.25f * 0.3f : 0.25f;
+	float worldPerPixel = hitDepth * 2.0f * TESR_ReciprocalResolution.y / TESR_ProjectionTransform[1][1];
+	float cone = 0.01f + 0.03f * saturate(TESR_WaterLighting3.w / 3.0f) + length(slope) * 0.1f;
+	float radius = clamp(hitDistance * cone / max(worldPerPixel, 1e-3f), loose ? 4.0f : 1.0f, 16.0f);
+	float2 r1 = TESR_ReciprocalResolution.xy * radius * 0.7071f;
+	float2 r2 = TESR_ReciprocalResolution.xy * radius * 0.5f;
+	float3 reflection = linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-r1.x, -r1.y), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( r1.x, -r1.y), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-r1.x,  r1.y), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( r1.x,  r1.y), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( r2.x,  0.0f), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-r2.x,  0.0f), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( 0.0f,  r2.y), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( 0.0f, -r2.y), 0.0f, 0.0f)).rgb);
+	reflection *= loose ? 0.125f * 0.3f : 0.125f;
 	float amount = saturate(fresnel * confidence * strength);
 	if (debugView == 3) return float4(delinearize(reflection), 1.0f);
 	if (debugView == 4) return float4(amount.xxx, 1.0f);
 
+	// Only the reflection is replaced, not the water under it: the foam, the whitecaps, the sun glint
+	// and the glow through the waves stay as they were. With GameReflections off, the water drew the
+	// sky along its reflected ray, which is known: that is taken out and the found reflection put in
+	// its place. With the game's reflection map, which cannot be read here, the water is blended
+	// toward the found reflection instead.
 	float3 base = linearize(color.rgb);
+	float3 result = TESR_WaterLighting5.x > 0.5f ? lerp(base, reflection, amount)
+	                                             : max(base + amount * (reflection - getSkyReflection(R)), 0.0f);
 	// Alpha 1, as every effect writes: the frame's own alpha on the water is the water shader's
 	// shoreline fade, and blending by it would throw the reflection away.
-	return float4(delinearize(lerp(base, reflection, amount)), 1.0f);
+	return float4(delinearize(result), 1.0f);
 }
 
 technique
