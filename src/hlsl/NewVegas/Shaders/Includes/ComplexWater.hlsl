@@ -189,15 +189,18 @@ float4 TESR_CameraData : register(c200);     // y: far (only a small correction)
 // The water's view of the screen: how points on the water plane map to screen positions (from how
 // the water surface and its own screen position change from one pixel to the next, their
 // screen-space derivatives, in the engine's own screen space, whichever way it is laid out), their
-// distance along the view axis, and the depth buffer's scale. Build it at the top level (ddx/ddy);
-// the surface is flat, so the map is exact for points on the water plane near the pixel, which is
-// all refraction needs.
+// distance along the view axis, and the depth buffer's scale. Build it at the top level (ddx/ddy).
+// Exact for every point of the water plane, however far from the pixel: under a perspective
+// projection a plane's 1/viewZ, and its position over viewZ, change linearly across the screen, so
+// both are carried as they are and the pixel showing any point of the plane is solved for exactly.
+// (Carrying the position and viewZ themselves, which are not linear, went wrong for the long offsets
+// refraction makes close to the camera, and broke its test for the water itself.)
 struct WaterScreenMap {
-    float2 worldX, worldY;   // camera-relative water-plane position, per pixel across and down
+    float2 surfaceXY;        // the pixel's camera-relative water-plane position
+    float2 dirX, dirY;       // that position over viewZ, per pixel across and down
     float2 uvX, uvY;         // screen position, per pixel across and down
     float viewZ;             // the water's distance along the view axis at the pixel
-    float viewZX, viewZY;    // ... per pixel across and down
-    float det;
+    float invZX, invZY;      // 1 / viewZ, per pixel across and down
     float reversed;          // 1 on a reversed depth buffer
     float depthScale;        // the depth buffer's 1/viewZ scale (the near plane, near enough)
 };
@@ -218,8 +221,8 @@ float getInvFar(){
 // map through them -- the wading shader has no temp registers to spare.
 WaterScreenMap getWaterScreenDepth(float4 screenPos){
     WaterScreenMap map;
-    map.worldX = map.worldY = map.uvX = map.uvY = 0.0f;
-    map.viewZX = map.viewZY = map.det = 0.0f;
+    map.surfaceXY = map.dirX = map.dirY = map.uvX = map.uvY = 0.0f;
+    map.invZX = map.invZY = 0.0f;
     map.viewZ = max(screenPos.w, 1e-3f);
     float waterDepth = 2.0f * screenPos.z / map.viewZ - 1.0f;
     map.reversed = waterDepth < 0.5f ? 1.0f : 0.0f;
@@ -229,22 +232,29 @@ WaterScreenMap getWaterScreenDepth(float4 screenPos){
 
 WaterScreenMap getWaterScreenMap(float3 surfaceFromCamera, float2 uv, float4 screenPos){
     WaterScreenMap map = getWaterScreenDepth(screenPos);
-    map.worldX = ddx(surfaceFromCamera.xy);
-    map.worldY = ddy(surfaceFromCamera.xy);
+    float invZ = 1.0f / map.viewZ;
+    map.surfaceXY = surfaceFromCamera.xy;
+    map.dirX = ddx(surfaceFromCamera.xy * invZ);
+    map.dirY = ddy(surfaceFromCamera.xy * invZ);
     map.uvX = ddx(uv);
     map.uvY = ddy(uv);
-    map.det = map.worldX.x * map.worldY.y - map.worldX.y * map.worldY.x;
-    map.viewZX = ddx(map.viewZ);
-    map.viewZY = ddy(map.viewZ);
+    map.invZX = ddx(invZ);
+    map.invZY = ddy(invZ);
     return map;
 }
 
-// Screen offset, in pixels across and down, of a water-plane offset (world units, horizontal).
+// Screen offset, in pixels across and down, of a water-plane offset (world units, horizontal): the
+// pixel s where the plane's position p(s) = dir(s) / invZ(s) reaches q = pixel + offset, both dir and
+// invZ linear in s -- dir(0) + s.x dirX + s.y dirY = q (invZ(0) + s.x invZX + s.y invZY), two
+// equations in s, solved.
 float2 getPixelOffset(WaterScreenMap map, float2 worldOffset){
-    if (abs(map.det) < 1e-10f) return 0.0f;
-    float across = (worldOffset.x * map.worldY.y - worldOffset.y * map.worldY.x) / map.det;
-    float down = (map.worldX.x * worldOffset.y - map.worldX.y * worldOffset.x) / map.det;
-    return float2(across, down);
+    float2 q = map.surfaceXY + worldOffset;
+    float2 colX = map.dirX - q * map.invZX;
+    float2 colY = map.dirY - q * map.invZY;
+    float det = colX.x * colY.y - colY.x * colX.y;
+    float2 rhs = worldOffset / map.viewZ;
+    float2 pixels = float2(rhs.x * colY.y - colY.x * rhs.y, colX.x * rhs.y - rhs.x * colX.y) / det;
+    return abs(det) > 1e-20f ? pixels : 0.0f;
 }
 
 // Screen offset of a water-plane offset.
@@ -256,7 +266,8 @@ float2 getScreenOffset(WaterScreenMap map, float2 worldOffset){
 // Distance along the view axis of the water-plane point worldOffset away from the pixel's.
 float getWaterViewZ(WaterScreenMap map, float2 worldOffset){
     float2 pixels = getPixelOffset(map, worldOffset);
-    return max(map.viewZ + pixels.x * map.viewZX + pixels.y * map.viewZY, 1e-3f);
+    float invZ = 1.0f / map.viewZ + pixels.x * map.invZX + pixels.y * map.invZY;
+    return max(1.0f / max(invZ, getInvFar() * 0.5f), 1e-3f);
 }
 
 // Distance along the view axis of a depth value. Nothing there reads as the far plane.
@@ -349,8 +360,10 @@ float getDepthCalibration(WaterScreenMap map){
 // that point of the bed is where the line from the camera to it crosses the water surface; its
 // screen position comes from the water's own screen map. strength: the water type's
 // refractionPower, 1 real water. Where the bent ray lands on something in front of the water (a
-// post, legs, the shore) or off the screen, the straight view is used, so nothing above the water
-// smears into it. Returns the screen position of the bed seen; path and bed: for that bed.
+// post, legs, the shore), the straight view is used, so nothing above the water smears into it; as
+// it nears the edge of the screen the bend fades out into the straight view, rather than snapping to
+// it where it leaves the screen (a hard edge that followed the ripples, close to the camera). Returns
+// the screen position of the bed seen; path and bed: for that bed.
 // straightBed: the bed under the pixel (getBedBehind at straightUV), which the caller has already
 // read. Each depth read is made once: the second pass's is also the leak test's and the bed's.
 // ---------------------------------------------------------------------------------------------
@@ -377,10 +390,14 @@ float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, Wate
         depth = max(surfaceFromCamera.z - waterPoint.z * (sceneZ / waterViewZ), 0.0f);   // getBedBehind's
     }
 
-    bool leak = sceneZ < waterViewZ || any(uv != saturate(uv));
-    uv = leak ? straightUV : uv;
-    waterPoint = leak ? surfaceFromCamera : waterPoint;
-    bed = leak ? straightBed : waterPoint * (sceneZ / waterViewZ);
+    // How much of the bend is kept: none onto something in front of the water, and fading out over
+    // the last 3% of the screen to its edge (none past it).
+    float2 edge = min(uv, 1.0f - uv);
+    float keep = sceneZ < waterViewZ ? 0.0f : saturate(min(edge.x, edge.y) / 0.03f);
+    float3 refractedBed = waterPoint * (sceneZ / waterViewZ);
+    uv = lerp(straightUV, uv, keep);
+    waterPoint = lerp(surfaceFromCamera, waterPoint, keep);
+    bed = lerp(straightBed, refractedBed, keep);
     path = getWaterPathTo(bed, waterPoint);
     return uv;
 }
