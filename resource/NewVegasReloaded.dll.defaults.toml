@@ -1116,6 +1116,7 @@ RefractionBlur = 0.4                 # [0.0-3.0] The bed softens the more water 
 RefractionDispersion = 0.1           # [0.0-1.0] Water bends red light a little less than blue: a faint colour split where the waves bend the view most. 0 off.
 SpecularAA = 1.0                     # [0.0-1.0] Widens the sun and light glints where the waves are finer than a pixel, so distant water stops crawling. 0 is the sharp glint everywhere.
 PointLights = 1.0                    # [0.0-3.0] Glints of lamps, campfires and other point lights on the water. 0 off.
+ReflectionBlur = 0.4                 # [0.0-3.0] Blurs the screen-space reflections (WaterReflections) on interior water where it is choppy. Interior water has no other reflection to blur. 0 off.
 Foam = 0.8                           # [0.0-1.0] Foam where the water meets the shore and around anything standing in it (Textures\Water\NVR_Foam.dds): solid at the edge, breaking into cells and then streaks further out, drifting. 0 off.
 FoamWidth = 20.0                     # [2-400] How far out from the edge the dense foam reaches -- the distance the view passes through the water there (game units, about 70 to a metre); its streaks reach twice as far.
 FoamScale = 250.0                    # [20-5000] Size of the foam pattern: game units the foam texture spans. Smaller gives finer bubbles.

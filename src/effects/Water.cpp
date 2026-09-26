@@ -21,6 +21,7 @@ void WaterShaders::RegisterConstants() {
 	RegisterComplexWater("TESR_Water", &Constants.OutdoorWater);
 	RegisterComplexWater("TESR_InteriorWater", &Constants.InteriorWater);
 	RegisterComplexWater("TESR_PlacedWater", &Constants.PlacedWater);
+	RegisterComplexWater("TESR_BelowWater", &Constants.BelowWater);
 	TheShaderManager->RegisterConstant("TESR_WaterWaveOrigin", &Constants.WaveOrigin);
 }
 
@@ -131,6 +132,9 @@ void WaterShaders::UpdateConstants() {
 	// time of day (and so its sun) still runs.
 	Constants.OutdoorWater.Lighting4.z = Constants.PlacedWater.Lighting4.z = TheShaderManager->GameState.isExterior ? 1.0f : 0.0f;
 	Constants.InteriorWater.Lighting4.z = 0.0f;
+	// One shader draws the surface seen from below for every kind of water: it takes the settings of
+	// the water in the player's cell, interior water's in an interior.
+	Constants.BelowWater = CellWater();
 
 	// caustics strength
 	Constants.Default.waterVolume.x = Constants.Placed.waterVolume.x = causticsStrength * TheShaderManager->ShaderConst.sunGlare;

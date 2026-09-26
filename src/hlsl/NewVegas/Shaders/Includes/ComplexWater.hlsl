@@ -22,7 +22,8 @@ struct PS_OUTPUT {
 // Settings (WaterShaders::ReadComplexWater), each kind of water its own: [Shaders.Water.ComplexWater]
 // outdoors (and the distant water, and the surface seen from below), [Shaders.Water.Interiors],
 // [Shaders.Water.Placed]. The same registers under each kind's own names (TESR_Water*,
-// TESR_InteriorWater*, TESR_PlacedWater*: the DLL binds by name), read here as TESR_Water*. Registers clear of the
+// TESR_InteriorWater*, TESR_PlacedWater*, and TESR_BelowWater* for the surface seen from below, a
+// copy of the cell's water's: the DLL binds by name), read here as TESR_Water*. Registers clear of the
 // engine's water constants (c0-c13), of the template's own (c14-c72), of Shadow.hlsl (c100-c133)
 // and of the scene-depth constants below (c192-c201).
 //   TESR_WaterLighting     x: SunShadows      y: AbsorptionDepth  z: WaterColorBrightness  w: WaveScattering
@@ -75,6 +76,26 @@ float4 TESR_InteriorWaterLighting5    : register(c208);
 #define TESR_WaterWaves        TESR_InteriorWaterWaves
 #define TESR_WaterWaves2       TESR_InteriorWaterWaves2
 #define TESR_WaterLighting5    TESR_InteriorWaterLighting5
+#elif WATER_BELOW
+// The surface seen from underwater, one shader for every kind: the cell's water's settings.
+float4 TESR_BelowWaterLighting     : register(c190);
+float4 TESR_BelowWaterLighting2    : register(c191);
+float4 TESR_BelowWaterLighting3    : register(c202);
+float4 TESR_BelowWaterLighting4    : register(c203);
+float4 TESR_BelowWaterScatterColor : register(c204);
+float4 TESR_BelowWaterAbsorption   : register(c205);
+float4 TESR_BelowWaterWaves        : register(c206);
+float4 TESR_BelowWaterWaves2       : register(c207);
+float4 TESR_BelowWaterLighting5    : register(c208);
+#define TESR_WaterLighting     TESR_BelowWaterLighting
+#define TESR_WaterLighting2    TESR_BelowWaterLighting2
+#define TESR_WaterLighting3    TESR_BelowWaterLighting3
+#define TESR_WaterLighting4    TESR_BelowWaterLighting4
+#define TESR_WaterScatterColor TESR_BelowWaterScatterColor
+#define TESR_WaterAbsorption   TESR_BelowWaterAbsorption
+#define TESR_WaterWaves        TESR_BelowWaterWaves
+#define TESR_WaterWaves2       TESR_BelowWaterWaves2
+#define TESR_WaterLighting5    TESR_BelowWaterLighting5
 #else
 float4 TESR_WaterLighting     : register(c190);
 float4 TESR_WaterLighting2    : register(c191);

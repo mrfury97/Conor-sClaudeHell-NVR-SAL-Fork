@@ -60,6 +60,7 @@ public:
 		ComplexWaterStruct	OutdoorWater;
 		ComplexWaterStruct	InteriorWater;
 		ComplexWaterStruct	PlacedWater;
+		ComplexWaterStruct	BelowWater;		// the surface seen from underwater (TESR_BelowWater*): a copy of the cell's water's, each frame
 		D3DXVECTOR4		WaveOrigin;		// TESR_WaterWaveOrigin: xy the first wave layer's origin in the world, zw the second's (every kind)
 	};
 	WaterConstants		Constants;
