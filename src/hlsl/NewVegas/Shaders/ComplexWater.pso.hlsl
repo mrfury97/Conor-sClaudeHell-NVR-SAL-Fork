@@ -239,7 +239,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 #elif WATER_PLACED
     float3 reflection = skyLight;
 #else
-    // The game's reflection map, or with SkipReflectionPass the sky along the reflected ray.
+    // The game's reflection map, or with GameReflections off the sky along the reflected ray.
     float3 reflection = TESR_WaterLighting5.x > 0.5f ? getBlurredReflection(reflectionPos, N)
                                                      : getSkyReflection(reflect(-eyeDirection, N), skyLight);
 #endif
