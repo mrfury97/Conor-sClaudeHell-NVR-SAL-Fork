@@ -1,6 +1,13 @@
 #include "WaterReflections.h"
 
+// The waves (and reflection blur) of the water in the player's cell, interior water's in an
+// interior, so the reflection bends with the waves that water shows.
 void WaterReflectionsEffect::UpdateConstants() {
+	WaterShaders* water = TheShaderManager->Shaders.Water;
+	if (!water) return;
+	const WaterShaders::ComplexWaterStruct& cellWater = water->CellWater();
+	Constants.Waves = cellWater.Waves;
+	Constants.Blur = cellWater.Lighting3;
 }
 
 void WaterReflectionsEffect::UpdateSettings() {
@@ -12,6 +19,8 @@ void WaterReflectionsEffect::UpdateSettings() {
 
 void WaterReflectionsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WaterReflectionsData", &Constants.Data);
+	TheShaderManager->RegisterConstant("TESR_WaterReflectionsWaves", &Constants.Waves);
+	TheShaderManager->RegisterConstant("TESR_WaterReflectionsBlur", &Constants.Blur);
 }
 
 // Part of Complex Water: only while its shaders draw the water (they keep the water height, the

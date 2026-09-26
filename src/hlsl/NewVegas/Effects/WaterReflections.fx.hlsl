@@ -26,9 +26,9 @@
 float4 TESR_ReciprocalResolution;
 float4 TESR_GameTime;
 float4 TESR_WaterSettings;        // x: water height
-float4 TESR_WaterWaves;           // x: WaveHeight  y: WaveLength  z: WaveDirection  w: WaveSteepness
+float4 TESR_WaterReflectionsWaves;  // the cell's water's Complex Water waves: x WaveHeight  y WaveLength  z WaveDirection  w WaveSteepness
 float4 TESR_WaterWaveOrigin;      // xy the first wave layer's origin in the world, zw the second's
-float4 TESR_WaterLighting3;       // w: ReflectionBlur
+float4 TESR_WaterReflectionsBlur;   // w: the cell's water's ReflectionBlur
 float4 TESR_WaterReflectionsData;
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -109,18 +109,18 @@ float2 sampleWaveSlope(float2 worldPos, float2 dir, float tile, float2 offset, f
 float2 getWaveSlope(float2 worldPos, float pixelSize){
 	float time = TESR_GameTime.z;
 	// Half round, as in ComplexWater's getWaveField: the baked waves run toward -u.
-	float angle = TESR_WaterWaves.z + 3.14159265f;
+	float angle = TESR_WaterReflectionsWaves.z + 3.14159265f;
 	float2 dirA = float2(cos(angle), sin(angle));
 	float2 dirB = float2(cos(angle + WAVE_LAYER_B_ANGLE), sin(angle + WAVE_LAYER_B_ANGLE));
-	float tileA = max(TESR_WaterWaves.y, 1.0f) * WAVE_TEX_PEAK;
+	float tileA = max(TESR_WaterReflectionsWaves.y, 1.0f) * WAVE_TEX_PEAK;
 	float tileB = tileA * WAVE_LAYER_B_SCALE;
 	float patchUnits = WAVE_TEX_PATCH * WATER_UNITS_PER_METRE;
 	float timeA = time / (WAVE_TEX_PERIOD * sqrt(tileA / patchUnits));
 	float timeB = time / (WAVE_TEX_PERIOD * sqrt(tileB / patchUnits)) + WAVE_LAYER_B_TIME;
 	float lodA = max(log2(pixelSize * WAVE_TEX_SIZE / tileA), 0.0f);
 	float lodB = max(log2(pixelSize * WAVE_TEX_SIZE / tileB), 0.0f);
-	float sigma = TESR_WaterWaves.x * 0.25f;
-	float slopeScale = sigma * WAVE_TEX_SLOPE_SCALE / tileA * lerp(0.5f, 1.5f, saturate(TESR_WaterWaves.w));
+	float sigma = TESR_WaterReflectionsWaves.x * 0.25f;
+	float slopeScale = sigma * WAVE_TEX_SLOPE_SCALE / tileA * lerp(0.5f, 1.5f, saturate(TESR_WaterReflectionsWaves.w));
 	return slopeScale * (sampleWaveSlope(worldPos - TESR_WaterWaveOrigin.xy, dirA, tileA, 0.0f, timeA, lodA)
 	                   + sampleWaveSlope(worldPos - TESR_WaterWaveOrigin.zw, dirB, tileB, WAVE_LAYER_B_OFFSET, timeB, lodB));
 }
@@ -291,7 +291,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// its own shade (the pier's, over the water), so it is taken darker than the lit front.
 	float2 reflectedUV = lerp(start.xy, end.xy, hitT);
 	// Widened by the water's ReflectionBlur (0-3), as its own reflection is blurred.
-	float2 spread = TESR_ReciprocalResolution.xy * (loose ? 4.0f : 1.5f) * (1.0f + saturate(TESR_WaterLighting3.w / 3.0f) * 2.0f);
+	float2 spread = TESR_ReciprocalResolution.xy * (loose ? 4.0f : 1.5f) * (1.0f + saturate(TESR_WaterReflectionsBlur.w / 3.0f) * 2.0f);
 	float3 reflection = linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x, -spread.y), 0.0f, 0.0f)).rgb)
 	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( spread.x, -spread.y), 0.0f, 0.0f)).rgb)
 	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x,  spread.y), 0.0f, 0.0f)).rgb)

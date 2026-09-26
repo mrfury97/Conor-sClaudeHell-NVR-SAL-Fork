@@ -19,7 +19,10 @@ struct PS_OUTPUT {
 #include "Includes/PBR.hlsl"
 
 // ---------------------------------------------------------------------------------------------
-// Settings ([Shaders.Water.ComplexWater], WaterShaders::UpdateSettings). Registers clear of the
+// Settings (WaterShaders::ReadComplexWater), each kind of water its own: [Shaders.Water.ComplexWater]
+// outdoors (and the distant water, and the surface seen from below), [Shaders.Water.Interiors],
+// [Shaders.Water.Placed]. The same registers under each kind's own names (TESR_Water*,
+// TESR_InteriorWater*, TESR_PlacedWater*: the DLL binds by name), read here as TESR_Water*. Registers clear of the
 // engine's water constants (c0-c13), of the template's own (c14-c72), of Shadow.hlsl (c100-c133)
 // and of the scene-depth constants below (c192-c201).
 //   TESR_WaterLighting     x: SunShadows      y: AbsorptionDepth  z: WaterColorBrightness  w: WaveScattering
@@ -34,6 +37,45 @@ struct PS_OUTPUT {
 // The DLL keeps the ones that must never be 0 (AbsorptionDepth, WaterColorBrightness, FoamWidth,
 // CausticsScale) off 0.
 // ---------------------------------------------------------------------------------------------
+#if WATER_PLACED
+float4 TESR_PlacedWaterLighting     : register(c190);
+float4 TESR_PlacedWaterLighting2    : register(c191);
+float4 TESR_PlacedWaterLighting3    : register(c202);
+float4 TESR_PlacedWaterLighting4    : register(c203);
+float4 TESR_PlacedWaterScatterColor : register(c204);
+float4 TESR_PlacedWaterAbsorption   : register(c205);
+float4 TESR_PlacedWaterWaves        : register(c206);
+float4 TESR_PlacedWaterWaves2       : register(c207);
+float4 TESR_PlacedWaterLighting5    : register(c208);
+#define TESR_WaterLighting     TESR_PlacedWaterLighting
+#define TESR_WaterLighting2    TESR_PlacedWaterLighting2
+#define TESR_WaterLighting3    TESR_PlacedWaterLighting3
+#define TESR_WaterLighting4    TESR_PlacedWaterLighting4
+#define TESR_WaterScatterColor TESR_PlacedWaterScatterColor
+#define TESR_WaterAbsorption   TESR_PlacedWaterAbsorption
+#define TESR_WaterWaves        TESR_PlacedWaterWaves
+#define TESR_WaterWaves2       TESR_PlacedWaterWaves2
+#define TESR_WaterLighting5    TESR_PlacedWaterLighting5
+#elif WATER_INTERIOR
+float4 TESR_InteriorWaterLighting     : register(c190);
+float4 TESR_InteriorWaterLighting2    : register(c191);
+float4 TESR_InteriorWaterLighting3    : register(c202);
+float4 TESR_InteriorWaterLighting4    : register(c203);
+float4 TESR_InteriorWaterScatterColor : register(c204);
+float4 TESR_InteriorWaterAbsorption   : register(c205);
+float4 TESR_InteriorWaterWaves        : register(c206);
+float4 TESR_InteriorWaterWaves2       : register(c207);
+float4 TESR_InteriorWaterLighting5    : register(c208);
+#define TESR_WaterLighting     TESR_InteriorWaterLighting
+#define TESR_WaterLighting2    TESR_InteriorWaterLighting2
+#define TESR_WaterLighting3    TESR_InteriorWaterLighting3
+#define TESR_WaterLighting4    TESR_InteriorWaterLighting4
+#define TESR_WaterScatterColor TESR_InteriorWaterScatterColor
+#define TESR_WaterAbsorption   TESR_InteriorWaterAbsorption
+#define TESR_WaterWaves        TESR_InteriorWaterWaves
+#define TESR_WaterWaves2       TESR_InteriorWaterWaves2
+#define TESR_WaterLighting5    TESR_InteriorWaterLighting5
+#else
 float4 TESR_WaterLighting     : register(c190);
 float4 TESR_WaterLighting2    : register(c191);
 float4 TESR_WaterLighting3    : register(c202);
@@ -43,6 +85,7 @@ float4 TESR_WaterAbsorption   : register(c205);
 float4 TESR_WaterWaves        : register(c206);
 float4 TESR_WaterWaves2       : register(c207);
 float4 TESR_WaterLighting5    : register(c208);
+#endif
 float4 TESR_SkyColor          : register(c209);
 float4 TESR_WaterWaveOrigin   : register(c210);   // xy the first wave layer's origin in the world, zw the second's (the DLL turns the waves about the player)
 
@@ -408,7 +451,7 @@ struct WaveField {
 
 // WaveHeight is the typical height from trough to crest (the significant wave height, four standard
 // deviations); WaveLength the typical length from crest to crest (the spectrum's peak).
-WaveField getWaveField(float time, float pixelSize, float heightScale){
+WaveField getWaveField(float time, float pixelSize){
     WaveField field;
     // The baked waves travel toward -u in the texture (the generator's phase convention): turn the
     // texture half round so they run downwind, with the ripples, foam and caustics.
@@ -423,7 +466,7 @@ WaveField getWaveField(float time, float pixelSize, float heightScale){
     field.timeB = time / (WAVE_TEX_PERIOD * sqrt(field.tileB / patchUnits)) + WAVE_LAYER_B_TIME;
     field.lodA = max(log2(pixelSize * WAVE_TEX_SIZE / field.tileA), 0.0f);
     field.lodB = max(log2(pixelSize * WAVE_TEX_SIZE / field.tileB), 0.0f);
-    float sigma = TESR_WaterWaves.x * heightScale * 0.25f;
+    float sigma = TESR_WaterWaves.x * 0.25f;
     field.height = sigma * WAVE_TEX_HEIGHT_MAX;
     field.slope = sigma * WAVE_TEX_SLOPE_SCALE / field.tileA * lerp(0.5f, 1.5f, saturate(TESR_WaterWaves.w));
     return field;
@@ -552,10 +595,10 @@ float getWaveGusts(WaveField field, float2 worldPos){
 // the fine detail at 40%. The fine ripples glint and shade the surface, but at full strength they
 // would scribble the bed seen through them into squiggles; what a bed seen through real water mostly
 // follows is the larger waves.
-float3 getWaves(float2 worldPos, float distance, WaveField field, float heightScale, out float heightOut, out float foldOut, out float3 refractionNormal){
+float3 getWaves(float2 worldPos, float distance, WaveField field, out float heightOut, out float foldOut, out float3 refractionNormal){
     float2 slope;
     float height = getWaveFieldSurface(field, worldPos, slope, foldOut);
-    heightOut = TESR_WaterWaves.x > 0.0f ? clamp(height / (TESR_WaterWaves.x * heightScale * 0.5f), -1.0f, 1.0f) : 0.0f;
+    heightOut = TESR_WaterWaves.x > 0.0f ? clamp(height / (TESR_WaterWaves.x * 0.5f), -1.0f, 1.0f) : 0.0f;
     float3 detail = getWaveNormal(worldPos, distance);
     // A surface of slope s faces (-s, 1); the detail normal already faces its own way.
     float2 detailSlope = detail.xy / max(detail.z, 0.1f);

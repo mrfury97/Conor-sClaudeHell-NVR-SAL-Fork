@@ -22,8 +22,9 @@
 //   fog        the game's own distance fog
 // Underwater looking up (WATER_BELOW): Snell's window -- the world above through a circle overhead,
 // the underside of the surface a mirror of the water body outside it.
-// Settings: [Shaders.Water.ComplexWater] (Includes/ComplexWater.hlsl), and each water type's own
-// section (Default, Interiors, Placed) for its waves, reflectivity, refraction and shore movement.
+// Settings (Includes/ComplexWater.hlsl): each kind of water its own section, the same keys --
+// [Shaders.Water.ComplexWater] outdoors (and the distant water), [Shaders.Water.Interiors],
+// [Shaders.Water.Placed].
 
 #ifndef WATER_PLACED
     #define WATER_PLACED 0
@@ -41,13 +42,6 @@
     #define WATER_BELOW 0
 #endif
 #define WATER_SUNLIT (!WATER_INTERIOR)
-// The wave height on this kind of water, against WaveHeight: pools and interior water are
-// small and sheltered.
-#if WATER_PLACED || WATER_INTERIOR
-    #define WATER_WAVE_SCALE 0.3f
-#else
-    #define WATER_WAVE_SCALE 1.0f
-#endif
 
 // The engine's water constants, the same registers in every vanilla water shader.
 float4 EyePos      : register(c1);
@@ -143,14 +137,14 @@ PS_OUTPUT main(PS_INPUT IN) {
     float2 flatDX = ddx(flatPos);
     float2 flatDY = ddy(flatPos);
     float pixelSize = max(length(flatDX), length(flatDY));                  // world units per pixel here
-    WaveField waveField = getWaveField(time, pixelSize, WATER_WAVE_SCALE);
+    WaveField waveField = getWaveField(time, pixelSize);
     float2 wavePos = getWaveParallax(flatPos, eyeDirection, waveField, distance, pixelSize);
     float2 waveDX = ddx(wavePos);                                            // for the foam, read in a branch
     float2 waveDY = ddy(wavePos);
     float waveHeight;                                                        // -1 trough to 1 crest
     float waveFold;                                                          // crest folding, for whitecaps
     float3 refractionN;                                                      // calmer: for the bed seen through
-    float3 N = getWaves(wavePos, distance, waveField, WATER_WAVE_SCALE, waveHeight, waveFold, refractionN);
+    float3 N = getWaves(wavePos, distance, waveField, waveHeight, waveFold, refractionN);
 #if !WATER_INTERIOR && !WATER_LOD
     N = getRainRipples(flatPos, flatDX, flatDY, N, distance, TESR_WetWorldData.x);
 #endif
