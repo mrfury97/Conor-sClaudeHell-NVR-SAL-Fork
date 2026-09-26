@@ -385,8 +385,8 @@ SpecularGlossiness = 16.0             # [1-128] Size of the sheen: higher is a s
 PointLights = 1.0                     # [0.0-3.0] Strength of point lights (campfires, lamps, torches) on grass. Vanilla grass ignores them completely; this uses NVR's nearby-light list, the same one the water uses, with the object shaders' attenuation and the same DiffuseWrap as the sun; with Specular above 0 they also put a sheen on nearby blades. No point-light shadows on grass. 0 off.
 DetailDistance = 2500.0               # [0-20000] Game units from the camera at which the costly grass lighting (Roundness, DiffuseWrap, Translucency, Specular, PointLights, normal maps) starts fading out; past it grass keeps the plain sun, shadows, sky light and root darkening. The biggest performance lever for grass. 0 = no limit.
 DetailFade = 1000.0                   # [1-10000] Game units over which that fade happens, so there is no visible line.
-ShadowDistance = 0.0                  # [0-20000] Game units from the camera past which grass stops taking forward sun shadows (Forward shadows mode only). Shadows are the next most costly part. 0 = no limit.
-ShadowFade = 1000.0                   # [1-10000] Game units over which grass shadows fade out.
+ShadowDistance = 5000.0               # [0-20000] Game units from the camera past which grass stops taking forward sun shadows (Forward shadows mode only). Shadows are the next most costly part. 0 = no limit.
+ShadowFade = 2000.0                   # [1-10000] Game units over which grass shadows fade out.
 NormalMaps = 1.0                      # [0.0-2.0] Strength of per-texture grass normal maps: for each grass texture, a <name>_n.dds beside it as a loose file under Data\Textures (not inside a BSA). Grass without one is unchanged. Tilts the normal that the sun, DiffuseWrap, PointLights and Specular light; its alpha masks Specular. Applies within DetailDistance. DebugView 10 shows which grass has one. 0 off.
 NormalMapFlipGreen = false            # Flip the normal maps' green channel, for maps authored the other way up (lighting looks inverted top to bottom).
 

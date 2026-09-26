@@ -97,6 +97,14 @@ static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
     #define SHADOW_FILTER_SPREAD 1.0f
 #endif
 
+// Cross-fade between cascades over the outer 10% of each (a second atlas fetch and light-space
+// transform there). 0 takes the nearer cascade alone up to its edge: a step where the resolution
+// changes, which grass, all noise and overdraw, hides, and saves the second fetch on every blade in
+// those rings.
+#ifndef SHADOW_CASCADE_BLEND
+    #define SHADOW_CASCADE_BLEND 1
+#endif
+
 // VS presence sentinel. NVR replaces many more pixel than vertex shaders (objects ~134 vs 51,
 // terrain 29 vs 2) and the game pairs them independently, so an NVR PS often runs against a
 // vanilla VS whose interpolator holds undefined data. NVR vertex shaders stamp this; the PS
@@ -300,19 +308,19 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // Initialised: a point beyond the last cascade falls through every branch.
     float shadow = 1.0f;
     [branch] if (distances.x < radii.x) {
-        [branch] if (distances.x < radii.x * blend)
+        [branch] if (!SHADOW_CASCADE_BLEND || distances.x < radii.x * blend)
             shadow = SHADOW_TAP_NEAR;
         else
             shadow = lerp(SHADOW_TAP_NEAR, SHADOW_TAP_MIDDLE, smoothstep(radii.x * blend, radii.x, distances.x));
     }
     else if (distances.y < radii.y) {
-        [branch] if (distances.y < radii.y * blend)
+        [branch] if (!SHADOW_CASCADE_BLEND || distances.y < radii.y * blend)
             shadow = SHADOW_TAP_MIDDLE;
         else
             shadow = lerp(SHADOW_TAP_MIDDLE, SHADOW_TAP_FAR, smoothstep(radii.y * blend, radii.y, distances.y));
     }
     else if (distances.z < radii.z) {
-        [branch] if (distances.z < radii.z * blend)
+        [branch] if (!SHADOW_CASCADE_BLEND || distances.z < radii.z * blend)
             shadow = SHADOW_TAP_FAR;
         else
             shadow = lerp(SHADOW_TAP_FAR, SHADOW_TAP_LOD, smoothstep(radii.z * blend, radii.z, distances.z));

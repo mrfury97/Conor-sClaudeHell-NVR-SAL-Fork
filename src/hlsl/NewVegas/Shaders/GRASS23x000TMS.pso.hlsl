@@ -37,8 +37,11 @@
 // Cost. Grass is heavily overdrawn, so every instruction here runs many times per screen pixel.
 // Pixels the engine's alpha test would reject skip everything; the costly lighting (rounded normal,
 // translucency, sheen, point lights) sits in one branch that fades out past DetailDistance; and the
-// forward sun shadow can be limited to ShadowDistance.
+// forward sun shadow can be limited to ShadowDistance (on by default: distant grass has the most
+// overdraw, many clumps to a pixel). The shadow takes one cascade, never two (SHADOW_CASCADE_BLEND
+// 0), and fully fogged grass is the fog colour without any lighting.
 
+#define SHADOW_CASCADE_BLEND 0
 #include "includes/Shadow.hlsl"
 #include "includes/PBRScale.hlsl"
 
@@ -220,6 +223,13 @@ PS_OUTPUT main(PS_INPUT IN) {
         // part of a 2x2 quad takes are undefined -- strictly so under DXVK/Vulkan. The pixel is
         // discarded, so the value itself never shows. CI checks the order in the disassembly.
         OUT.color.rgb = shadowNormal + float3(duvdx + duvdy, dpdx.x + dpdy.x);
+        return OUT;
+    }
+
+    // Grass lost in the fog shows only the fog colour: none of the lighting below would show.
+    [branch]
+    if (IN.fog.w >= 0.999f) {
+        OUT.color.rgb = IN.fog.rgb;
         return OUT;
     }
 
