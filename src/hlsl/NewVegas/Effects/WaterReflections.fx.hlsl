@@ -9,7 +9,9 @@
 // TESR_WaterReflectionsData  x: Strength  y: MaxDistance (units)  z: Distortion (0-1, how much the
 //                            waves bend the reflection)  w: DebugView
 //   DebugView 1: water mask (white where the effect runs)
-//             2: the search: green hit (brighter the more trusted); blue a hit thrown out as the
+//             2: the search: green hit (brighter the more trusted), teal a hit where the ray went
+//                behind the surface further than the thickness (its back or underside, not on the
+//                screen, taken from its front); blue a hit thrown out as the
 //                first-person weapon; yellow the ray went behind something (not the water), but by more
 //                than the thickness allowed (passed behind it); dark red never behind anything; black not
 //                searched
@@ -191,6 +193,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	float hitT = 0.0f;
 	float confidence = 0.0f;
 	float firstBehind = -1.0f;                                  // DebugView 2 and 6: behind / thickness at the first step behind anything
+	bool loose = false;                                         // DebugView 2: a hit on the surface standing in for its back
 	if (rayLength > 1.0f && max(pixels.x, pixels.y) > 2.0f && directionFade > 0.0f) {
 		status = 1.0f;
 		float k0 = 1.0f / start.z;
@@ -212,7 +215,14 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 			// not the water itself (it cannot reflect itself).
 			bool solid = behind > 0.0f && !isWaterHeight(TESR_CameraPosition.z + toWorld(rayUV).z * sceneZ, sceneZ);
 			if (firstBehind < 0.0f && solid) firstBehind = behind / thickness;
-			if (solid && behind < thickness) {
+			// Or further behind, where what the ray can only have gone through is its back or
+			// underside (the underside of the pier, the back of a post), which the screen does not
+			// show: the surface in front stands in for it. Only for a ray heading away from the
+			// camera, and only for a surface no nearer the camera than the ray's start -- nothing
+			// nearer can be in the ray's way, so the ray passed behind it.
+			bool reached = solid && rayForward > 0.0f && sceneZ > start.z;
+			if (solid && (behind < thickness || reached)) {
+				loose = behind >= thickness;
 				after = t;
 				break;
 			}
@@ -245,7 +255,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	}
 
 	if (debugView == 2) {
-		if (status == 2.0f) return float4(0.0f, max(confidence, 0.2f), 0.0f, 1.0f);
+		if (status == 2.0f) return loose ? float4(0.0f, max(confidence, 0.2f) * 0.6f, max(confidence, 0.2f), 1.0f) : float4(0.0f, max(confidence, 0.2f), 0.0f, 1.0f);
 		if (status == 3.0f) return blue;
 		if (status == 1.0f) return firstBehind > 0.0f ? yellow : float4(0.3f, 0.0f, 0.0f, 1.0f);
 		return black;
