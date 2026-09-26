@@ -39,11 +39,6 @@ struct VS_OUTPUT {
     float4 ambient        : TEXCOORD4;
     float4 sun            : TEXCOORD5;   // .w = distance fade
     float4 fog            : COLOR0;      // .w = fog amount
-    // Grass lighting (GRASS23x000TMS.pso), raw so the PS can shade per pixel with its own settings.
-    float4 blade          : TEXCOORD2;   // xyz: this variant's sun normal, w: height above the clump's base (units)
-    float4 bladeOffset    : TEXCOORD3;   // xyz: horizontal offset from the clump's centre (model units)
-    float4 sunColor       : TEXCOORD6;   // xyz: the sun term before N.L, w: 2 = grass data present
-    float4 sunDir         : TEXCOORD7;   // xyz: DiffuseDir
 };
 
 VS_OUTPUT main(VS_INPUT IN) {
@@ -95,11 +90,6 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.uv = IN.uv;
 
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.position), SHADOW_VS_SENTINEL);
-
-    OUT.blade = float4(N, local.z);   // height along the clump's up
-    OUT.bladeOffset = float4(binormal * local.x + tangent * local.y, 0.0f);
-    OUT.sunColor = float4((lightScale * IN.color.rgb) * DiffuseColor * AddlParams.x, 2.0f);   // w: GRASS_VS_SENTINEL, see GRASS23x000TMS.pso
-    OUT.sunDir = float4(DiffuseDir, 0.0f);
 
     return OUT;
 };

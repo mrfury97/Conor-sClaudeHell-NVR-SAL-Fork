@@ -101,32 +101,4 @@ jobs:
             if ($fileOk) { Write-Host "ok    Shaders/$($file.Name)" } else { $failed += "Shaders/$($file.Name)" }
           }
 
-          # The grass pixel shader's transparent-pixel early out only saves anything if it survives as a
-          # real dynamic branch with a discard in it; a flattened branch still runs all the lighting.
-          # Disassemble it and check, printing the branch and the instruction count for the log.
-          $grass = Join-Path $shaders 'GRASS23x000TMS.pso.hlsl'
-          $asm = "$env:RUNNER_TEMP\GRASS23x000TMS.asm"
-          & $fxc.FullName /nologo /T ps_3_0 /E main /I $shaders /D REVERSED_DEPTH=1 /D FORWARD_SHADOWS=1 /D SKYLIGHTING_MODE=0 /Fc $asm /Fo "$env:RUNNER_TEMP\grass.cso" $grass | Out-Null
-          $lines = Get-Content $asm
-          $branch = $lines | Select-String -Pattern '^\s*if'
-          $kill = $lines | Select-String -Pattern '^\s*texkill'
-          Write-Host "Grass PS: $(($lines | Select-String 'instruction slots used') -join ' ')"
-          Write-Host "Grass PS dynamic branches: $($branch.Count), texkill: $($kill.Count)"
-          $first = ($branch | Select-Object -First 1).LineNumber
-          if ($first) { $lines[($first - 6)..($first + 6)] | ForEach-Object { Write-Host "    $_" } }
-          if ($branch.Count -lt 1 -or $kill.Count -lt 1) {
-            Write-Host "::error file=$grass::early-out branch or discard missing from the compiled grass pixel shader"
-            $failed += 'GRASS23x000TMS early-out check'
-          }
-          # Derivatives (dsx/dsy, and texld's implicit ones) must all come before the first branch:
-          # inside a branch only part of a quad takes, they are undefined.
-          $gradients = $lines | Select-String -Pattern '^\s*(dsx|dsy|texld )'
-          $late = $gradients | Where-Object { $_.LineNumber -gt $first }
-          Write-Host "Grass PS gradient ops: $($gradients.Count), after the first branch: $($late.Count)"
-          if ($gradients.Count -lt 3 -or $late.Count -gt 0) {
-            $late | ForEach-Object { Write-Host "    late: $($_.Line)" }
-            Write-Host "::error file=$grass::gradient operations missing or moved inside the early-out branch"
-            $failed += 'GRASS23x000TMS gradient placement check'
-          }
-
           if ($failed.Count -gt 0) { Write-Host "Failed: $($failed -join ', ')"; exit 1 }

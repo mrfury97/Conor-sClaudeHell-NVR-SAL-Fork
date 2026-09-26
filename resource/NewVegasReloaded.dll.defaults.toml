@@ -359,15 +359,6 @@ Enabled = true                         # Volumetric light shaft in the air along
 ScaleX = 1.0
 ScaleY = 1.0
 ScaleZ = 1.0
-Translucency = 0.6                    # [0.0-3.0] Sunlight through the blades when the sun is behind them: the glow of a backlit field, tinted by the grass colour and cut by shadows. 0 off.
-TranslucencyFocus = 4.0               # [1-32] How tightly the glow gathers around the sun's direction. Higher is a narrower, more concentrated rim around the sun; lower spreads it across more of the view.
-Roundness = 0.6                       # [0.0-3.0] Bends each blade's lighting outward from the clump's centre, so the side of a clump facing away from the sun falls into shade instead of a whole field being one flat tone. 0 is vanilla flat cards.
-DiffuseWrap = 0.5                     # [0.0-1.0] How far sunlight wraps around the rounded blades. Thin blades pass and scatter light, so the side of a clump facing away from the sun should dim gradually, not go black. 0 is plain N.L (the far side black wherever the sun is behind it); 0.5 dims it smoothly; 1 lights all but the exact back. Only matters with Roundness above 0.
-RootDarkening = 0.35                  # [0.0-1.0] Shades blades toward the ground, like the clump shadowing its own base. 0 off.
-RootDarkeningHeight = 20.0            # [1-200] Game units up from the base of each clump over which RootDarkening fades out (70 units is about a metre). Lower keeps the shade tight to the ground; higher darkens more of the blade. DebugView 6 shows it: black at the base to white at this height.
-Specular = 0.15                       # [0.0-2.0] Soft sheen on blades facing between you and the sun. Needs Roundness above 0 to vary across a clump. 0 off.
-SpecularGlossiness = 16.0             # [1-128] Size of the sheen: higher is a smaller, sharper highlight; lower a broad, soft one.
-PointLights = 1.0                     # [0.0-3.0] Strength of point lights (campfires, lamps, torches) on grass. Vanilla grass ignores them completely; this uses NVR's nearby-light list, the same one the water uses, with the object shaders' attenuation and the same DiffuseWrap as the sun. No point-light shadows on grass. 0 off.
 
 [_Shaders.Grass.Status]
 Enabled = true                        # Replaces the grass shaders.
