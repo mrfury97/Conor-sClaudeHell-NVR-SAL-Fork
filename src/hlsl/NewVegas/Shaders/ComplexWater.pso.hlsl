@@ -202,7 +202,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 #if WATER_SUNLIT
     color *= getSkyTint(skyLight);
 #endif
-    float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight, waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f), waveHeight);
+    float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight, waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f), waveHeight, waveFold);
     color += scattering;
     WATER_DEBUG(4, saturate(scattering));
     float fresnel = getFresnel(N, eyeDirection, waveParams.w);
@@ -283,7 +283,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // The surface: light through the wave crests, the reflection (none right at the waterline,
     // where the surface is too thin to hold a mirror), the sun, the point lights.
     float3 waterHue = waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f);
-    float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight * shadow, waterHue, waveHeight);
+    float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight * shadow, waterHue, waveHeight, waveFold);
     color += scattering;
     WATER_DEBUG(4, saturate(scattering));
     float fresnel = getFresnel(N, eyeDirection, waveParams.w) * saturate(straightPath.y / 30.0f);

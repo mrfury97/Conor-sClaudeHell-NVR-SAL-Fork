@@ -602,18 +602,24 @@ float getFresnel(float3 N, float3 eyeDirection, float reflectivity){
     return saturate(fresnel * reflectivity);
 }
 
-// Wave scattering (WaveScattering): looking toward a low sun, sunlight shines through the thin tops
-// and flanks of the waves and lights them up in the water's colour. Measured across the water: the
-// wave normals lean only slightly off vertical, and the view down onto the water is well off the sun
-// even with the sun straight ahead. Gone once the sun is under the horizon. In light units.
-float3 getWaveScattering(float3 N, float3 eyeDirection, float3 sunDirection, float3 sunLight, float3 waterHue, float waveHeight){
-    // Tilted flanks, and more on the crests, where the water is thinnest; little in the troughs.
-    float crest = saturate(length(N.xy) * 5.0f) * lerp(0.4f, 1.6f, saturate(waveHeight * 0.5f + 0.5f));
-    float2 viewFlat = -eyeDirection.xy * rsqrt(max(dot(eyeDirection.xy, eyeDirection.xy), 1e-6f));
-    float2 sunFlat = sunDirection.xy * rsqrt(max(dot(sunDirection.xy, sunDirection.xy), 1e-6f));
-    float towardSun = pow(saturate(dot(viewFlat, sunFlat)), 3.0f);
-    float lowSun = (1.0f - saturate(sunDirection.z)) * saturate(sunDirection.z * 20.0f);
-    return waterHue * sunLight * crest * towardSun * lowSun * TESR_WaterLighting.w;
+// Wave scattering (WaveScattering): sunlight that enters the far side of a wave, passes through its
+// thin top and comes out toward the eye lights the crest from within. The light's path: in along the
+// sun's direction, bent a little by the surface it enters (the normal), out toward the eye -- so the
+// glow sits on the backs of the waves in line with the sun and moves along them as the view does,
+// strongest looking toward a low sun but there whenever the light lines up. Where the water is
+// thinnest: the crests (height squared, the troughs staying dark) and most where they pinch and fold.
+// Its colour is what a thin layer of water lets through: the red goes first (AbsorptionColor), a
+// bright turquoise, with the water's own hue. Gone once the sun is under the horizon. In light units.
+float3 getWaveScattering(float3 N, float3 eyeDirection, float3 sunDirection, float3 sunLight, float3 waterHue, float waveHeight, float waveFold){
+    float3 through = normalize(sunDirection + N * 0.6f);
+    float toEye = pow(saturate(dot(eyeDirection, -through)), 4.0f);
+    float crestHeight = saturate(waveHeight * 0.5f + 0.5f);
+    float crest = lerp(0.1f, 1.0f, crestHeight * crestHeight) + waveFold * 0.8f;
+    float aboveHorizon = saturate(sunDirection.z * 10.0f);
+    // A thin crest, about 120 units of water (getTransmittance's absorption), with the water's hue.
+    float3 thin = exp(-TESR_WaterAbsorption.rgb * (120.0f * TESR_WaterLighting.y / 300.0f)) * lerp(waterHue, 1.0f, 0.5f);
+    thin /= max(max(thin.r, max(thin.g, thin.b)), 1e-4f);
+    return thin * sunLight * (toEye * crest * aboveHorizon * TESR_WaterLighting.w);
 }
 
 // Reflection, blurred on choppy water (ReflectionBlur): four taps around the lookup, spread by how
