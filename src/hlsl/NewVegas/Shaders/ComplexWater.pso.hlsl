@@ -203,6 +203,10 @@ PS_OUTPUT main(PS_INPUT IN) {
     WATER_DEBUG(3, fresnel);
     color = lerp(color, reflection, fresnel);
     color += getSunGlint(N, sunDirection, eyeDirection, roughness) * sunLight;
+    // Whitecaps, as on the near water, so the foam does not stop where the two meet.
+    float foam = getWhitecaps(waveFold, getFoamTexture(wavePos, time));
+    WATER_DEBUG(9, foam);
+    color = lerp(color, (sunLight * saturate(sunDirection.z) + skyLight * 0.6f) * 0.9f, foam);
     float alpha = 1.0f;
 
 #else

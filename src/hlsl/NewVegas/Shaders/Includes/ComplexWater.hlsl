@@ -458,40 +458,57 @@ float getWaveFieldSurface(WaveField field, float2 worldPos, out float2 slope, ou
 // world position to shade.
 float2 getWaveParallax(float2 worldPos, float3 eyeDirection, WaveField field, float distance){
     float strength = TESR_WaterWaves2.y * (1.0f - saturate(distance / 4000.0f));
-    // Along the view ray, the ground position moves by shift for each unit of height.
-    float2 shift = eyeDirection.xy / max(eyeDirection.z, 0.25f) * strength;
-    float range = getWaveFieldRange(field);
+    // Faded out (by 4000 units, and all the distant water): no trace at all, rather than eleven
+    // steps that come to nothing.
+    float2 result = worldPos;
+    [branch] if (strength > 0.0f) {
+        // Along the view ray, the ground position moves by shift for each unit of height.
+        float2 shift = eyeDirection.xy / max(eyeDirection.z, 0.25f) * strength;
+        float range = getWaveFieldRange(field);
 
-    // f = height of the ray above the waves: positive above the tallest crest, never positive below
-    // the deepest trough, so a crossing always lies in between.
-    float aboveH = range;
-    float aboveF = range - getWaveFieldHeight(field, worldPos + shift * range);
-    float belowH = -range;
-    float belowF = -1.0f;
-    bool found = false;
-    [loop]
-    for (int i = 1; i <= 8; i++) {
-        float h = range - range * 0.25f * i;
-        float f = h - getWaveFieldHeight(field, worldPos + shift * h);
-        if (!found && f <= 0.0f) {
-            belowH = h;
-            belowF = f;
-            found = true;
+        // f = height of the ray above the waves: positive above the tallest crest, never positive below
+        // the deepest trough, so a crossing always lies in between.
+        float aboveH = range;
+        float aboveF = range - getWaveFieldHeight(field, worldPos + shift * range);
+        float belowH = -range;
+        float belowF = -1.0f;
+        bool found = false;
+        [loop]
+        for (int i = 1; i <= 8; i++) {
+            float h = range - range * 0.25f * i;
+            float f = h - getWaveFieldHeight(field, worldPos + shift * h);
+            if (!found && f <= 0.0f) {
+                belowH = h;
+                belowF = f;
+                found = true;
+            }
+            if (!found) {
+                aboveH = h;
+                aboveF = f;
+            }
         }
-        if (!found) {
-            aboveH = h;
-            aboveF = f;
+        [loop]
+        for (int j = 0; j < 2; j++) {
+            float h = aboveH + (belowH - aboveH) * aboveF / max(aboveF - belowF, 1e-5f);
+            float f = h - getWaveFieldHeight(field, worldPos + shift * h);
+            if (f > 0.0f) { aboveH = h; aboveF = f; }
+            else          { belowH = h; belowF = f; }
         }
+        float hit = aboveH + (belowH - aboveH) * aboveF / max(aboveF - belowF, 1e-5f);
+        result = worldPos + shift * hit;
     }
-    [loop]
-    for (int j = 0; j < 2; j++) {
-        float h = aboveH + (belowH - aboveH) * aboveF / max(aboveF - belowF, 1e-5f);
-        float f = h - getWaveFieldHeight(field, worldPos + shift * h);
-        if (f > 0.0f) { aboveH = h; aboveF = f; }
-        else          { belowH = h; belowF = f; }
-    }
-    float hit = aboveH + (belowH - aboveH) * aboveF / max(aboveF - belowF, 1e-5f);
-    return worldPos + shift * hit;
+    return result;
+}
+
+// Gusts: a very large, slow pattern over the water -- the wave texture's own height, 24 times the
+// first layer's size, drifting over ten minutes -- that roughens some stretches and calms others, as
+// gusts of wind do. Breaks up the tiling that would otherwise line up into a grid across kilometres
+// of open water, and gives the distant water its patches. A factor on the slopes, 0.65 to 1.35.
+float getWaveGusts(WaveField field, float2 worldPos){
+    float2 p = worldPos - TESR_WaterWaveOrigin.xy;
+    float2 uv = float2(dot(p, field.dirA), dot(p, float2(-field.dirA.y, field.dirA.x))) / (field.tileA * 24.0f) + float2(0.5f, 0.25f);
+    float g = tex3Dlod(TESR_WaterWavesMap, float4(uv, WATER_SECONDS / 600.0f, 3.0f)).b;
+    return lerp(0.65f, 1.35f, saturate((g - 0.5f) * 2.5f + 0.5f));
 }
 
 // Waves: the wave field with the normal-map detail on it, as slopes added together. heightOut: -1
@@ -507,6 +524,11 @@ float3 getWaves(float2 worldPos, float distance, WaveField field, float heightSc
     float3 detail = getWaveNormal(worldPos, distance);
     // A surface of slope s faces (-s, 1); the detail normal already faces its own way.
     float2 detailSlope = detail.xy / max(detail.z, 0.1f);
+    // Gusts roughen the waves, their ripples and their whitecaps together.
+    float gust = getWaveGusts(field, worldPos);
+    slope *= gust;
+    detailSlope *= gust;
+    foldOut = saturate(foldOut * gust);
     refractionNormal = normalize(float3(-slope + detailSlope * 0.4f, 1.0f));
     return normalize(float3(-slope + detailSlope, 1.0f));
 }
