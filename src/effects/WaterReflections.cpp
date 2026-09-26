@@ -1,8 +1,9 @@
 #include "WaterReflections.h"
 
-// The waves (and reflection blur) of the water in the player's cell, interior water's in an
-// interior, so the reflection bends with the waves that water shows.
+// The settings for the player's cell (outdoor or interior), and the waves (and reflection blur) of
+// the water in it, interior water's in an interior, so the reflection bends with the waves it shows.
 void WaterReflectionsEffect::UpdateConstants() {
+	Constants.Data = TheShaderManager->GameState.isExterior ? OutdoorData : InteriorData;
 	WaterShaders* water = TheShaderManager->Shaders.Water;
 	if (!water) return;
 	const WaterShaders::ComplexWaterStruct& cellWater = water->CellWater();
@@ -11,10 +12,17 @@ void WaterReflectionsEffect::UpdateConstants() {
 }
 
 void WaterReflectionsEffect::UpdateSettings() {
-	Constants.Data.x = TheSettingManager->GetSettingF("Shaders.WaterReflections.Main", "Strength");
-	Constants.Data.y = max(TheSettingManager->GetSettingF("Shaders.WaterReflections.Main", "MaxDistance"), 100.0f);
-	Constants.Data.z = TheSettingManager->GetSettingF("Shaders.WaterReflections.Main", "Distortion");
-	Constants.Data.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.WaterReflections.Main", "DebugView"), 0, 6);
+	float debugView = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.WaterReflections.Main", "DebugView"), 0, 6);
+	auto Read = [debugView](const char* Section) {
+		return D3DXVECTOR4(
+			TheSettingManager->GetSettingF(Section, "Strength"),
+			max(TheSettingManager->GetSettingF(Section, "MaxDistance"), 100.0f),
+			TheSettingManager->GetSettingF(Section, "Distortion"),
+			debugView);
+	};
+	OutdoorData = Read("Shaders.WaterReflections.Main");
+	InteriorData = Read("Shaders.WaterReflections.Interiors");
+	Constants.Data = TheShaderManager->GameState.isExterior ? OutdoorData : InteriorData;
 }
 
 void WaterReflectionsEffect::RegisterConstants() {
@@ -25,8 +33,9 @@ void WaterReflectionsEffect::RegisterConstants() {
 
 // Part of Complex Water: only while its shaders draw the water (they keep the water height, the
 // wave field and the reflectivity the effect reads up to date), where the cell has water, and above
-// it (below, the Underwater effect takes over).
+// it (below, the Underwater effect takes over); not at all where this kind of cell's Strength is 0.
 bool WaterReflectionsEffect::ShouldRender() {
 	WaterShaders* water = TheShaderManager->Shaders.Water;
-	return water && water->Enabled && water->HasWater && !TheShaderManager->GameState.isUnderwater;
+	float strength = (TheShaderManager->GameState.isExterior ? OutdoorData : InteriorData).x;
+	return water && water->Enabled && water->HasWater && !TheShaderManager->GameState.isUnderwater && strength > 0.0f;
 }

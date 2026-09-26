@@ -1177,6 +1177,11 @@ MaxDistance = 8000.0                  # [500-20000] How far (game units, 70 to a
 Distortion = 0.5                      # [0.0-1.0] How much the waves bend the reflection. 0 a mirror; 1 the full slope of the Complex Water waves (WaveHeight, WaveLength, WaveSteepness).
 DebugView = 0                         # [0-6] 1 the water the effect finds (white). 2 the search: green where it found something (brighter the more it is trusted), teal where it found the back or underside of something (not on the screen, taken from its front), blue a hit thrown out as the first-person weapon, yellow the ray went behind something but too far (passed behind it), dark red never behind anything, black not searched. 3 the reflected colour alone. 4 how much of it is used (black none, white all). 5 the frame 1.5 m above each water point: posts and the pier show on the water a little below where they stand (magenta off the screen). 6 the first step behind anything: green within the thickness allowed, red beyond (brighter further), black never. 0 off.
 
+[_Shaders.WaterReflections.Interiors]
+Strength = 1.0                        # [0.0-2.0] As Main's Strength, for water in interior cells (sewers, flooded vaults, caves). Main's settings are for outdoor water; DebugView and GameReflections stay in Main.
+MaxDistance = 8000.0                  # [500-20000] As Main's MaxDistance, for interior water.
+Distortion = 0.5                      # [0.0-1.0] As Main's Distortion, for interior water: how much its waves ([Shaders.Water.Interiors]) bend the reflection.
+
 [_Shaders.WaterReflections.Status]
 Enabled = true                        # Screen-space reflections on the water, as a post-process: what stands over the water shows in it.
 
