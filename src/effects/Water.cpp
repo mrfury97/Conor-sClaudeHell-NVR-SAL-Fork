@@ -137,16 +137,19 @@ void WaterShaders::UpdateSettings() {
 	Constants.Default.shorelineParams.x = Read("ShoreMovement", 0.0f, 3.0f) * (interior ? 2.0f : 1.0f);
 	Constants.Placed.shorelineParams.x = Read("ShoreMovement", 0.0f, 3.0f) * 2.0f;
 
-	// The underwater view (the Underwater effect, with the head under the surface). Interiors keep the
-	// clear, dark water their own section had: no caustics, god rays or fog tint.
-	causticsStrength = interior ? 0.0f : Read("UnderwaterCaustics", 0.0f, 10.0f); // later modified by current sunglare
-	Constants.Default.waterVolume.w = interior ? 0.0f : Read("UnderwaterGodRays", 0.0f, 3.0f);
-	Constants.Default.waterVolume.z = interior ? 1.0f : Read("UnderwaterMurk", 0.0f, 10.0f);
-	Constants.Default.waterSettings.y = interior ? 10.0f : Read("UnderwaterDepthDarkness", 0.0f, 20.0f);
-	Constants.Default.waterCoefficients.x = interior ? 0.0f : Read("UnderwaterFogR", 0.0f, 5.0f);
-	Constants.Default.waterCoefficients.y = interior ? 0.0f : Read("UnderwaterFogG", 0.0f, 5.0f);
-	Constants.Default.waterCoefficients.z = interior ? 0.0f : Read("UnderwaterFogB", 0.0f, 5.0f);
-	Constants.Default.waterCoefficients.w = interior ? 0.0f : Read("UnderwaterScattering", 0.0f, 5.0f);
+	// The underwater view (the Underwater effect, with the head under the surface): its own section,
+	// [Shaders.Underwater.Main]. Interiors keep the clear, dark water their old section had: no
+	// caustics, god rays or fog tint.
+	const char* UnderwaterSection = "Shaders.Underwater.Main";
+	auto ReadUnderwater = [UnderwaterSection](const char* Key, float Min, float Max) { return std::clamp(TheSettingManager->GetSettingF(UnderwaterSection, Key), Min, Max); };
+	causticsStrength = interior ? 0.0f : ReadUnderwater("Caustics", 0.0f, 10.0f); // later modified by current sunglare
+	Constants.Default.waterVolume.w = interior ? 0.0f : ReadUnderwater("GodRays", 0.0f, 3.0f);
+	Constants.Default.waterVolume.z = interior ? 1.0f : ReadUnderwater("Murk", 0.0f, 10.0f);
+	Constants.Default.waterSettings.y = interior ? 10.0f : ReadUnderwater("DepthDarkness", 0.0f, 20.0f);
+	Constants.Default.waterCoefficients.x = interior ? 0.0f : ReadUnderwater("FogR", 0.0f, 5.0f);
+	Constants.Default.waterCoefficients.y = interior ? 0.0f : ReadUnderwater("FogG", 0.0f, 5.0f);
+	Constants.Default.waterCoefficients.z = interior ? 0.0f : ReadUnderwater("FogB", 0.0f, 5.0f);
+	Constants.Default.waterCoefficients.w = interior ? 0.0f : ReadUnderwater("Scattering", 0.0f, 5.0f);
 
 	// The surface waves the underwater view draws (its own, not Complex Water's): fixed at the old
 	// sections' values. x choppiness, y wave width, z wave speed, w reflectivity (unused).
