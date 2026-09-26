@@ -15,7 +15,9 @@ Output: a DX9 volume texture, A8R8G8B8, WAVE_SIZE x WAVE_SIZE x FRAMES with a fu
     R, G  slope along x and y (dh/dx, dh/dy), 0.5 = flat, scaled to their 99.9th percentile
     B     height, 0.5 = still water (the mean), scaled to its 99.9th percentile
     A     crest folding (whitecap foam), 0 none to 1 folded
-x runs along the texture's u (columns), y along v (rows); the wind blows along +x.
+x runs along the texture's u (columns), y along v (rows). The energy is at +kx, but with the phase
+k.x + omega t the waves travel toward -x as the frames go on: the shader turns the texture half
+round (getWaveField) so they run downwind.
 
 The constants the shader needs are printed at the end; they go into ComplexWater.hlsl.
 

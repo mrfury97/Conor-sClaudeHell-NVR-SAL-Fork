@@ -108,7 +108,8 @@ float2 sampleWaveSlope(float2 worldPos, float2 dir, float tile, float2 offset, f
 
 float2 getWaveSlope(float2 worldPos, float pixelSize){
 	float time = TESR_GameTime.z;
-	float angle = TESR_WaterWaves.z;
+	// Half round, as in ComplexWater's getWaveField: the baked waves run toward -u.
+	float angle = TESR_WaterWaves.z + 3.14159265f;
 	float2 dirA = float2(cos(angle), sin(angle));
 	float2 dirB = float2(cos(angle + WAVE_LAYER_B_ANGLE), sin(angle + WAVE_LAYER_B_ANGLE));
 	float tileA = max(TESR_WaterWaves.y, 1.0f) * WAVE_TEX_PEAK;

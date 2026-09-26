@@ -403,7 +403,9 @@ struct WaveField {
 // deviations); WaveLength the typical length from crest to crest (the spectrum's peak).
 WaveField getWaveField(float time, float pixelSize, float heightScale){
     WaveField field;
-    float angle = TESR_WaterWaves.z;
+    // The baked waves travel toward -u in the texture (the generator's phase convention): turn the
+    // texture half round so they run downwind, with the ripples, foam and caustics.
+    float angle = TESR_WaterWaves.z + 3.14159265f;
     field.dirA = float2(cos(angle), sin(angle));
     field.dirB = float2(cos(angle + WAVE_LAYER_B_ANGLE), sin(angle + WAVE_LAYER_B_ANGLE));
     field.tileA = max(TESR_WaterWaves.y, 1.0f) * WAVE_TEX_PEAK;
