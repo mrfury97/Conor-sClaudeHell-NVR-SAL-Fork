@@ -206,7 +206,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     // Whitecaps, as on the near water, so the foam does not stop where the two meet.
     float foam = getWhitecaps(waveFold, getFoamTexture(wavePos, time));
     WATER_DEBUG(9, foam);
-    color = lerp(color, (sunLight * saturate(sunDirection.z) + skyLight * 0.6f) * 0.9f, foam);
+    color = lerp(color, getFoamColor(sunLight, sunDirection, skyLight, 1.0f), foam);
     float alpha = 1.0f;
 
 #else
@@ -294,7 +294,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // The edge: foam, white under the sun and the sky, over everything; then the shoreline fade.
     // Outdoor water beyond the LOD distance turns opaque, to meet the distant water without a seam.
-    color = lerp(color, (sunLight * saturate(sunDirection.z) * shadow + skyLight * 0.6f) * 0.9f, foam);
+    color = lerp(color, getFoamColor(sunLight, sunDirection, skyLight, shadow), foam);
     float alpha = getShoreAlpha(straightPath.y, SHORELINE_PARAMS.x, foam);
 #if !WATER_INTERIOR && !WATER_PLACED
     alpha = lerp(alpha, 1.0f, smoothstep(4096.0f, 8192.0f, distance));

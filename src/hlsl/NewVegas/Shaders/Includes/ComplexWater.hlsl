@@ -544,11 +544,10 @@ float3 getWaves(float2 worldPos, float distance, WaveField field, float heightSc
     float3 detail = getWaveNormal(worldPos, distance);
     // A surface of slope s faces (-s, 1); the detail normal already faces its own way.
     float2 detailSlope = detail.xy / max(detail.z, 0.1f);
-    // Gusts roughen the waves, their ripples and their whitecaps together.
+    // Gusts roughen the waves and their ripples together (not the whitecaps: those follow the crests' folding alone).
     float gust = getWaveGusts(field, worldPos);
     slope *= gust;
     detailSlope *= gust;
-    foldOut = saturate(foldOut * gust);
     refractionNormal = normalize(float3(-slope + detailSlope * 0.4f, 1.0f));
     return normalize(float3(-slope + detailSlope, 1.0f));
 }
@@ -619,9 +618,11 @@ float getSpecularRoughness(float3 N, float distance){
 // each wave facet, kept inside it and capped, draws the sparkles. In sunColor units.
 float3 getSunGlint(float3 N, float3 sunDirection, float3 eyeDirection, float roughness){
     float3 glint = getGlint(N, sunDirection, eyeDirection, roughness);
-    float3 path = getGlint(N, sunDirection, eyeDirection, 0.3f);
+    // A narrower path, and more of it drawn by the sparkles than by its own soft glow: fine points of
+    // light in a column toward the sun, not broad gold patches.
+    float3 path = getGlint(N, sunDirection, eyeDirection, 0.18f);
     float3 sparkle = min(getGlint(N, sunDirection, eyeDirection, WATER_ROUGHNESS), 40.0f);
-    glint += (sparkle * (path / (path + 1.0f)) * 0.15f + path * 0.1f) * TESR_WaterLighting2.z;
+    glint += (sparkle * (path / (path + 1.0f)) * 0.25f + path * 0.05f) * TESR_WaterLighting2.z;
     return glint * 10.0f;
 }
 
@@ -752,11 +753,19 @@ float getFoamMask(float pathLength, float2 foamTexture){
 
 // Whitecaps (Whitecaps): where the wave crests fold over, they break into streaky foam: the more a
 // crest folds, the more of the pattern shows. fold: 0-1 from the wave field; the more Whitecaps, the
-// less folding it takes.
+// less folding it takes. Only the crests that fold hardest break, and their foam fades out at its
+// edges instead of ending in a hard line.
 float getWhitecaps(float fold, float2 foamTexture){
     float amount = saturate(TESR_WaterWaves2.x);
-    float cap = saturate((fold - (1.0f - amount) * 0.8f) * 4.0f);
-    return smoothstep(0.9f - cap, 1.1f - cap, foamTexture.y) * cap * saturate(amount * 4.0f);
+    float cap = saturate((fold - (1.0f - amount) * 0.9f) * 3.0f);
+    return smoothstep(0.85f - cap, 1.2f - cap, foamTexture.y) * cap * saturate(amount * 4.0f);
+}
+
+// The colour of foam: white froth, full of air, lit by the whole sky and by the sun from nearly any
+// angle (it is rough through and through, so a low sun still lights it, warmly, rather than leaving
+// it grey). shadow: 1 in the sun.
+float3 getFoamColor(float3 sunLight, float3 sunDirection, float3 skyLight, float shadow){
+    return 0.9f * (skyLight * 0.8f + sunLight * shadow * saturate(sunDirection.z * 0.6f + 0.4f));
 }
 
 // Shoreline fade (ShoreFadeWidth): the water fades out over that much depth at the edge, lapping in
