@@ -1092,6 +1092,12 @@ UnderwaterFogB = 1.0                 # [0-5] Underwater view: fog tint, blue.
 UnderwaterScattering = 1.0           # [0-5] Underwater view: scattering; higher is darker.
 DebugView = 0                        # [0-15] Shows one term on its own, in place of the water. Restart the game to change it (it is compiled into the water shaders, so it costs nothing when off). 1 sun shadow on the surface (black in shadow). 2 what still shows through the water, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white widened). 6 point-light glints. 7 the path the view takes through the water (black 0, white 20 m). 8 the depth below the surface (black 0, white 20 m). 9 foam. 10 shoreline fade (black see-through, white solid). 11 caustics. 12 wave height (black trough, white crest). 13 depth calibration (mid-grey: the near plane matches). 14 depth below the surface over 0-100 m, red where the depth buffer holds nothing behind the water. 15 the two depth copies: red the depth taken as the water is drawn, green the depth taken before any water, blue where the first shows the water itself. 0 off.
 
+[_Shaders.Water.Default]
+
+[_Shaders.Water.Interiors]
+
+[_Shaders.Water.Placed]
+
 [_Shaders.Water.Status]
 Enabled = true                      # Replaces water shaders with a custom shader.
 
