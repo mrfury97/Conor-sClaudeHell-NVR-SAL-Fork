@@ -94,7 +94,7 @@ float3 toScreen(float3 position){
 #define WAVE_TEX_HEIGHT_MAX  3.5205f
 #define WAVE_TEX_SLOPE_SCALE 147.9828f
 #define WAVE_LAYER_B_SCALE   0.37f
-#define WAVE_LAYER_B_ANGLE   0.55f
+#define WAVE_LAYER_B_ANGLE   0.26f
 #define WAVE_LAYER_B_OFFSET  float2(0.31f, 0.67f)
 #define WAVE_LAYER_B_TIME    0.43f
 #define WATER_UNITS_PER_METRE 70.0f

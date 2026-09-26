@@ -385,7 +385,7 @@ sampler3D TESR_WaterWavesMap : register(s11) < string ResourceName = "Water\NVR_
 #define WAVE_TEX_SLOPE_SCALE 147.9828f // slope_max * patch / standard deviation
 // The second layer: its size and height against the first, its turn, and offsets in place and time.
 #define WAVE_LAYER_B_SCALE   0.37f
-#define WAVE_LAYER_B_ANGLE   0.55f
+#define WAVE_LAYER_B_ANGLE   0.26f     // 15 degrees off the wind: crossing waves, not a second sea
 #define WAVE_LAYER_B_OFFSET  float2(0.31f, 0.67f)
 #define WAVE_LAYER_B_TIME    0.43f
 
@@ -683,11 +683,15 @@ float3 getTransmittance(float pathLength){
 // where their slopes cancel, the light converges. None at the waterline, fading out in deep water.
 // A factor on the sunlit bed. Needs TESR_CameraPosition. tex2Dlod, a level from the distance.
 float getCaustics(float3 bedFromCamera, float depthBelow){
-    float speed = WATER_SCROLL_TIME * 0.0014f;
+    // The light the waves focus moves with them: both layers drift downwind (a little to either side),
+    // at a third of the speed of the waves (a deep-water wave of WaveLength moves sqrt(109.3 L) units
+    // a second), in CausticsScale's units.
+    float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
+    float travel = sqrt(109.3f * max(TESR_WaterWaves.y, 1.0f)) * 0.35f * WATER_SECONDS / TESR_WaterLighting4.y;
     float2 world = (bedFromCamera.xy + TESR_CameraPosition.xy) / TESR_WaterLighting4.y;
     float lod = log2(max(length(bedFromCamera) / (TESR_WaterLighting4.y * 2.0f), 1.0f));
-    float2 a = expand(tex2Dlod(TESR_samplerWater, float4(world + float2(0.8f, 0.6f) * speed * 3.0f, 0.0f, lod))).xy;
-    float2 b = expand(tex2Dlod(TESR_samplerWater, float4(rotateWaterUV(world * 1.37f, 1.1f) - float2(0.3f, 0.95f) * speed * 3.0f, 0.0f, lod))).xy;
+    float2 a = expand(tex2Dlod(TESR_samplerWater, float4(world - rotateWaterUV(wind, 0.2f) * travel, 0.0f, lod))).xy;
+    float2 b = expand(tex2Dlod(TESR_samplerWater, float4(rotateWaterUV((world - rotateWaterUV(wind, -0.25f) * travel * 0.8f) * 1.37f, 1.1f), 0.0f, lod))).xy;
     float focus = saturate(1.0f - length(a + b) * 1.8f);
     focus = focus * focus * focus * 3.0f;
     float depthFade = saturate(depthBelow / 20.0f) * exp(-depthBelow / 500.0f);
@@ -699,16 +703,18 @@ float getCaustics(float3 bedFromCamera, float depthBelow){
 // ---------------------------------------------------------------------------------------------
 
 // Foam (Foam, FoamWidth, FoamScale): a foam texture (Textures\Water\NVR_Foam.dds) -- R dense,
-// cellular foam, G broken, streaky foam -- in world space, two layers turned against each other and
-// drifting slowly apart, so it neither repeats nor sits still.
+// cellular foam, G broken, streaky foam -- in world space, two layers turned against each other so
+// it does not repeat, both drifting slowly downwind (a little to either side of the wind), with the
+// waves and whitecaps they sit on rather than across them.
 // MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
 sampler2D TESR_FoamMap : register(s13) < string ResourceName = "Water\NVR_Foam.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 // The foam texture at worldPos (x dense, y streaky). tex2D: top level only.
 float2 getFoamTexture(float2 worldPos, float time){
     float2 uv = worldPos / max(TESR_WaterLighting5.y, 1.0f);
-    float2 a = tex2D(TESR_FoamMap, uv + float2(0.011f, 0.006f) * time).rg;
-    float2 b = tex2D(TESR_FoamMap, rotateWaterUV(uv * 0.71f, 1.3f) + float2(-0.007f, 0.009f) * time).rg;
+    float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
+    float2 a = tex2D(TESR_FoamMap, uv - rotateWaterUV(wind, 0.15f) * (0.0125f * time)).rg;
+    float2 b = tex2D(TESR_FoamMap, rotateWaterUV((uv - rotateWaterUV(wind, -0.2f) * (0.0115f * time)) * 0.71f, 1.3f)).rg;
     return 0.5f * (a + b);
 }
 
