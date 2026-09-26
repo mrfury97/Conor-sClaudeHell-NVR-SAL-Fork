@@ -30,7 +30,7 @@ struct PS_OUTPUT {
 //   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
 //   TESR_WaterWaves        x: WaveHeight (units, trough to crest)  y: WaveLength (units, crest to crest)  z: WaveDirection (radians)  w: WaveSteepness
 //   TESR_WaterWaves2       x: Whitecaps       y: WaveParallax     z: RefractionBlur        w: RefractionDispersion
-//   TESR_WaterLighting5    x: 1 when the game's reflection map is rendered (SkipReflectionPass off)  y: FoamScale (units)
+//   TESR_WaterLighting5    x: 1 when the game's reflection map is rendered (SkipReflectionPass off)  y: FoamScale (units)  z: SkyTint
 // The DLL keeps the ones that must never be 0 (AbsorptionDepth, WaterColorBrightness, FoamWidth,
 // CausticsScale) off 0.
 // ---------------------------------------------------------------------------------------------
@@ -610,6 +610,15 @@ float3 getSkyReflection(float3 R, float3 horizon){
     float up = saturate(R.z);
     float3 low = lerp(horizon, linearize(TESR_SkyLowColor).rgb, saturate(up * 4.0f));
     return lerp(low, linearize(TESR_SkyColor).rgb, saturate(up * 1.5f - 0.2f));
+}
+
+// SkyTint: the water body glows with the light it takes in from the whole sky, so it takes the
+// sky's colour -- half the sky overhead, half its horizon -- as a tint that keeps its brightness:
+// bluer under a clear sky, warmer at sunset, greyer overcast. Outdoors only (horizon: skyLight).
+float3 getSkyTint(float3 horizon){
+    float3 sky = lerp(horizon, linearize(TESR_SkyColor).rgb, 0.5f);
+    float3 hue = min(sky / max(luma(sky), 1e-4f), 2.0f);
+    return lerp(1.0f, hue, saturate(TESR_WaterLighting5.z));
 }
 
 float3 getBlurredReflection(float4 reflectionPos, float3 N){

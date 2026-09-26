@@ -134,6 +134,7 @@ void WaterShaders::UpdateSettings() {
 	SkipReflectionPass = TheSettingManager->GetSettingI(Section, "SkipReflectionPass") != 0;
 	Constants.Lighting5.x = SkipReflectionPass ? 0.0f : 1.0f;
 	Constants.Lighting5.y = ReadOr("FoamScale", 20.0f, 5000.0f, 250.0f);
+	Constants.Lighting5.z = Read("SkyTint", 0.0f, 1.0f);
 
 	// Wave shape: off at WaveHeight 0 (also missing), which leaves the normal-map waves alone.
 	Constants.Waves.x = Read("WaveHeight", 0.0f, 60.0f);

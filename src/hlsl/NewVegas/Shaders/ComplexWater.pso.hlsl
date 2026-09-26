@@ -199,6 +199,9 @@ PS_OUTPUT main(PS_INPUT IN) {
                                                      : getSkyReflection(reflect(-eyeDirection, N), skyLight);
     float3 waterColor = getWaterColor(linearize(ShallowColor).rgb, linearize(DeepColor).rgb, 1e6f);
     float3 color = waterColor * (luma(sunLight) + luma(skyLight) * 0.5f) * brightness;
+#if WATER_SUNLIT
+    color *= getSkyTint(skyLight);
+#endif
     float3 scattering = getWaveScattering(N, eyeDirection, sunDirection, sunLight, waterColor / max(max(waterColor.r, max(waterColor.g, waterColor.b)), 1e-6f), waveHeight);
     color += scattering;
     WATER_DEBUG(4, saturate(scattering));
@@ -271,7 +274,10 @@ PS_OUTPUT main(PS_INPUT IN) {
     WATER_DEBUG(2, transmittance);
     float3 waterColor = getWaterColor(linearize(ShallowColor).rgb, linearize(DeepColor).rgb, path.y);
     // Lit by the sun and the sky; less down in the troughs, which the waves around them shade.
-    float bodyLight = (luma(sunLight) * lerp(0.4f, 1.0f, shadow) + luma(skyLight) * 0.5f) * lerp(1.0f, 0.75f, saturate(-waveHeight));
+    float3 bodyLight = (luma(sunLight) * lerp(0.4f, 1.0f, shadow) + luma(skyLight) * 0.5f) * lerp(1.0f, 0.75f, saturate(-waveHeight));
+#if WATER_SUNLIT
+    bodyLight *= getSkyTint(skyLight);
+#endif
     float3 color = bed * transmittance + waterColor * bodyLight * brightness * (1.0f - transmittance);
 
     // The surface: light through the wave crests, the reflection (none right at the waterline,
