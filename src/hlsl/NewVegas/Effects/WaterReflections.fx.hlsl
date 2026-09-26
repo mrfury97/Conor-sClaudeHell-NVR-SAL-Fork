@@ -29,7 +29,7 @@ float4 TESR_WaterSettings;        // x: water height
 float4 TESR_WaterWaves;           // x: WaveHeight  y: WaveLength  z: WaveDirection  w: WaveSteepness
 float4 TESR_WaterWaveOrigin;      // xy the first wave layer's origin in the world, zw the second's
 float4 TESR_WaterLighting3;       // w: ReflectionBlur
-float4 TESR_WaterLighting4;       // w: RippleSize
+float4 TESR_WaterLighting4;       // z: 1 outdoors, 0 indoors  w: RippleSize
 float4 TESR_WaterLighting5;       // x: 1 when the game's reflection map is drawn (GameReflections)  w: Ripples
 float4 TESR_SkyColor;
 float4 TESR_SkyLowColor;
@@ -384,8 +384,10 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// its place. With the game's reflection map, which cannot be read here, the water is blended
 	// toward the found reflection instead.
 	float3 base = linearize(color.rgb);
-	float3 result = TESR_WaterLighting5.x > 0.5f ? lerp(base, reflection, amount)
-	                                             : max(base + amount * (reflection - getSkyReflection(R)), 0.0f);
+	// Indoors the water reflects the room's fog, not the sky: blended too.
+	bool knownSky = TESR_WaterLighting5.x < 0.5f && TESR_WaterLighting4.z > 0.5f;
+	float3 result = knownSky ? max(base + amount * (reflection - getSkyReflection(R)), 0.0f)
+	                         : lerp(base, reflection, amount);
 	// Alpha 1, as every effect writes: the frame's own alpha on the water is the water shader's
 	// shoreline fade, and blending by it would throw the reflection away.
 	return float4(delinearize(result), 1.0f);

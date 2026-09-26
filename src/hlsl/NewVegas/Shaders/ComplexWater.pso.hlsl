@@ -230,12 +230,12 @@ PS_OUTPUT main(PS_INPUT IN) {
     // The reflection lookup, pushed by the waves (the game's own falloff with distance).
     float4 reflectionPos = getReflectionScreenPos(IN, N.xy * lookupOffset * 0.2f);
 
-    // What the surface reflects: the reflection map outdoors (blurred on rough water), the sky's
-    // colour on placed water (which has no reflection map), the room's fog indoors.
+    // What the surface reflects: the reflection map outdoors (blurred on rough water), the sky along
+    // the reflected ray on placed water (which has no reflection map), the room's fog indoors.
 #if WATER_INTERIOR
     float3 reflection = linearize(FogColor).rgb;
 #elif WATER_PLACED
-    float3 reflection = skyLight;
+    float3 reflection = getSkyReflection(reflect(-eyeDirection, N), skyLight);
 #else
     // The game's reflection map, or with GameReflections off the sky along the reflected ray.
     float3 reflection = TESR_WaterLighting5.x > 0.5f ? getBlurredReflection(reflectionPos, N)
