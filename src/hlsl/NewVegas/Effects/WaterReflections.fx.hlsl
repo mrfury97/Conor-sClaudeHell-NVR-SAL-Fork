@@ -281,5 +281,9 @@ technique
 	{
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 WaterReflections();
+		// Written as is: whatever blending or alpha test the frame left on would otherwise weigh the
+		// result by the water's alpha (its shoreline fade), as SMAA also guards against.
+		AlphaBlendEnable = false;
+		AlphaTestEnable = false;
 	}
 }
