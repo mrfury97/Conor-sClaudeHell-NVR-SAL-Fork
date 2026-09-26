@@ -34,6 +34,7 @@
 #include "VolumetricFog.h"
 #include "WaterLens.h"
 #include "WaterReflections.h"
+#include "VolumetricClouds.h"
 #include "WetWorld.h"
 #include "DitherBuster.h"
 #include "SMAA.h"

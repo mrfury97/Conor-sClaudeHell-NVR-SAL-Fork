@@ -1007,6 +1007,29 @@ Scattering = 1.0                     # [0-5] Scattering; higher is darker.
 [_Shaders.Underwater.Status]
 Enabled = true                      # Post Process underwater fog/godrays/caustics effect.
 
+[_Shaders.VolumetricClouds.Main]
+CoverageClear = 0.3                   # [0.0-1.0] How much of the sky the clouds cover in clear weather. 0 none, 1 overcast.
+CoverageCloudy = 0.6                  # [0.0-1.0] ... in cloudy weather.
+CoverageRainy = 0.85                  # [0.0-1.0] ... in rain and snow.
+CoverageChange = 0.02                 # [0.001-1.0] How fast the coverage follows a change of weather: this much of the way from none to overcast a second.
+Density = 0.02                        # [0.001-1.0] How thick the clouds are: light absorbed per metre inside them. Higher is denser, darker undersides; lower is wispier.
+BaseHeight = 1600.0                   # [0-10000] Height of the cloud layer's base above the world's zero height, in metres (70 game units to a metre).
+Thickness = 800.0                     # [50-5000] Depth of the cloud layer, in metres.
+Scale = 8000.0                        # [500-100000] Size of the cloud pattern: metres the noise spans. Clouds come out about a quarter of it across.
+Steps = 16                            # [4-32] Steps each view ray takes through the layer. More is smoother and slower.
+LightSteps = 4                        # [1-8] Steps toward the sun at each step with cloud in it, for its shading. More is better-shaded undersides and slower.
+SunBrightness = 1.0                   # [0.0-5.0] Brightness of the sunlight on the clouds.
+SkyBrightness = 1.0                   # [0.0-5.0] Brightness of the sky's light on the clouds (their shadowed sides).
+SilverLining = 1.0                    # [0.0-2.0] The bright rim clouds get looking toward the sun. 0 even light all round.
+HorizonFade = 60000.0                 # [5000-300000] Distance in metres over which the clouds fade out toward the horizon.
+DriftSpeed = 10.0                     # [0-200] Speed the clouds drift with the weather's wind, in metres a second at its middle wind speed.
+EvolveSpeed = 0.002                   # [0.0-0.1] How fast the clouds change shape as they drift.
+Strength = 1.0                        # [0.0-1.0] Blend of the clouds over the sky. 0 off (not drawn at all).
+DebugView = 0                         # [0-3] 1 cloud cover (white opaque). 2 the sunlight inside the clouds. 3 the sky the effect draws on (white). 0 off.
+
+[_Shaders.VolumetricClouds.Status]
+Enabled = true                        # Volumetric clouds on the sky: a layer of raymarched cloud lit by the sun and sky, as much as the weather calls for, drifting with its wind. After robobo1221's PBR volumetric clouds. Heavy on the GPU: lower Steps and LightSteps if it costs too much.
+
 [_Shaders.VolumetricFog.Main]
 Amount = 0.4                        # Global multiplier for fog strength in exteriors
 SunPower = 0.2                      # Controls the influence of Sun Color when shining through fog
