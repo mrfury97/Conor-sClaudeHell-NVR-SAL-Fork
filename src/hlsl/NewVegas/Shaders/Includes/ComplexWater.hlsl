@@ -336,21 +336,26 @@ float3 getRefractedBed(float2 uv, float2 straightUV, float pathLength){
 // medium waves, and fine ripples that fade out with distance, where they would only shimmer. A very
 // large, slow pattern varies the wave strength into rougher and calmer patches. choppiness,
 // waveWidth and waveSpeed from the water's own section. tex2D: top level only.
+// Every layer travels downwind (windTex: the wind's direction in texture space), each a little to
+// one side of it, the bigger ones faster (a water wave's speed goes with the square root of its
+// length): ripples running every which way across each other stand and wobble in place, like jelly.
+// The broad swell is kept weak; the wave field is what carries that size now.
 // ---------------------------------------------------------------------------------------------
-float3 getWaveNormal(float2 texPos, float distance, float4 waveParams){
+float3 getWaveNormal(float2 texPos, float distance, float4 waveParams, float2 windTex){
     float choppiness = waveParams.x;
     float speed = WATER_SCROLL_TIME * 0.002f * waveParams.z;
     float2 p = texPos * waveParams.y;
 
+    // Moves each layer's pattern along its direction (d, in texture space) at speed / sqrt(its scale).
     float near = 1.0f - saturate(distance / 3000.0f);
-    float3 swell  = expand(tex2D(TESR_samplerWater, rotateWaterUV(p * 0.15f, 0.61f) + normalize(float2(1, 3)) * speed * 0.5f).xyz);
-    float3 large  = expand(tex2D(TESR_samplerWater, rotateWaterUV(p * 0.5f, 1.23f) + normalize(float2(-3, -2)) * speed).xyz);
-    float3 medium = expand(tex2D(TESR_samplerWater, rotateWaterUV(p * 2.0f, 2.17f) + normalize(float2(2, -1)) * speed).xyz);
-    float3 micro  = expand(tex2D(TESR_samplerWater, rotateWaterUV(p * 4.0f, 2.89f) + normalize(float2(2, 2)) * speed).xyz);
-    float patches = 0.6f + 0.8f * saturate(tex2D(TESR_samplerWater, p * 0.03f + speed * 0.1f).x);
+    float3 swell  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(windTex,  0.10f) * speed * 3.64f) * 0.15f, 0.61f)).xyz);
+    float3 large  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(windTex,  0.25f) * speed * 2.00f) * 0.5f, 1.23f)).xyz);
+    float3 medium = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(windTex, -0.30f) * speed * 1.00f) * 2.0f, 2.17f)).xyz);
+    float3 micro  = expand(tex2D(TESR_samplerWater, rotateWaterUV((p - rotateWaterUV(windTex,  0.45f) * speed * 0.71f) * 4.0f, 2.89f)).xyz);
+    float patches = 0.6f + 0.8f * saturate(tex2D(TESR_samplerWater, p * 0.03f - windTex * speed * 0.1f).x);
 
-    float2 tilt = (swell.xy * 0.8f + large.xy + medium.xy * 0.5f + micro.xy * 0.3f * near) * patches;
-    float up = (swell.z * 0.8f + large.z + medium.z * 0.5f + micro.z * 0.3f * near) / max(choppiness, 1e-6f);
+    float2 tilt = (swell.xy * 0.3f + large.xy + medium.xy * 0.5f + micro.xy * 0.3f * near) * patches;
+    float up = (swell.z * 0.3f + large.z + medium.z * 0.5f + micro.z * 0.3f * near) / max(choppiness, 1e-6f);
     return normalize(float3(tilt, up));
 }
 
@@ -495,17 +500,25 @@ float2 getWaveTextureShift(float2 texPos, float2 worldPos, float2 worldShift){
     return texPos + screen.x * ddx(texPos) + screen.y * ddy(texPos);
 }
 
+// The wind's direction (TESR_WaterWaves.z) in wave texture space, for the detail layers: through the
+// same derivatives, the texture may be turned or mirrored against the world. ddx/ddy: top level only.
+float2 getWindTextureDirection(float2 texPos, float2 worldPos){
+    float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
+    float2 windTex = getWaveTextureShift(texPos, worldPos, wind * 100.0f) - texPos;
+    return dot(windTex, windTex) > 1e-12f ? normalize(windTex) : wind;
+}
+
 // Waves: the wave field with the normal-map detail on it, as slopes added together. heightOut: -1
 // in a trough to 1 on a crest (half WaveHeight either way); foldOut: crest folding, 0-1, for the
 // whitecaps. texPos: the wave texture position of the shaded point. refractionNormal: the same with
 // the fine detail at 40%. The fine ripples glint and shade the surface, but at full strength they
 // would scribble the bed seen through them into squiggles; what a bed seen through real water mostly
 // follows is the larger waves.
-float3 getWaves(float2 texPos, float2 worldPos, float distance, float4 waveParams, WaveField field, float heightScale, out float heightOut, out float foldOut, out float3 refractionNormal){
+float3 getWaves(float2 texPos, float2 worldPos, float distance, float4 waveParams, WaveField field, float heightScale, float2 windTex, out float heightOut, out float foldOut, out float3 refractionNormal){
     float2 slope;
     float height = getWaveFieldSurface(field, worldPos, slope, foldOut);
     heightOut = TESR_WaterWaves.x > 0.0f ? clamp(height / (TESR_WaterWaves.x * heightScale * 0.5f), -1.0f, 1.0f) : 0.0f;
-    float3 detail = getWaveNormal(texPos, distance, waveParams);
+    float3 detail = getWaveNormal(texPos, distance, waveParams, windTex);
     // A surface of slope s faces (-s, 1); the detail normal already faces its own way.
     float2 detailSlope = detail.xy / max(detail.z, 0.1f);
     refractionNormal = normalize(float3(-slope + detailSlope * 0.4f, 1.0f));

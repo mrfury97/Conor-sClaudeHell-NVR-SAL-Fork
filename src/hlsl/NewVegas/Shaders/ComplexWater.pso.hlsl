@@ -149,7 +149,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float waveHeight;                                                        // -1 trough to 1 crest
     float waveFold;                                                          // crest folding, for whitecaps
     float3 refractionN;                                                      // calmer: for the bed seen through
-    float3 N = getWaves(waveTexPos, wavePos, distance, waveParams, waveField, WATER_WAVE_SCALE, waveHeight, waveFold, refractionN);
+    float3 N = getWaves(waveTexPos, wavePos, distance, waveParams, waveField, WATER_WAVE_SCALE, getWindTextureDirection(IN.LTEXCOORD_7, flatPos), waveHeight, waveFold, refractionN);
 #if !WATER_INTERIOR && !WATER_LOD
     N = getRainRipples(IN.LTEXCOORD_7, N, distance, TESR_WetWorldData.x);
 #endif
