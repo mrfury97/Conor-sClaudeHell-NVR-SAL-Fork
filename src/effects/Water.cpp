@@ -121,55 +121,40 @@ void WaterShaders::UpdateConstants() {
 }
 
 void WaterShaders::UpdateSettings() {
-	//SettingsWaterStruct* sws = NULL;
-
-	TESWaterForm* currentWater = Player->parentCell->GetWaterForm();
-	const char* sectionName = "Shaders.Water.Default";
-	if (!TheShaderManager->GameState.isExterior) sectionName = "Shaders.Water.Interiors";
-	
-	if (currentWater) {
-		UInt32 WaterType = currentWater->GetWaterType();
-		if (WaterType == TESWaterForm::WaterType::kWaterType_Blood)
-			sectionName = "Shaders.Water.Blood";
-		else if (WaterType == TESWaterForm::WaterType::kWaterType_Lava)
-			sectionName = "Shaders.Water.Lava";
-
-		// world space specific settings. TODO Reimplement with Toml
-		//else if (!(sws = TheSettingManager->GetSettingsWater(currentCell->GetEditorName())) && currentWorldSpace)
-		//	sws = TheSettingManager->GetSettingsWater(currentWorldSpace->GetEditorName());
-	}
-
-	Constants.Default.waterCoefficients.x = TheSettingManager->GetSettingF(sectionName, "inExtCoeff_R");
-	Constants.Default.waterCoefficients.y = TheSettingManager->GetSettingF(sectionName, "inExtCoeff_G");
-	Constants.Default.waterCoefficients.z = TheSettingManager->GetSettingF(sectionName, "inExtCoeff_B");
-	Constants.Default.waterCoefficients.w = TheSettingManager->GetSettingF(sectionName, "inScattCoeff");
-	causticsStrength = TheSettingManager->GetSettingF(sectionName, "causticsStrength"); // later modified by current sunglare
-	Constants.Default.waveParams.x = TheSettingManager->GetSettingF(sectionName, "choppiness");
-	Constants.Default.waveParams.y = TheSettingManager->GetSettingF(sectionName, "waveWidth");
-	Constants.Default.waveParams.z = TheSettingManager->GetSettingF(sectionName, "waveSpeed");
-	Constants.Default.waveParams.w = TheSettingManager->GetSettingF(sectionName, "reflectivity");
-	Constants.Default.waterSettings.y = TheSettingManager->GetSettingF(sectionName, "depthDarkness");
-	Constants.Default.waterVolume.z = TheSettingManager->GetSettingF(sectionName, "turbidity");
-	Constants.Default.waterVolume.w = TheSettingManager->GetSettingF(sectionName, "causticsStrengthS");
-	Constants.Default.shorelineParams.x = TheSettingManager->GetSettingF(sectionName, "shoreMovement");
-	Constants.Default.waterSettings.w = TheSettingManager->GetSettingF(sectionName, "refractionPower");
-
-
-	Constants.Placed.waveParams.x = TheSettingManager->GetSettingF("Shaders.Water.Placed", "choppiness");
-	Constants.Placed.waveParams.y = TheSettingManager->GetSettingF("Shaders.Water.Placed", "waveWidth");
-	Constants.Placed.waveParams.z = TheSettingManager->GetSettingF("Shaders.Water.Placed", "waveSpeed");
-	Constants.Placed.waveParams.w = TheSettingManager->GetSettingF("Shaders.Water.Placed", "reflectivity");
-	Constants.Placed.shorelineParams.x = TheSettingManager->GetSettingF("Shaders.Water.Placed", "shoreMovement");
-	Constants.Placed.waterSettings.w = TheSettingManager->GetSettingF("Shaders.Water.Placed", "refractionPower");
-
-	// Complex Water (ComplexWater.pso.hlsl), for every kind of water. Each term is off at 0, which is also
-	// what a missing key reads as; the ones where 0 would be meaningless fall back to their defaults.
+	// Every water setting lives in [Shaders.Water.ComplexWater]; the old per-kind sections
+	// (Default, Interiors, Placed) are gone.
 	const char* Section = "Shaders.Water.ComplexWater";
 	auto Read = [Section](const char* Key, float Min, float Max) { return std::clamp(TheSettingManager->GetSettingF(Section, Key), Min, Max); };
 	auto ReadOr = [Section](const char* Key, float Min, float Max, float Fallback) {
 		float Value = TheSettingManager->GetSettingF(Section, Key);
 		return Value > 0.0f ? std::clamp(Value, Min, Max) : Fallback;
 	};
+	bool interior = !TheShaderManager->GameState.isExterior;
+
+	// Refraction and the shoreline, for every kind of water (placed water laps twice as fast, as it
+	// did in its own section).
+	Constants.Default.waterSettings.w = Constants.Placed.waterSettings.w = Read("Refraction", 0.0f, 2.0f);
+	Constants.Default.shorelineParams.x = Read("ShoreMovement", 0.0f, 3.0f) * (interior ? 2.0f : 1.0f);
+	Constants.Placed.shorelineParams.x = Read("ShoreMovement", 0.0f, 3.0f) * 2.0f;
+
+	// The underwater view (the Underwater effect, with the head under the surface). Interiors keep the
+	// clear, dark water their own section had: no caustics, god rays or fog tint.
+	causticsStrength = interior ? 0.0f : Read("UnderwaterCaustics", 0.0f, 10.0f); // later modified by current sunglare
+	Constants.Default.waterVolume.w = interior ? 0.0f : Read("UnderwaterGodRays", 0.0f, 3.0f);
+	Constants.Default.waterVolume.z = interior ? 1.0f : Read("UnderwaterMurk", 0.0f, 10.0f);
+	Constants.Default.waterSettings.y = interior ? 10.0f : Read("UnderwaterDepthDarkness", 0.0f, 20.0f);
+	Constants.Default.waterCoefficients.x = interior ? 0.0f : Read("UnderwaterFogR", 0.0f, 5.0f);
+	Constants.Default.waterCoefficients.y = interior ? 0.0f : Read("UnderwaterFogG", 0.0f, 5.0f);
+	Constants.Default.waterCoefficients.z = interior ? 0.0f : Read("UnderwaterFogB", 0.0f, 5.0f);
+	Constants.Default.waterCoefficients.w = interior ? 0.0f : Read("UnderwaterScattering", 0.0f, 5.0f);
+
+	// The surface waves the underwater view draws (its own, not Complex Water's): fixed at the old
+	// sections' values. x choppiness, y wave width, z wave speed, w reflectivity (unused).
+	Constants.Default.waveParams = D3DXVECTOR4(interior ? 0.5f : 0.7f, 0.8f, 0.7f, 1.0f);
+	Constants.Placed.waveParams = D3DXVECTOR4(0.5f, 0.8f, 0.7f, 1.0f);
+
+	// Complex Water (ComplexWater.pso.hlsl), for every kind of water. Each term is off at 0, which is also
+	// what a missing key reads as; the ones where 0 would be meaningless fall back to their defaults.
 
 	Constants.Lighting.x = Read("SunShadows", 0.0f, 1.0f);
 	Constants.Lighting.y = ReadOr("AbsorptionDepth", 0.1f, 5.0f, 1.2f);

@@ -1080,41 +1080,17 @@ FoamWidth = 20.0                     # [2-400] How far out from the edge the den
 SkyTint = 0.4                        # [0.0-1.0] Lights the water's own colour with the sky's: bluer under a clear sky, warmer at sunset, greyer overcast, at the same brightness. Outdoor water only; the reflection already shows the sky. 0 off.
 FoamScale = 250.0                    # [20-5000] Size of the foam pattern: game units the foam texture spans. Smaller gives finer bubbles.
 ShoreFadeWidth = 25.0                # [0-300] The water fades out softly over this much depth at the shoreline, lapping gently in and out (shoreMovement sets the speed). 0: no fade.
+ShoreMovement = 0.3                  # [0.0-3.0] Speed of the shoreline lapping in and out over ShoreFadeWidth. Placed water and interiors lap twice as fast. 0 still.
+Refraction = 1.0                     # [0.0-2.0] How strongly the waves bend the view of the bed through the water: 1 is real water, 0 none.
+UnderwaterCaustics = 3.0             # [0-10] Underwater view (head below the surface, outdoors): caustics on the bed around you.
+UnderwaterGodRays = 0.2              # [0-3] Underwater view: god rays.
+UnderwaterMurk = 3.0                 # [0-10] Underwater view: how murky the water is.
+UnderwaterDepthDarkness = 1.0        # [0-20] Underwater view: how much the light fades with depth.
+UnderwaterFogR = 1.0                 # [0-5] Underwater view: fog tint, red.
+UnderwaterFogG = 1.0                 # [0-5] Underwater view: fog tint, green.
+UnderwaterFogB = 1.0                 # [0-5] Underwater view: fog tint, blue.
+UnderwaterScattering = 1.0           # [0-5] Underwater view: scattering; higher is darker.
 DebugView = 0                        # [0-15] Shows one term on its own, in place of the water. Restart the game to change it (it is compiled into the water shaders, so it costs nothing when off). 1 sun shadow on the surface (black in shadow). 2 what still shows through the water, per colour. 3 reflection amount (black none, white full). 4 wave scattering. 5 glint roughness (black calm, white widened). 6 point-light glints. 7 the path the view takes through the water (black 0, white 20 m). 8 the depth below the surface (black 0, white 20 m). 9 foam. 10 shoreline fade (black see-through, white solid). 11 caustics. 12 wave height (black trough, white crest). 13 depth calibration (mid-grey: the near plane matches). 14 depth below the surface over 0-100 m, red where the depth buffer holds nothing behind the water. 15 the two depth copies: red the depth taken as the water is drawn, green the depth taken before any water, blue where the first shows the water itself. 0 off.
-
-[_Shaders.Water.Default]
-choppiness = 0.7                    # Outdoor water. Wave steepness: higher gives more defined wave crests. Not used by Complex Water (see Ripples).
-waveWidth = 0.8                     # Size of the waves. Not used by Complex Water (see RippleSize).
-waveSpeed = 0.7                     # Speed of the waves. Not used by Complex Water (ripples move at their real speed).
-reflectivity = 1.0                  # Strength of reflections on the surface. Not used by Complex Water (real water's reflectance).
-refractionPower = 1.0               # How strongly the water bends the view of the bed through the waves: 1 is real water, 0 none.
-shoreMovement = 0.3                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
-causticsStrength = 3.0              # Underwater view: caustics on the bed around you when your head is underwater (from above: Caustics in ComplexWater).
-causticsStrengthS = 0.2             # Underwater view: god rays.
-turbidity = 3.0                     # Underwater view: how murky the water is.
-depthDarkness = 1.0                 # Underwater view: how much the light fades with depth.
-inExtCoeff_R = 1.0                  # Underwater view: fog tint, red.
-inExtCoeff_G = 1.0                  # Underwater view: fog tint, green.
-inExtCoeff_B = 1.0                  # Underwater view: fog tint, blue.
-inScattCoeff = 1.0                  # Underwater view: scattering; higher is darker.
-
-[_Shaders.Water.Interiors]
-choppiness = 0.5                    # Interior water. Wave steepness: higher gives more defined wave crests. Not used by Complex Water (see Ripples).
-waveWidth = 0.8                     # Size of the waves. Not used by Complex Water (see RippleSize).
-waveSpeed = 0.7                     # Speed of the waves. Not used by Complex Water (ripples move at their real speed).
-reflectivity = 0.0                  # Strength of reflections on the surface. Not used by Complex Water (real water's reflectance).
-refractionPower = 1.0               # How strongly the water bends the view of the bed through the waves: 1 is real water, 0 none.
-shoreMovement = 0.6                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
-turbidity = 1.0                     # Underwater view: how murky the water is.
-depthDarkness = 10.0                # Underwater view: how much the light fades with depth.
-
-[_Shaders.Water.Placed]
-choppiness = 0.5                    # Placed water (pools, some ponds). Wave steepness: higher gives more defined wave crests. Not used by Complex Water (see Ripples).
-waveWidth = 0.8                     # Size of the waves. Not used by Complex Water (see RippleSize).
-waveSpeed = 0.7                     # Speed of the waves. Not used by Complex Water (ripples move at their real speed).
-reflectivity = 0.0                  # Strength of reflections on the surface. Not used by Complex Water (real water's reflectance).
-refractionPower = 1.0               # How strongly the water bends the view of the bed through the waves: 1 is real water, 0 none.
-shoreMovement = 0.6                 # Speed of the shoreline lapping in and out (ShoreFadeWidth in ComplexWater).
 
 [_Shaders.Water.Status]
 Enabled = true                      # Replaces water shaders with a custom shader.
