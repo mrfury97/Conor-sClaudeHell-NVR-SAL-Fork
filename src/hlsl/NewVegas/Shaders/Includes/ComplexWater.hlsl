@@ -218,9 +218,6 @@ float2 getWaterPathTo(float3 bed, float3 waterPoint){
     return float2(max(length(bed) - length(waterPoint), 0.0f), max(waterPoint.z - bed.z, 0.0f));
 }
 
-float2 getWaterPath(WaterScreenMap map, float3 surfaceFromCamera, float2 uv){
-    return getWaterPathTo(getBedBehind(map, surfaceFromCamera, map.viewZ, uv), surfaceFromCamera);
-}
 
 // ---------------------------------------------------------------------------------------------
 // DebugView: one term on its own, in place of the water. Compiled in (WATER_DEBUG_VIEW, set by the
@@ -278,18 +275,21 @@ float getDepthCalibration(WaterScreenMap map){
 // refractionPower, 1 real water. Where the bent ray lands on something in front of the water (a
 // post, legs, the shore) or off the screen, the straight view is used, so nothing above the water
 // smears into it. Returns the screen position of the bed seen; path and bed: for that bed.
+// straightBed: the bed under the pixel (getBedBehind at straightUV), which the caller has already
+// read. Each depth read is made once: the second pass's is also the leak test's and the bed's.
 // ---------------------------------------------------------------------------------------------
-float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, WaterScreenMap map, float bedDepth, float strength, out float2 path, out float3 bed){
+float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, WaterScreenMap map, float3 straightBed, float strength, out float2 path, out float3 bed){
     float3 incident = normalize(surfaceFromCamera);
     float3 bent = refract(incident, N, 1.0f / 1.33f);
     bent = normalize(lerp(incident, dot(bent, bent) > 0.0f ? bent : incident, strength));
     // The water plane, seen from the camera: only meaningful with the camera above it.
     float planeZ = min(surfaceFromCamera.z, -1e-3f);
 
-    float depth = bedDepth;
+    float depth = max(surfaceFromCamera.z - straightBed.z, 0.0f);
     float2 uv = straightUV;
     float3 waterPoint = surfaceFromCamera;
     float waterViewZ = map.viewZ;
+    float sceneZ = map.viewZ;
     [unroll]
     for (int i = 0; i < 2; i++) {
         float3 target = surfaceFromCamera + bent * (depth / max(-bent.z, 0.1f));
@@ -297,14 +297,14 @@ float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, Wate
         float2 offset = waterPoint.xy - surfaceFromCamera.xy;
         uv = straightUV + getScreenOffset(map, offset);
         waterViewZ = getWaterViewZ(map, offset);
-        depth = max(surfaceFromCamera.z - getBedBehind(map, waterPoint, waterViewZ, uv).z, 0.0f);
+        sceneZ = getSceneViewZ(map, uv, waterViewZ);
+        depth = max(surfaceFromCamera.z - waterPoint.z * (sceneZ / waterViewZ), 0.0f);   // getBedBehind's
     }
 
-    bool leak = getSceneViewZ(map, uv, waterViewZ) < waterViewZ || any(uv != saturate(uv));
+    bool leak = sceneZ < waterViewZ || any(uv != saturate(uv));
     uv = leak ? straightUV : uv;
     waterPoint = leak ? surfaceFromCamera : waterPoint;
-    waterViewZ = leak ? map.viewZ : waterViewZ;
-    bed = getBedBehind(map, waterPoint, waterViewZ, uv);
+    bed = leak ? straightBed : waterPoint * (sceneZ / waterViewZ);
     path = getWaterPathTo(bed, waterPoint);
     return uv;
 }
@@ -313,20 +313,27 @@ float2 getRefraction(float3 surfaceFromCamera, float3 N, float2 straightUV, Wate
 // as fine particles in the water soften what lies deep; and split slightly by colour along the bend
 // (RefractionDispersion), since water bends red light a little less than blue. Linear.
 // tex2Dlod: the refraction map has no mipmaps, and the lookup follows the depth buffer.
+// The split (RefractionDispersion 0) and the blur (under about half a pixel: the shallows, or
+// RefractionBlur 0) are skipped when they would change nothing: one read instead of seven.
 float3 getRefractedBed(float2 uv, float2 straightUV, float pathLength){
     float2 bend = uv - straightUV;
     float dispersion = TESR_WaterWaves2.w * 0.5f;
-    float3 bed;
-    bed.r = tex2Dlod(RefractionMap, float4(straightUV + bend * (1.0f - dispersion), 0.0f, 0.0f)).r;
-    bed.g = tex2Dlod(RefractionMap, float4(uv, 0.0f, 0.0f)).g;
-    bed.b = tex2Dlod(RefractionMap, float4(straightUV + bend * (1.0f + dispersion), 0.0f, 0.0f)).b;
+    float3 center = tex2Dlod(RefractionMap, float4(uv, 0.0f, 0.0f)).rgb;
+    float3 bed = center;
+    [branch] if (dispersion > 0.0f) {
+        bed.r = tex2Dlod(RefractionMap, float4(straightUV + bend * (1.0f - dispersion), 0.0f, 0.0f)).r;
+        bed.b = tex2Dlod(RefractionMap, float4(straightUV + bend * (1.0f + dispersion), 0.0f, 0.0f)).b;
+    }
 
     float radius = TESR_WaterWaves2.z * saturate(pathLength / (10.0f * WATER_UNITS_PER_METRE)) * 0.006f;
-    float3 blurred = bed;
-    blurred += tex2Dlod(RefractionMap, float4(uv + float2( radius, 0.0f), 0.0f, 0.0f)).rgb;
-    blurred += tex2Dlod(RefractionMap, float4(uv + float2(-radius, 0.0f), 0.0f, 0.0f)).rgb;
-    blurred += tex2Dlod(RefractionMap, float4(uv + float2(0.0f,  radius), 0.0f, 0.0f)).rgb;
-    blurred += tex2Dlod(RefractionMap, float4(uv + float2(0.0f, -radius), 0.0f, 0.0f)).rgb;
+    float3 blurred = bed + center * 4.0f;
+    [branch] if (radius > 0.0002f) {
+        blurred = bed;
+        blurred += tex2Dlod(RefractionMap, float4(uv + float2( radius, 0.0f), 0.0f, 0.0f)).rgb;
+        blurred += tex2Dlod(RefractionMap, float4(uv + float2(-radius, 0.0f), 0.0f, 0.0f)).rgb;
+        blurred += tex2Dlod(RefractionMap, float4(uv + float2(0.0f,  radius), 0.0f, 0.0f)).rgb;
+        blurred += tex2Dlod(RefractionMap, float4(uv + float2(0.0f, -radius), 0.0f, 0.0f)).rgb;
+    }
     return linearize(float4(blurred * 0.2f, 1.0f)).rgb;
 }
 
@@ -474,22 +481,26 @@ float getWaveFieldSurface(WaveField field, float2 worldPos, out float2 slope, ou
 
 // Parallax (WaveParallax): a wave standing up hides what is behind it, and seen at a low angle the
 // crest in front covers the trough beyond. The view ray is traced down from above the tallest crest
-// to where it first meets the waves -- eight steps to find the first crossing, then two refinements
-// between the steps either side of it -- so the shading is taken from the point the eye really sees,
-// the nearest crest hiding what lies behind it, at any angle. Fades out with distance. Returns the
-// world position to shade.
-float2 getWaveParallax(float2 worldPos, float3 eyeDirection, WaveField field, float distance){
+// to where it first meets the waves -- up to eight steps to find the first crossing, then two
+// refinements between the steps either side of it -- so the shading is taken from the point the eye
+// really sees, the nearest crest hiding what lies behind it, at any angle. Fades out with distance.
+// Returns the world position to shade. pixelSize: world units per pixel.
+// Cost: the steps stop reading the wave texture once the crossing is found; a short trace (a steep
+// view) takes fewer steps, about one per quarter of the smaller layer's wavelength, 3 to 8; and one
+// that would move the shading less than a pixel is not traced at all.
+float2 getWaveParallax(float2 worldPos, float3 eyeDirection, WaveField field, float distance, float pixelSize){
     float strength = TESR_WaterWaves2.y * (1.0f - saturate(distance / 4000.0f));
-    // Faded out (by 4000 units, and all the distant water): no trace at all, rather than eleven
-    // steps that come to nothing.
+    // Along the view ray, the ground position moves by shift for each unit of height.
+    float2 shift = eyeDirection.xy / max(eyeDirection.z, 0.25f) * strength;
+    float range = getWaveFieldRange(field);
+    float reach = length(shift) * range * 2.0f;          // how far over the water the whole trace runs
     float2 result = worldPos;
-    [branch] if (strength > 0.0f) {
-        // Along the view ray, the ground position moves by shift for each unit of height.
-        float2 shift = eyeDirection.xy / max(eyeDirection.z, 0.25f) * strength;
-        float range = getWaveFieldRange(field);
+    // Faded out (by 4000 units, and all the distant water), or under a pixel: no trace at all.
+    [branch] if (strength > 0.0f && reach > pixelSize) {
+        float steps = clamp(ceil(reach / (field.tileB / WAVE_TEX_PEAK * 0.25f)), 3.0f, 8.0f);
 
         // f = height of the ray above the waves: positive above the tallest crest, never positive below
-        // the deepest trough, so a crossing always lies in between.
+        // the deepest trough, so a crossing always lies in between (the last step, at -range, is one).
         float aboveH = range;
         float aboveF = range - getWaveFieldHeight(field, worldPos + shift * range);
         float belowH = -range;
@@ -497,16 +508,18 @@ float2 getWaveParallax(float2 worldPos, float3 eyeDirection, WaveField field, fl
         bool found = false;
         [loop]
         for (int i = 1; i <= 8; i++) {
-            float h = range - range * 0.25f * i;
-            float f = h - getWaveFieldHeight(field, worldPos + shift * h);
-            if (!found && f <= 0.0f) {
-                belowH = h;
-                belowF = f;
-                found = true;
-            }
-            if (!found) {
-                aboveH = h;
-                aboveF = f;
+            [branch] if (!found && i <= steps) {
+                float h = range - range * 2.0f * i / steps;
+                float f = h - getWaveFieldHeight(field, worldPos + shift * h);
+                if (f <= 0.0f) {
+                    belowH = h;
+                    belowF = f;
+                    found = true;
+                }
+                else {
+                    aboveH = h;
+                    aboveF = f;
+                }
             }
         }
         [loop]
@@ -558,8 +571,10 @@ float3 getWaves(float2 worldPos, float distance, WaveField field, float heightSc
 // dropping at its own time; faded out with distance. Over the world at WetWorld's own size (a ripple
 // tile every 120 units), so the rain on the water matches the rain in the puddles beside it, on
 // every kind of water (the vanilla texture position's scale is each water form's own).
-float3 getRainRing(float2 uv, float time, float weight){
-    float4 ripple = tex2D(TESR_RippleSampler, uv);
+// dx, dy: ddx and ddy of worldPos, taken at the top level, so the rings can be skipped (dry weather,
+// or past their fade) without four texture reads.
+float3 getRainRing(float2 uv, float2 dx, float2 dy, float time, float weight){
+    float4 ripple = tex2Dgrad(TESR_RippleSampler, uv, dx, dy);
     ripple.yz = expand(ripple.yz);
     float period = frac(ripple.w + time);
     float timeFrac = period - 1.0f + ripple.x;
@@ -568,17 +583,23 @@ float3 getRainRing(float2 uv, float time, float weight){
     return float3(ripple.yz * strength * 0.35f, 1.0f);
 }
 
-float3 getRainRipples(float2 worldPos, float3 N, float distance, float rain){
+float3 getRainRipples(float2 worldPos, float2 dx, float2 dy, float3 N, float distance, float rain){
     float fade = 1.0f - saturate(distance / 3500.0f);
-    float4 weights = saturate(float4(1.0f, 0.75f, 0.5f, 0.25f) * rain * 4.0f) * 2.0f * fade;
-    float4 times = float4(0.96f, 0.97f, 0.98f, 0.99f) * 0.07f * WATER_SCROLL_TIME;
-    float2 uv = worldPos / 120.0f;
-    float3 r1 = getRainRing(uv + float2(0.25f, 0.0f), times.x, weights.x);
-    float3 r2 = getRainRing(uv * 1.1f + float2(-0.55f, 0.3f), times.y, weights.y);
-    float3 r3 = getRainRing(uv * 1.3f + float2(0.6f, 0.85f), times.z, weights.z);
-    float3 r4 = getRainRing(uv * 1.5f + float2(0.5f, -0.75f), times.w, weights.w);
-    float2 rings = weights.x * r1.xy + weights.y * r2.xy + weights.z * r3.xy + weights.w * r4.xy;
-    return normalize(float3(N.xy + rings, N.z));
+    float3 result = N;
+    [branch] if (rain * fade > 0.0f) {
+        float4 weights = saturate(float4(1.0f, 0.75f, 0.5f, 0.25f) * rain * 4.0f) * 2.0f * fade;
+        float4 times = float4(0.96f, 0.97f, 0.98f, 0.99f) * 0.07f * WATER_SCROLL_TIME;
+        float2 uv = worldPos / 120.0f;
+        dx /= 120.0f;
+        dy /= 120.0f;
+        float3 r1 = getRainRing(uv + float2(0.25f, 0.0f), dx, dy, times.x, weights.x);
+        float3 r2 = getRainRing(uv * 1.1f + float2(-0.55f, 0.3f), dx * 1.1f, dy * 1.1f, times.y, weights.y);
+        float3 r3 = getRainRing(uv * 1.3f + float2(0.6f, 0.85f), dx * 1.3f, dy * 1.3f, times.z, weights.z);
+        float3 r4 = getRainRing(uv * 1.5f + float2(0.5f, -0.75f), dx * 1.5f, dy * 1.5f, times.w, weights.w);
+        float2 rings = weights.x * r1.xy + weights.y * r2.xy + weights.z * r3.xy + weights.w * r4.xy;
+        result = normalize(float3(N.xy + rings, N.z));
+    }
+    return result;
 }
 
 // The engine's wading ripples around the player and actors (the displacement map), bent into the
@@ -673,14 +694,32 @@ float3 getSkyTint(float3 horizon){
     return lerp(1.0f, hue, saturate(TESR_WaterLighting5.z));
 }
 
-float3 getBlurredReflection(float4 reflectionPos, float3 N){
-    float radius = TESR_WaterLighting3.w * 0.006f * saturate(length(N.xy) * 4.0f) * reflectionPos.w;
-    float4 sum = tex2Dproj(ReflectionMap, reflectionPos);
-    sum += tex2Dproj(ReflectionMap, reflectionPos + float4( radius, 0.0f, 0.0f, 0.0f));
-    sum += tex2Dproj(ReflectionMap, reflectionPos + float4(-radius, 0.0f, 0.0f, 0.0f));
-    sum += tex2Dproj(ReflectionMap, reflectionPos + float4(0.0f,  radius, 0.0f, 0.0f));
-    sum += tex2Dproj(ReflectionMap, reflectionPos + float4(0.0f, -radius, 0.0f, 0.0f));
+// reflectionUV: the lookup's screen position (the projected reflectionPos); dx, dy its ddx and ddy,
+// taken at the top level, so the whole read can sit in a branch (getReflection).
+float3 getBlurredReflection(float2 reflectionUV, float2 dx, float2 dy, float3 N){
+    float radius = TESR_WaterLighting3.w * 0.006f * saturate(length(N.xy) * 4.0f);
+    float4 sum = tex2Dgrad(ReflectionMap, reflectionUV, dx, dy);
+    sum += tex2Dgrad(ReflectionMap, reflectionUV + float2( radius, 0.0f), dx, dy);
+    sum += tex2Dgrad(ReflectionMap, reflectionUV + float2(-radius, 0.0f), dx, dy);
+    sum += tex2Dgrad(ReflectionMap, reflectionUV + float2(0.0f,  radius), dx, dy);
+    sum += tex2Dgrad(ReflectionMap, reflectionUV + float2(0.0f, -radius), dx, dy);
     return linearize(sum * 0.2f).rgb;
+}
+
+// What outdoor water reflects: the game's reflection map, blurred on rough water, or with
+// GameReflections off (the map is not rendered) the sky along the reflected ray. A real branch: the
+// five reads (one without blur: the distant water) are not made while the map is off. reflectionPos:
+// getReflectionScreenPos; top level.
+float3 getReflection(float4 reflectionPos, float3 N, float3 eyeDirection, float3 skyLight, bool blur){
+    float2 reflectionUV = reflectionPos.xy / reflectionPos.w;
+    float2 dx = ddx(reflectionUV);
+    float2 dy = ddy(reflectionUV);
+    float3 reflection;
+    [branch] if (TESR_WaterLighting5.x > 0.5f)
+        reflection = blur ? getBlurredReflection(reflectionUV, dx, dy, N) : linearize(tex2Dgrad(ReflectionMap, reflectionUV, dx, dy)).rgb;
+    else
+        reflection = getSkyReflection(reflect(-eyeDirection, N), skyLight);
+    return reflection;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -704,21 +743,27 @@ float3 getTransmittance(float pathLength){
 // Caustics (Caustics, CausticsScale): sunlight focused by the waves into bright rippling lines on
 // the bed in shallow water. Two layers of the wave texture drift across the bed's world position;
 // where their slopes cancel, the light converges. None at the waterline, fading out in deep water.
-// A factor on the sunlit bed. Needs TESR_CameraPosition. tex2Dlod, a level from the distance.
-float getCaustics(float3 bedFromCamera, float depthBelow){
-    // The light the waves focus moves with them: both layers drift downwind (a little to either side),
-    // at a third of the speed of the waves (a deep-water wave of WaveLength moves sqrt(109.3 L) units
-    // a second), in CausticsScale's units.
-    float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
-    float travel = sqrt(109.3f * max(TESR_WaterWaves.y, 1.0f)) * 0.35f * WATER_SECONDS / TESR_WaterLighting4.y;
-    float2 world = (bedFromCamera.xy + TESR_CameraPosition.xy) / TESR_WaterLighting4.y;
-    float lod = log2(max(length(bedFromCamera) / (TESR_WaterLighting4.y * 2.0f), 1.0f));
-    float2 a = expand(tex2Dlod(TESR_samplerWater, float4(world - rotateWaterUV(wind, 0.2f) * travel, 0.0f, lod))).xy;
-    float2 b = expand(tex2Dlod(TESR_samplerWater, float4(rotateWaterUV((world - rotateWaterUV(wind, -0.25f) * travel * 0.8f) * 1.37f, 1.1f), 0.0f, lod))).xy;
-    float focus = saturate(1.0f - length(a + b) * 1.8f);
-    focus = focus * focus * focus * 3.0f;
+// A factor on the bed: light, the sunlight reaching it (its luma, times the shadow). Needs
+// TESR_CameraPosition. tex2Dlod, a level from the distance; not read at all where the result would
+// be too faint to see (deep water, shade, night, Caustics 0).
+float getCaustics(float3 bedFromCamera, float depthBelow, float light){
     float depthFade = saturate(depthBelow / 20.0f) * exp(-depthBelow / 500.0f);
-    return focus * depthFade * TESR_WaterLighting4.x;
+    float amount = depthFade * TESR_WaterLighting4.x * light;
+    float caustics = 0.0f;
+    [branch] if (amount > 0.002f) {
+        // The light the waves focus moves with them: both layers drift downwind (a little to either side),
+        // at a third of the speed of the waves (a deep-water wave of WaveLength moves sqrt(109.3 L) units
+        // a second), in CausticsScale's units.
+        float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
+        float travel = sqrt(109.3f * max(TESR_WaterWaves.y, 1.0f)) * 0.35f * WATER_SECONDS / TESR_WaterLighting4.y;
+        float2 world = (bedFromCamera.xy + TESR_CameraPosition.xy) / TESR_WaterLighting4.y;
+        float lod = log2(max(length(bedFromCamera) / (TESR_WaterLighting4.y * 2.0f), 1.0f));
+        float2 a = expand(tex2Dlod(TESR_samplerWater, float4(world - rotateWaterUV(wind, 0.2f) * travel, 0.0f, lod))).xy;
+        float2 b = expand(tex2Dlod(TESR_samplerWater, float4(rotateWaterUV((world - rotateWaterUV(wind, -0.25f) * travel * 0.8f) * 1.37f, 1.1f), 0.0f, lod))).xy;
+        float focus = saturate(1.0f - length(a + b) * 1.8f);
+        caustics = focus * focus * focus * 3.0f * amount;
+    }
+    return caustics;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -732,12 +777,17 @@ float getCaustics(float3 bedFromCamera, float depthBelow){
 // MUST stay on ONE line (see Shadow.hlsl's TESR_ShadowAtlas).
 sampler2D TESR_FoamMap : register(s13) < string ResourceName = "Water\NVR_Foam.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
-// The foam texture at worldPos (x dense, y streaky). tex2D: top level only.
-float2 getFoamTexture(float2 worldPos, float time){
-    float2 uv = worldPos / max(TESR_WaterLighting5.y, 1.0f);
+// The foam texture at worldPos (x dense, y streaky). dx, dy: ddx and ddy of worldPos, taken at the
+// top level, so it can be read inside a branch (getFoam).
+float2 getFoamTexture(float2 worldPos, float2 dx, float2 dy, float time){
+    float scale = 1.0f / max(TESR_WaterLighting5.y, 1.0f);
+    float2 uv = worldPos * scale;
+    dx *= scale;
+    dy *= scale;
     float2 wind = float2(cos(TESR_WaterWaves.z), sin(TESR_WaterWaves.z));
-    float2 a = tex2D(TESR_FoamMap, uv - rotateWaterUV(wind, 0.15f) * (0.0125f * time)).rg;
-    float2 b = tex2D(TESR_FoamMap, rotateWaterUV((uv - rotateWaterUV(wind, -0.2f) * (0.0115f * time)) * 0.71f, 1.3f)).rg;
+    float2 a = tex2Dgrad(TESR_FoamMap, uv - rotateWaterUV(wind, 0.15f) * (0.0125f * time), dx, dy).rg;
+    float2 b = tex2Dgrad(TESR_FoamMap, rotateWaterUV((uv - rotateWaterUV(wind, -0.2f) * (0.0115f * time)) * 0.71f, 1.3f),
+                         rotateWaterUV(dx * 0.71f, 1.3f), rotateWaterUV(dy * 0.71f, 1.3f)).rg;
     return 0.5f * (a + b);
 }
 
@@ -768,6 +818,23 @@ float getWhitecaps(float fold, float2 foamTexture){
 // it grey). shadow: 1 in the sun.
 float3 getFoamColor(float3 sunLight, float3 sunDirection, float3 skyLight, float shadow){
     return 0.9f * (skyLight * 0.8f + sunLight * shadow * saturate(sunDirection.z * 0.6f + 0.4f));
+}
+
+// All the foam at a point: the edge's (pathLength: the path through the water there; a negative one
+// for none, the distant water) and the whitecaps'. The foam texture is only read where one of them
+// can show -- near an edge, or on a crest folding past the whitecaps' threshold -- which leaves most
+// of the open water without it. dx, dy: ddx and ddy of worldPos at the top level.
+float getFoam(float2 worldPos, float2 dx, float2 dy, float time, float pathLength, float fold){
+    float amount = saturate(TESR_WaterWaves2.x);
+    bool edge = pathLength >= 0.0f && pathLength < TESR_WaterLighting3.y * 2.0f && TESR_WaterLighting3.x > 0.0f;
+    bool caps = amount > 0.0f && fold > (1.0f - amount) * 0.9f;
+    float foam = 0.0f;
+    [branch] if (edge || caps) {
+        float2 foamTexture = getFoamTexture(worldPos, dx, dy, time);
+        foam = getWhitecaps(fold, foamTexture);
+        if (pathLength >= 0.0f) foam = max(foam, getFoamMask(pathLength, foamTexture));
+    }
+    return foam;
 }
 
 // Shoreline fade (ShoreFadeWidth): the water fades out over that much depth at the edge, lapping in

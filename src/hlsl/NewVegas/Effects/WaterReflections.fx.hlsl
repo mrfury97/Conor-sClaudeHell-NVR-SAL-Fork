@@ -206,6 +206,10 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 		status = 1.0f;
 		float k0 = 1.0f / start.z;
 		float k1 = 1.0f / end.z;
+		// toWorld is affine in uv, so its height along the segment is too: the water test at each
+		// step interpolates it rather than rebuilding the view ray.
+		float dirZ0 = toWorld(start.xy).z;
+		float dirZ1 = toWorld(end.xy).z;
 		float jitter = getNoise(uv / TESR_ReciprocalResolution.xy);
 		// As many steps as the ray is long on the screen, one about every 8 pixels (12 to 48).
 		float steps = clamp(ceil(max(pixels.x, pixels.y) / 8.0f), 12.0f, SSR_STEPS);
@@ -227,7 +231,7 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 				float behind = rayZ - sceneZ;
 				// Behind what the screen shows there, but not so far that the ray passed behind it; and
 				// not the water itself (it cannot reflect itself).
-				bool solid = !found && behind > 0.0f && !isWaterHeight(TESR_CameraPosition.z + toWorld(rayUV).z * sceneZ, sceneZ);
+				bool solid = !found && behind > 0.0f && !isWaterHeight(TESR_CameraPosition.z + lerp(dirZ0, dirZ1, t) * sceneZ, sceneZ);
 				if (firstBehind < 0.0f && solid) firstBehind = behind / thickness;
 				// Or further behind, where what the ray can only have gone through is its back or
 				// underside (the underside of the pier, the back of a post), which the screen does not
