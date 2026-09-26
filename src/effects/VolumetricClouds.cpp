@@ -31,7 +31,7 @@ void VolumetricCloudsEffect::UpdateConstants() {
 	if (fabsf(heading) > TwoPi + 0.01f) heading *= 0.0174532925f; // degrees
 	float angle = 1.5707963f - heading; // compass (0 north, clockwise) to an angle from +x (east)
 	float speed = driftSpeed * (0.5f + windSpeed);
-	float scale = std::max(Constants.March.z, 100.0f);
+	float scale = max(Constants.March.z, 100.0f);
 	driftX = fmodf(driftX + cosf(angle) * speed * dt, scale);
 	driftY = fmodf(driftY + sinf(angle) * speed * dt, scale);
 	evolve = fmodf(evolve + evolveSpeed * dt, 1.0f);
