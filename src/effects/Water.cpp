@@ -33,6 +33,8 @@ void WaterShaders::UpdateConstants() {
 
 	TESWaterForm* currentWater = NULL;
 	float height = Tes->GetWaterHeight(Player, WorldSceneGraph, &currentWater);
+	TESObjectCELL* cell = Player->parentCell;
+	HasWater = cell && (!cell->IsInterior() || (cell->flags0 & TESObjectCELL::kFlags0_HasWater));
 
 	// get water height based on player position
 	Constants.Default.waterSettings.x = height;

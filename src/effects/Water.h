@@ -55,6 +55,9 @@ public:
 
 	// SkipReflectionPass: RenderReflectionsHook skips the game's reflection pass while Complex Water runs.
 	bool	SkipReflectionPass = false;
+	// Whether the player's cell has water at TESR_WaterSettings.x at all (every exterior does; an
+	// interior only when flagged), for the WaterReflections effect, which finds the water by it.
+	bool	HasWater = false;
 
 	float	causticsStrength;
 

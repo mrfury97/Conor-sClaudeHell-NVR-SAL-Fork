@@ -14,7 +14,10 @@ void WaterReflectionsEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WaterReflectionsData", &Constants.Data);
 }
 
-// Only above the water: below it the Underwater effect takes over.
+// Part of Complex Water: only while its shaders draw the water (they keep the water height, the
+// wave field and the reflectivity the effect reads up to date), where the cell has water, and above
+// it (below, the Underwater effect takes over).
 bool WaterReflectionsEffect::ShouldRender() {
-	return !TheShaderManager->GameState.isUnderwater;
+	WaterShaders* water = TheShaderManager->Shaders.Water;
+	return water && water->Enabled && water->HasWater && !TheShaderManager->GameState.isUnderwater;
 }

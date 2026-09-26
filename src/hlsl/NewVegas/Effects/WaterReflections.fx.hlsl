@@ -27,6 +27,8 @@ float4 TESR_ReciprocalResolution;
 float4 TESR_GameTime;
 float4 TESR_WaterSettings;        // x: water height
 float4 TESR_WaterWaves;           // x: WaveHeight  y: WaveLength  z: WaveDirection  w: WaveSteepness
+float4 TESR_WaveParams;           // w: the water's reflectivity ([Shaders.Water.Default] or .Interiors)
+float4 TESR_WaterLighting3;       // w: ReflectionBlur
 float4 TESR_WaterReflectionsData;
 
 sampler2D TESR_SourceBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
@@ -170,7 +172,8 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	R = normalize(float3(R.xy, max(R.z, 0.02f)));
 
 	float cosTheta = saturate(dot(-eyeDirection, N));
-	float fresnel = WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f);
+	// As the water shader weighs its own reflection (getFresnel): times the water's reflectivity.
+	float fresnel = saturate((WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f)) * TESR_WaveParams.w);
 
 	// The ray, from the surface to MaxDistance or to just in front of the camera, whichever is
 	// nearer; then as a segment on the screen, cut where it leaves the screen. Along the segment,
@@ -272,7 +275,8 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// underside, whose single edge row would otherwise streak down the water. That underside is in
 	// its own shade (the pier's, over the water), so it is taken darker than the lit front.
 	float2 reflectedUV = lerp(start.xy, end.xy, hitT);
-	float2 spread = TESR_ReciprocalResolution.xy * (loose ? 4.0f : 1.5f);
+	// Widened by the water's ReflectionBlur (0-3), as its own reflection is blurred.
+	float2 spread = TESR_ReciprocalResolution.xy * (loose ? 4.0f : 1.5f) * (1.0f + saturate(TESR_WaterLighting3.w / 3.0f) * 2.0f);
 	float3 reflection = linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x, -spread.y), 0.0f, 0.0f)).rgb)
 	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( spread.x, -spread.y), 0.0f, 0.0f)).rgb)
 	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x,  spread.y), 0.0f, 0.0f)).rgb)
