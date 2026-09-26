@@ -225,18 +225,22 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	// The normal of the waves, and the view ray turned off it. Kept pointing up: a ray turned into
 	// the water would have nothing to reflect.
 	float3 eyeDirection = normalize(surface);                   // camera to surface
-	// The water shader's own normal: the wave field, the ripples on it, both scaled by the gusts.
+	// The waves (the wave field, scaled by the gusts, as the water shader has them) aim the reflected
+	// ray. The fine ripples on them do not: each pixel following its own ripple splinters a reflection
+	// into long jagged streaks, where on real water thousands of them only smear it -- so they widen
+	// the blur (rippleSlope, below) and weigh the reflection (the Fresnel, on the full normal).
 	float2 slope = 0.0f;
+	float2 rippleSlope = 0.0f;
 	[branch] if (distortion > 0.0f) {
-		slope = getWaveSlope(worldPos.xy, pixelSize);
-		[branch] if (TESR_WaterLighting5.w > 0.0f) slope += getRippleSlope(worldPos.xy, dwx, dwy, length(surface.xy));
-		slope *= getWaveGusts(worldPos.xy) * distortion;
+		float gust = getWaveGusts(worldPos.xy);
+		slope = getWaveSlope(worldPos.xy, pixelSize) * gust * distortion;
+		[branch] if (TESR_WaterLighting5.w > 0.0f) rippleSlope = getRippleSlope(worldPos.xy, dwx, dwy, length(surface.xy)) * gust;
 	}
 	float3 N = normalize(float3(-slope, 1.0f));
 	float3 R = reflect(eyeDirection, N);
 	R = normalize(float3(R.xy, max(R.z, 0.02f)));
 
-	float cosTheta = saturate(dot(-eyeDirection, N));
+	float cosTheta = saturate(dot(-eyeDirection, normalize(float3(-slope - rippleSlope * distortion, 1.0f))));
 	// As the water shader weighs its own reflection (getFresnel): real water's.
 	float fresnel = WATER_F0 + (1.0f - WATER_F0) * pow(1.0f - cosTheta, 5.0f);
 	// Too little reflection to see (looking steeply down, or a low Strength): not
@@ -356,12 +360,12 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 
 	// Blurred as rippled water blurs a reflection: by a cone around the ray, so sharp where a post
 	// meets the water and softer up it, the further the ray went (the cone widens with the water's
-	// ReflectionBlur and the slope here). Eight taps, in two rings. Wider where the front stands in
+	// ReflectionBlur, the slope here, and most with the ripples). Eight taps, in two rings. Wider where the front stands in
 	// for an underside, whose single edge row would otherwise streak down the water; that underside is
 	// in its own shade (the pier's, over the water), so it is taken darker than the lit front.
 	float2 reflectedUV = lerp(start.xy, end.xy, hitT);
 	float worldPerPixel = hitDepth * 2.0f * TESR_ReciprocalResolution.y / TESR_ProjectionTransform[1][1];
-	float cone = 0.01f + 0.03f * saturate(TESR_WaterLighting3.w / 3.0f) + length(slope) * 0.1f;
+	float cone = 0.01f + 0.03f * saturate(TESR_WaterLighting3.w / 3.0f) + length(slope) * 0.05f + length(rippleSlope) * 0.25f;
 	float radius = clamp(hitDistance * cone / max(worldPerPixel, 1e-3f), loose ? 4.0f : 1.0f, 16.0f);
 	float2 r1 = TESR_ReciprocalResolution.xy * radius * 0.7071f;
 	float2 r2 = TESR_ReciprocalResolution.xy * radius * 0.5f;
