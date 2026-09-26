@@ -50,6 +50,7 @@ public:
 		D3DXVECTOR4		Waves;			// TESR_WaterWaves: x height, y length, z direction (radians), w steepness
 		D3DXVECTOR4		Waves2;			// TESR_WaterWaves2: x whitecaps, y parallax, z refraction blur, w refraction dispersion
 		D3DXVECTOR4		Lighting5;		// TESR_WaterLighting5: x 1 when the game's reflection map is rendered, y foam scale, z sky tint
+		D3DXVECTOR4		WaveOrigin;		// TESR_WaterWaveOrigin: xy the first wave layer's origin in the world, zw the second's
 	};
 	WaterConstants		Constants;
 
@@ -58,6 +59,17 @@ public:
 	// Whether the player's cell has water at TESR_WaterSettings.x at all (every exterior does; an
 	// interior only when flagged), for the WaterReflections effect, which finds the water by it.
 	bool	HasWater = false;
+
+	// Wave direction: WaveDirection, or with WaveDirectionFromWind the weather's wind (plus
+	// WindDirectionOffset). Turned toward at a steady rate, the wave pattern rotating about the
+	// player (WaveOrigin) so the waves turn in place instead of sliding.
+	float	waveDirectionSetting = 0.0f;
+	bool	waveDirectionFromWind = false;
+	float	windDirectionOffset = 0.0f;
+	float	waveAngle = 0.0f;
+	bool	waveAngleSet = false;
+	float	lastWindLogged = -1000.0f;
+	void	UpdateWaveDirection();
 
 	float	causticsStrength;
 

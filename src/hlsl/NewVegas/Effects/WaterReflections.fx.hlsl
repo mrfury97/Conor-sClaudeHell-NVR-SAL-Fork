@@ -27,6 +27,7 @@ float4 TESR_ReciprocalResolution;
 float4 TESR_GameTime;
 float4 TESR_WaterSettings;        // x: water height
 float4 TESR_WaterWaves;           // x: WaveHeight  y: WaveLength  z: WaveDirection  w: WaveSteepness
+float4 TESR_WaterWaveOrigin;      // xy the first wave layer's origin in the world, zw the second's
 float4 TESR_WaveParams;           // w: the water's reflectivity ([Shaders.Water.Default] or .Interiors)
 float4 TESR_WaterLighting3;       // w: ReflectionBlur
 float4 TESR_WaterReflectionsData;
@@ -120,8 +121,8 @@ float2 getWaveSlope(float2 worldPos, float pixelSize){
 	float lodB = max(log2(pixelSize * WAVE_TEX_SIZE / tileB), 0.0f);
 	float sigma = TESR_WaterWaves.x * 0.25f;
 	float slopeScale = sigma * WAVE_TEX_SLOPE_SCALE / tileA * lerp(0.5f, 1.5f, saturate(TESR_WaterWaves.w));
-	return slopeScale * (sampleWaveSlope(worldPos, dirA, tileA, 0.0f, timeA, lodA)
-	                   + sampleWaveSlope(worldPos, dirB, tileB, WAVE_LAYER_B_OFFSET, timeB, lodB));
+	return slopeScale * (sampleWaveSlope(worldPos - TESR_WaterWaveOrigin.xy, dirA, tileA, 0.0f, timeA, lodA)
+	                   + sampleWaveSlope(worldPos - TESR_WaterWaveOrigin.zw, dirB, tileB, WAVE_LAYER_B_OFFSET, timeB, lodB));
 }
 
 // readDepth without derivatives, for the loops.

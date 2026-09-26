@@ -26,10 +26,64 @@ void WaterShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_WaterWaves", &Constants.Waves);
 	TheShaderManager->RegisterConstant("TESR_WaterWaves2", &Constants.Waves2);
 	TheShaderManager->RegisterConstant("TESR_WaterLighting5", &Constants.Lighting5);
+	TheShaderManager->RegisterConstant("TESR_WaterWaveOrigin", &Constants.WaveOrigin);
 }
 
 
+// The wave direction for this frame (Constants.Waves.z, radians anticlockwise from +x). The wave
+// pattern is tiled from each layer's origin (Constants.WaveOrigin); turning it about the world origin
+// would slide the waves near the player, who is tens of thousands of units from it, so each turn
+// instead rotates the origins about the player: the waves around them turn in place.
+void WaterShaders::UpdateWaveDirection() {
+	const float TwoPi = 6.2831853f;
+	float target = waveDirectionSetting;
+	Sky* sky = Tes ? Tes->sky : NULL;
+	if (waveDirectionFromWind && sky) {
+		float wind = sky->windDirection;
+		if (fabsf(wind - lastWindLogged) > 0.01f) {
+			Logger::Log("Complex Water: weather wind direction %f, speed %f", wind, sky->windSpeed);
+			lastWindLogged = wind;
+		}
+		if (fabsf(wind) > TwoPi + 0.01f) wind *= 0.0174532925f; // degrees
+		// A compass heading (0 north, clockwise) to an angle from +x (east), anticlockwise.
+		target = 1.5707963f - wind + windDirectionOffset;
+	}
+
+	if (!waveAngleSet) {
+		waveAngle = target;
+		waveAngleSet = true;
+		Constants.WaveOrigin = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+	else {
+		float dt = (float)TheFrameRateManager->ElapsedTime;
+		if (!(dt > 0.0f) || dt > 0.5f) dt = 0.0f; // paused, or a hitch: hold
+		float diff = fmodf(target - waveAngle, TwoPi);
+		if (diff > TwoPi * 0.5f) diff -= TwoPi;
+		if (diff < -TwoPi * 0.5f) diff += TwoPi;
+		float maxStep = 0.0349066f * dt; // 2 degrees a second
+		float step = std::clamp(diff, -maxStep, maxStep);
+		if (step != 0.0f) {
+			waveAngle = fmodf(waveAngle + step, TwoPi);
+			// Rotate each layer's origin about the player by the same step, so the pattern turns
+			// about them.
+			float c = cosf(step), s = sinf(step);
+			float px = Player ? Player->pos.x : 0.0f;
+			float py = Player ? Player->pos.y : 0.0f;
+			for (int layer = 0; layer < 2; layer++) {
+				float& ox = layer ? Constants.WaveOrigin.z : Constants.WaveOrigin.x;
+				float& oy = layer ? Constants.WaveOrigin.w : Constants.WaveOrigin.y;
+				float dx = ox - px, dy = oy - py;
+				ox = px + c * dx - s * dy;
+				oy = py + s * dx + c * dy;
+			}
+		}
+	}
+	Constants.Waves.z = waveAngle;
+}
+
 void WaterShaders::UpdateConstants() {
+
+	UpdateWaveDirection();
 
 	TESWaterForm* currentWater = NULL;
 	float height = Tes->GetWaterHeight(Player, WorldSceneGraph, &currentWater);
@@ -143,7 +197,9 @@ void WaterShaders::UpdateSettings() {
 	// Wave shape: off at WaveHeight 0 (also missing), which leaves the normal-map waves alone.
 	Constants.Waves.x = Read("WaveHeight", 0.0f, 60.0f);
 	Constants.Waves.y = ReadOr("WaveLength", 50.0f, 5000.0f, 200.0f);
-	Constants.Waves.z = Read("WaveDirection", 0.0f, 360.0f) * 0.0174532925f;
+	waveDirectionSetting = Read("WaveDirection", 0.0f, 360.0f) * 0.0174532925f;
+	waveDirectionFromWind = TheSettingManager->GetSettingI(Section, "WaveDirectionFromWind") != 0;
+	windDirectionOffset = Read("WindDirectionOffset", -360.0f, 360.0f) * 0.0174532925f;
 	Constants.Waves.w = Read("WaveSteepness", 0.0f, 1.0f);
 	Constants.Waves2.x = Read("Whitecaps", 0.0f, 1.0f);
 	Constants.Waves2.y = Read("WaveParallax", 0.0f, 2.0f);

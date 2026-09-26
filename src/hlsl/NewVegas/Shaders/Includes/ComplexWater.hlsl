@@ -44,6 +44,7 @@ float4 TESR_WaterWaves        : register(c206);
 float4 TESR_WaterWaves2       : register(c207);
 float4 TESR_WaterLighting5    : register(c208);
 float4 TESR_SkyColor          : register(c209);
+float4 TESR_WaterWaveOrigin   : register(c210);   // xy the first wave layer's origin in the world, zw the second's (the DLL turns the waves about the player)
 
 // Water's reflectance looking straight down: 2% (index of refraction 1.33).
 #define WATER_F0 0.02f
@@ -416,8 +417,8 @@ float4 sampleWaveLayer(float2 worldPos, float2 dir, float tile, float2 offset, f
 
 // The height of the waves at worldPos, for the parallax trace.
 float getWaveFieldHeight(WaveField field, float2 worldPos){
-    float a = sampleWaveLayer(worldPos, field.dirA, field.tileA, 0.0f, field.timeA, field.lodA).b;
-    float b = sampleWaveLayer(worldPos, field.dirB, field.tileB, WAVE_LAYER_B_OFFSET, field.timeB, field.lodB).b;
+    float a = sampleWaveLayer(worldPos - TESR_WaterWaveOrigin.xy, field.dirA, field.tileA, 0.0f, field.timeA, field.lodA).b;
+    float b = sampleWaveLayer(worldPos - TESR_WaterWaveOrigin.zw, field.dirB, field.tileB, WAVE_LAYER_B_OFFSET, field.timeB, field.lodB).b;
     return field.height * ((a * 2.0f - 1.0f) + WAVE_LAYER_B_SCALE * (b * 2.0f - 1.0f));
 }
 
@@ -428,8 +429,8 @@ float getWaveFieldRange(WaveField field){
 
 // Height, world slope (dh/dx, dh/dy) and crest folding at worldPos.
 float getWaveFieldSurface(WaveField field, float2 worldPos, out float2 slope, out float fold){
-    float4 a = sampleWaveLayer(worldPos, field.dirA, field.tileA, 0.0f, field.timeA, field.lodA);
-    float4 b = sampleWaveLayer(worldPos, field.dirB, field.tileB, WAVE_LAYER_B_OFFSET, field.timeB, field.lodB);
+    float4 a = sampleWaveLayer(worldPos - TESR_WaterWaveOrigin.xy, field.dirA, field.tileA, 0.0f, field.timeA, field.lodA);
+    float4 b = sampleWaveLayer(worldPos - TESR_WaterWaveOrigin.zw, field.dirB, field.tileB, WAVE_LAYER_B_OFFSET, field.timeB, field.lodB);
     // Stored slopes are along each layer's own axes: turn them back into the world.
     float2 slopeA = a.rg * 2.0f - 1.0f;
     float2 slopeB = b.rg * 2.0f - 1.0f;
