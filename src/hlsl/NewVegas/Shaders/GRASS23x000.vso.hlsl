@@ -40,7 +40,7 @@ struct VS_OUTPUT {
     float4 fog            : COLOR0;      // .w = fog amount
     // Grass lighting (GRASS23x000TMS.pso), raw so the PS can shade per pixel with its own settings.
     float4 blade          : TEXCOORD2;   // xyz: this variant's sun normal, w: height above the clump's base (units)
-    float4 bladeOffset    : TEXCOORD3;   // xyz: horizontal offset from the clump's centre (model units), w: VS variant 0-3
+    float4 bladeOffset    : TEXCOORD3;   // xyz: horizontal offset from the clump's centre (model units)
     float4 sunColor       : TEXCOORD6;   // xyz: the sun term before N.L, w: 2 = grass data present
     float4 sunDir         : TEXCOORD7;   // xyz: DiffuseDir, w: cosine between the view ray and the ground's up (grazing brightening)
 };
@@ -84,7 +84,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     OUT.shadowWorldPos = float4(GetShadowWorldPos(OUT.position), SHADOW_VS_SENTINEL);
 
     OUT.blade = float4(orient, placed.z);   // card on world axes: height is z
-    OUT.bladeOffset = float4(placed - orient * dot(placed, orient), 0.0f);   // w: which grass VS this is, for DebugView 7
+    OUT.bladeOffset = float4(placed - orient * dot(placed, orient), 0.0f);
     OUT.sunColor = float4((lightScale * IN.color.rgb) * DiffuseColor * AddlParams.x, 2.0f);   // w: GRASS_VS_SENTINEL, see GRASS23x000TMS.pso
     // w: view ray against the ground's up: the instance orientation the engine aligns grass to the slope with.
     float3 groundUp = normalize(orient);

@@ -20,7 +20,7 @@ public:
 		D3DXVECTOR4		Scale;
 		// Zeroed until the first UpdateSettings: all-zero grass lighting is vanilla grass.
 		D3DXVECTOR4		Lighting = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// x: translucency, y: roundness, z: root darkening, w: specular
-		D3DXVECTOR4		Lighting2 = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// x: translucency focus, y: specular glossiness, z: debug view, w: diffuse wrap
+		D3DXVECTOR4		Lighting2 = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// x: translucency focus, y: specular glossiness, z: unused, w: diffuse wrap
 		D3DXVECTOR4		Lighting3 = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);	// x: root darkening height (units), y: point light strength, z: detail distance, w: detail fade
 		D3DXVECTOR4		DryTips = D3DXVECTOR4(0.0f, 25.0f, 30.0f, 0.0f);	// x: strength, y: start height, z: fade length
 		D3DXVECTOR4		DryColor = D3DXVECTOR4(1.2f, 1.05f, 0.6f, 0.0f);	// rgb: dry tip colour
