@@ -9,7 +9,7 @@ struct PS_INPUT {
     float4 LTEXCOORD_4 : TEXCOORD4_centroid;     // 3rd row
     float4 LTEXCOORD_5 : TEXCOORD5_centroid;     // 4th row
     float4 LTEXCOORD_6 : TEXCOORD6;              // wading displacement map position
-    float2 LTEXCOORD_7 : TEXCOORD7;              // wave texture position
+    float2 LTEXCOORD_7 : TEXCOORD7;              // the vanilla wave texture position (unused: every pattern is laid out over the world)
 };
 
 struct PS_OUTPUT {
@@ -512,7 +512,9 @@ float3 getWaves(float2 worldPos, float distance, WaveField field, float heightSc
 }
 
 // Rain rings on the surface (WetWorld's rain amount). Four layers of the ripple texture, each
-// dropping at its own time; faded out with distance.
+// dropping at its own time; faded out with distance. Over the world at WetWorld's own size (a ripple
+// tile every 120 units), so the rain on the water matches the rain in the puddles beside it, on
+// every kind of water (the vanilla texture position's scale is each water form's own).
 float3 getRainRing(float2 uv, float time, float weight){
     float4 ripple = tex2D(TESR_RippleSampler, uv);
     ripple.yz = expand(ripple.yz);
@@ -523,11 +525,11 @@ float3 getRainRing(float2 uv, float time, float weight){
     return float3(ripple.yz * strength * 0.35f, 1.0f);
 }
 
-float3 getRainRipples(float2 texPos, float3 N, float distance, float rain){
+float3 getRainRipples(float2 worldPos, float3 N, float distance, float rain){
     float fade = 1.0f - saturate(distance / 3500.0f);
     float4 weights = saturate(float4(1.0f, 0.75f, 0.5f, 0.25f) * rain * 4.0f) * 2.0f * fade;
     float4 times = float4(0.96f, 0.97f, 0.98f, 0.99f) * 0.07f * WATER_SCROLL_TIME;
-    float2 uv = texPos * 5.0f;
+    float2 uv = worldPos / 120.0f;
     float3 r1 = getRainRing(uv + float2(0.25f, 0.0f), times.x, weights.x);
     float3 r2 = getRainRing(uv * 1.1f + float2(-0.55f, 0.3f), times.y, weights.y);
     float3 r3 = getRainRing(uv * 1.3f + float2(0.6f, 0.85f), times.z, weights.z);

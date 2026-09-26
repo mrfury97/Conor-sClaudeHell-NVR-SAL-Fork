@@ -145,7 +145,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float3 refractionN;                                                      // calmer: for the bed seen through
     float3 N = getWaves(wavePos, distance, waveField, WATER_WAVE_SCALE, waveHeight, waveFold, refractionN);
 #if !WATER_INTERIOR && !WATER_LOD
-    N = getRainRipples(IN.LTEXCOORD_7, N, distance, TESR_WetWorldData.x);
+    N = getRainRipples(flatPos, N, distance, TESR_WetWorldData.x);
 #endif
 #if WATER_WADING
     N = getWadingNormal(IN.LTEXCOORD_6.xy, BlendRadius.w, N);
