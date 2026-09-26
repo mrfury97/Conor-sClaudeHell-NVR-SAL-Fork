@@ -268,8 +268,16 @@ float4 WaterReflections(VSOUT IN) : COLOR0
 	if (debugView == 6) return firstBehind < 0.0f ? black : (firstBehind <= 1.0f ? float4(0.0f, 1.0f - firstBehind * 0.7f, 0.0f, 1.0f) : float4(saturate(firstBehind / 10.0f) * 0.7f + 0.3f, 0.0f, 0.0f, 1.0f));
 	if (confidence <= 0.0f) return debugView >= 3 ? black : color;
 
+	// Four taps around the hit, to soften the steps' noise; wider where the front stands in for an
+	// underside, whose single edge row would otherwise streak down the water. That underside is in
+	// its own shade (the pier's, over the water), so it is taken darker than the lit front.
 	float2 reflectedUV = lerp(start.xy, end.xy, hitT);
-	float3 reflection = linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV, 0.0f, 0.0f)).rgb);
+	float2 spread = TESR_ReciprocalResolution.xy * (loose ? 4.0f : 1.5f);
+	float3 reflection = linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x, -spread.y), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( spread.x, -spread.y), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2(-spread.x,  spread.y), 0.0f, 0.0f)).rgb)
+	                  + linearize(tex2Dlod(TESR_SourceBuffer, float4(reflectedUV + float2( spread.x,  spread.y), 0.0f, 0.0f)).rgb);
+	reflection *= loose ? 0.25f * 0.3f : 0.25f;
 	float amount = saturate(fresnel * confidence * strength);
 	if (debugView == 3) return float4(delinearize(reflection), 1.0f);
 	if (debugView == 4) return float4(amount.xxx, 1.0f);
