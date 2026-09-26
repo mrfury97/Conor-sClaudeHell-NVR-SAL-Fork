@@ -130,21 +130,36 @@ PS_OUTPUT main(PS_INPUT IN) {
     // its shadow, the glint, the scattering, the caustics -- are skipped when not.
     bool sunUp = any(sunLight > 0.0f);
 
+#if !WATER_BELOW && !WATER_LOD
+    // What lies behind the surface, and how deep the water is under this pixel: first, as the waves
+    // die down in the shallows. Derivatives: top level.
+    float4 straightPos = getStraightScreenPos(IN);
+    float2 straightUV = straightPos.xy / straightPos.w;
+    WaterScreenMap screenMap = getWaterScreenMap(surface, straightUV, straightPos);
+    float3 straightBed = getBedBehind(screenMap, surface, screenMap.viewZ, straightUV);   // what lies under this pixel
+    float2 straightPath = getWaterPathTo(straightBed, surface);   // x: path through the water, y: depth below
+    float shallow = getShallowWaves(straightPath.y);
+#else
+    float shallow = 1.0f;                                         // no depth known: open water
+#endif
+
     // Waves: the wave field, seen where the view ray really meets it (parallax), with the
-    // normal-map detail on top. Derivatives first, at the top level.
+    // normal-map detail on top, calmed in the shallows. Derivatives first, at the top level.
     float time = WATER_SECONDS;                                             // real seconds
     float2 flatPos = surface.xy + TESR_CameraPosition.xy;                    // world position on the flat mesh
     float2 flatDX = ddx(flatPos);
     float2 flatDY = ddy(flatPos);
     float pixelSize = max(length(flatDX), length(flatDY));                  // world units per pixel here
     WaveField waveField = getWaveField(time, pixelSize);
+    waveField.height *= shallow;                                             // lower waves, and so less parallax
+    waveField.slope *= shallow;
     float2 wavePos = getWaveParallax(flatPos, eyeDirection, waveField, distance, pixelSize);
     float2 waveDX = ddx(wavePos);                                            // for the foam, read in a branch
     float2 waveDY = ddy(wavePos);
     float waveHeight;                                                        // -1 trough to 1 crest
     float waveFold;                                                          // crest folding, for whitecaps
     float3 refractionN;                                                      // calmer: for the bed seen through
-    float3 N = getWaves(wavePos, distance, waveField, waveHeight, waveFold, refractionN);
+    float3 N = getWaves(wavePos, distance, waveField, shallow, waveHeight, waveFold, refractionN);
 #if !WATER_INTERIOR && !WATER_LOD
     N = getRainRipples(flatPos, flatDX, flatDY, N, distance, TESR_WetWorldData.x);
 #endif
@@ -157,6 +172,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     float lookupOffset = (saturate(distance * 0.002f) * (-4.0f + VarAmounts.w)) + 4.0f;
     WATER_DEBUG(5, saturate((roughness - WATER_ROUGHNESS) / 0.4f));
     WATER_DEBUG(12, waveHeight * 0.5f + 0.5f);
+    WATER_DEBUG(16, shallow);
 
 #if WATER_BELOW
     // ---- Underwater, looking up at the surface --------------------------------------------------
@@ -216,11 +232,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
 #else
     // ---- The water surface ------------------------------------------------------------------
-    float4 straightPos = getStraightScreenPos(IN);
-    float2 straightUV = straightPos.xy / straightPos.w;
-    WaterScreenMap screenMap = getWaterScreenMap(surface, straightUV, straightPos);   // derivatives: top level
-    float3 straightBed = getBedBehind(screenMap, surface, screenMap.viewZ, straightUV);   // what lies under this pixel
-    float2 straightPath = getWaterPathTo(straightBed, surface);   // x: path through the water, y: depth below
+    // (straightUV, screenMap, straightBed, straightPath: above, before the waves.)
     WATER_DEBUG(13, saturate(getDepthCalibration(screenMap) * 0.5f));
     WATER_DEBUG(14, getSceneEmpty(screenMap, straightUV) > 0.5f ? float3(1.0f, 0.0f, 0.0f) : saturate(straightPath.y / (100.0f * WATER_UNITS_PER_METRE)).xxx);
     WATER_DEBUG(15, float3(saturate(getDepthCopies(screenMap, surface, straightUV).xy / (20.0f * WATER_UNITS_PER_METRE)), getDepthCopies(screenMap, surface, straightUV).z));

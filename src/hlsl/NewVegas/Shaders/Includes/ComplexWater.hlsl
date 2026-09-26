@@ -31,7 +31,7 @@ struct PS_OUTPUT {
 //   TESR_WaterLighting3    x: Foam            y: FoamWidth        z: ShoreFadeWidth        w: ReflectionBlur
 //   TESR_WaterLighting4    x: Caustics        y: CausticsScale    z: 1 outdoors, 0 indoors (per frame)  w: RippleSize
 //   TESR_WaterScatterColor rgb: ScatterColor, w: 1 when set (else the water form's own colours)
-//   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour
+//   TESR_WaterAbsorption   rgb: AbsorptionColor, the absorption rate of each colour  w: ShallowWaves (units)
 //   TESR_WaterWaves        x: WaveHeight (units, trough to crest)  y: WaveLength (units, crest to crest)  z: WaveDirection (radians)  w: WaveSteepness
 //   TESR_WaterWaves2       x: Whitecaps       y: WaveParallax     z: RefractionBlur        w: RefractionDispersion
 //   TESR_WaterLighting5    x: 1 when the game's reflection map is rendered (WaterReflections GameReflections on)  y: FoamScale (units)  z: SkyTint  w: Ripples
@@ -301,6 +301,8 @@ float2 getWaterPathTo(float3 bed, float3 waterPoint){
 //     depth taken before any water; blue where the first shows the water itself (the second is
 //     used there). Yellow-grey: both agree. Green: something drawn in between is in front (the pier,
 //     or other water at another height)
+//  16 shallow water (ShallowWaves): how much of the waves are left, black calm at the shore to white
+//     open water
 // ---------------------------------------------------------------------------------------------
 #ifndef WATER_DEBUG_VIEW
     #define WATER_DEBUG_VIEW 0
@@ -599,6 +601,15 @@ float2 getWaveParallax(float2 worldPos, float3 eyeDirection, WaveField field, fl
     return result;
 }
 
+// Shallow water (ShallowWaves): waves feel the bottom and die down as the water shallows, so at the
+// shore the surface lies nearly flat and glassy against the ground rather than its crests cutting
+// through it. depthBelow: the depth of water under the pixel. 1 in open water, falling smoothly to 0
+// at the waterline over ShallowWaves units of depth. 0 (the setting): waves run to the edge.
+float getShallowWaves(float depthBelow){
+    float depth = TESR_WaterAbsorption.w;
+    return depth > 0.0f ? smoothstep(0.0f, depth, depthBelow) : 1.0f;
+}
+
 // Gusts: a very large, slow pattern over the water -- the wave texture's own height, 24 times the
 // first layer's size, drifting over ten minutes -- that roughens some stretches and calms others, as
 // gusts of wind do. Breaks up the tiling that would otherwise line up into a grid across kilometres
@@ -616,13 +627,17 @@ float getWaveGusts(WaveField field, float2 worldPos){
 // the fine detail at 40%. The fine ripples glint and shade the surface, but at full strength they
 // would scribble the bed seen through them into squiggles; what a bed seen through real water mostly
 // follows is the larger waves.
-float3 getWaves(float2 worldPos, float distance, WaveField field, out float heightOut, out float foldOut, out float3 refractionNormal){
+// shallow: getShallowWaves, already applied to the field; here to the crest folding, and to the
+// ripples, which keep a third of their strength in the shallowest water (a breath of wind still
+// ruffles it).
+float3 getWaves(float2 worldPos, float distance, WaveField field, float shallow, out float heightOut, out float foldOut, out float3 refractionNormal){
     float2 slope;
     float height = getWaveFieldSurface(field, worldPos, slope, foldOut);
+    foldOut *= shallow;
     heightOut = TESR_WaterWaves.x > 0.0f ? clamp(height / (TESR_WaterWaves.x * 0.5f), -1.0f, 1.0f) : 0.0f;
     float3 detail = getWaveNormal(worldPos, distance);
     // A surface of slope s faces (-s, 1); the detail normal already faces its own way.
-    float2 detailSlope = detail.xy / max(detail.z, 0.1f);
+    float2 detailSlope = detail.xy / max(detail.z, 0.1f) * lerp(0.35f, 1.0f, shallow);
     // Gusts roughen the waves and their ripples together (not the whitecaps: those follow the crests' folding alone).
     float gust = getWaveGusts(field, worldPos);
     slope *= gust;

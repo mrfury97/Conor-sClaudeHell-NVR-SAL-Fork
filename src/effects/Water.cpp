@@ -242,4 +242,6 @@ void WaterShaders::ReadComplexWater(const char* Section, ComplexWaterStruct* Wat
 	// Absorption rate per colour. All three 0 (also missing) means real water's, red fastest.
 	D3DXVECTOR4 absorption(Read("AbsorptionColorR", 0.0f, 5.0f), Read("AbsorptionColorG", 0.0f, 5.0f), Read("AbsorptionColorB", 0.0f, 5.0f), 0.0f);
 	Water->Absorption = (absorption.x + absorption.y + absorption.z > 0.0f) ? absorption : D3DXVECTOR4(1.0f, 0.4f, 0.25f, 0.0f);
+	// Shallow water: the depth (units) over which the waves die down toward the shore. 0: none.
+	Water->Absorption.w = Read("ShallowWaves", 0.0f, 1000.0f);
 }
