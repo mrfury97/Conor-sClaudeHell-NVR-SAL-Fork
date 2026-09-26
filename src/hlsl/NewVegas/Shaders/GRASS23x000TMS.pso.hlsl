@@ -25,7 +25,7 @@
 // c146/c147: past PBRScale/SkyAmbient's c134-c145. The top is SkyAmbient's other skylighting mode,
 // whose TESR_SkyIrradiance[9] array runs c137-c145.
 float4 TESR_GrassLighting  : register(c146); // x: translucency, y: roundness, z: root darkening, w: specular
-float4 TESR_GrassLighting2 : register(c147); // x: translucency focus, y: specular glossiness, z: debug view, w: diffuse wrap
+float4 TESR_GrassLighting2 : register(c147); // x: translucency focus, y: specular glossiness, z: unused, w: diffuse wrap
 float4 TESR_GrassLighting3 : register(c148); // x: root darkening height (units), y: point light strength
 
 // Point lights: NVR's nearby-light lists, filled every frame by ShaderManager::GetNearbyLights before
@@ -65,7 +65,7 @@ struct PS_INPUT {
     float2 uv             : TEXCOORD0;
     float4 shadowWorldPos : TEXCOORD1;
     float4 blade          : TEXCOORD2_centroid;   // xyz: sun normal, w: height above the clump's base (units)
-    float4 bladeOffset    : TEXCOORD3_centroid;   // xyz: offset from the clump centre, w: VS variant 0-3
+    float4 bladeOffset    : TEXCOORD3_centroid;   // xyz: offset from the clump centre
     float3 ambient        : TEXCOORD4_centroid;
     float4 sun            : TEXCOORD5_centroid;   // .w = distance fade
     float4 sunColor       : TEXCOORD6_centroid;   // xyz: sun before N.L, w: GRASS_VS_SENTINEL
@@ -186,31 +186,6 @@ PS_OUTPUT main(PS_INPUT IN) {
     litColor += grassData ? PBRLight(sunColor * shadow) * sheen : 0.0f;
 
     OUT.color.rgb = lerp(litColor, IN.fog.rgb, IN.fog.w);
-
-    // Debug views ([Shaders.Grass.Main] DebugView): one term of the lighting on its own, unfogged,
-    // keeping the blade's alpha so the grass keeps its shape. All read the live settings, so a
-    // slider at 0 shows as its term going flat or black.
-    //   1 rounded normals, as colour      2 sun diffuse: wrapped N.L x shadow   3 sun shadow alone
-    //   4 translucency: the glow factor   5 sheen    6 root (black) to tip (white) over RootDarkeningHeight
-    //   7 which grass vertex shader fed this pixel: red 000, green 001, blue 002, yellow 003
-    //   8 point lights alone, in their own colour
-    // In every view, magenta = drawn by this shader but WITHOUT grass data (not one of the four grass
-    // vertex shaders -- e.g. hair), so none of the grass lighting applies to it.
-    float debugView = TESR_GrassLighting2.z;
-    if (debugView > 0.5f) {
-        float3 view = N * 0.5f + 0.5f;
-        view = debugView > 1.5f ? wrapped * shadow : view;
-        view = debugView > 2.5f ? shadow : view;
-        view = debugView > 3.5f ? saturate(through * shadow) : view;
-        view = debugView > 4.5f ? saturate(sheen * shadow) : view;
-        view = debugView > 5.5f ? tip : view;
-        // Selects rather than an array: ps_3_0 cannot index a local array with a runtime value.
-        float variant = IN.bladeOffset.w;
-        float3 variantColour = variant < 0.5f ? float3(1, 0, 0) : (variant < 1.5f ? float3(0, 1, 0) : (variant < 2.5f ? float3(0, 0, 1) : float3(1, 1, 0)));
-        view = debugView > 6.5f ? variantColour : view;
-        view = debugView > 7.5f ? saturate(pointLight) : view;
-        OUT.color.rgb = grassData ? view : float3(1.0f, 0.0f, 1.0f);
-    }
 
     return OUT;
 };

@@ -368,7 +368,6 @@ RootDarkeningHeight = 20.0            # [1-200] Game units up from the base of e
 Specular = 0.15                       # [0.0-2.0] Soft sheen on blades facing between you and the sun. Needs Roundness above 0 to vary across a clump. 0 off.
 SpecularGlossiness = 16.0             # [1-128] Size of the sheen: higher is a smaller, sharper highlight; lower a broad, soft one.
 PointLights = 1.0                     # [0.0-3.0] Strength of point lights (campfires, lamps, torches) on grass. Vanilla grass ignores them completely; this uses NVR's nearby-light list, the same one the water uses, with the object shaders' attenuation and the same DiffuseWrap as the sun. No point-light shadows on grass. 0 off.
-DebugView = 0                         # [0-8] Shows one term of the grass lighting on its own. 1 rounded normals as colour (a clump should shade from one colour to another across it; one flat colour means Roundness is 0 or the data is missing). 2 sun diffuse, N.L times shadow. 3 sun shadow alone (black in shadow) -- shadows falling on grass should appear here. 4 translucency glow factor: brightest looking toward the sun. 5 sheen. 6 root (black) to tip (white) over RootDarkeningHeight: each clump should run black at the ground to white higher up. 7 which grass vertex shader drew the pixel: red 000, green 001, blue 002, yellow 003. 8 point lights alone, in their own colour.
 
 [_Shaders.Grass.Status]
 Enabled = true                        # Replaces the grass shaders.

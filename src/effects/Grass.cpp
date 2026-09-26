@@ -31,7 +31,6 @@ void GrassShaders::UpdateSettings() {
 	float gloss = TheSettingManager->GetSettingF(Section, "SpecularGlossiness");
 	Constants.Lighting2.x = focus > 0.0f ? std::clamp(focus, 1.0f, 32.0f) : 4.0f;
 	Constants.Lighting2.y = gloss > 0.0f ? std::clamp(gloss, 1.0f, 128.0f) : 16.0f;
-	Constants.Lighting2.z = (float)std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 8);
 	// 0 is plain Lambert, a real setting, so a missing key is taken at its word.
 	Constants.Lighting2.w = std::clamp(TheSettingManager->GetSettingF(Section, "DiffuseWrap"), 0.0f, 1.0f);
 	float rootHeight = TheSettingManager->GetSettingF(Section, "RootDarkeningHeight");

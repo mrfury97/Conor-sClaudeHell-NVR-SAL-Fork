@@ -2200,10 +2200,6 @@ static const char* kTAADebugNames[] = {
 static const char* kCinematicDofDebugNames[] = {
 	"0 - Off", "1 - Blur map (red far, blue near)", "2 - Weapon blur", "3 - Focus & autofocus taps",
 };
-static const char* kGrassDebugNames[] = {
-	"0 - Off", "1 - Rounded normals", "2 - Sun diffuse", "3 - Sun shadow", "4 - Translucency",
-	"5 - Sheen", "6 - Root to tip", "7 - Vertex shader variant", "8 - Point lights",
-};
 static const char* kWeaponDofNames[] = {
 	"0 - Off", "1 - Hip-fire only", "2 - Always",
 };
@@ -2236,7 +2232,6 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 	{ "Shaders.CinematicDOF.Main.DebugView",                   ENUM_OPT(kCinematicDofDebugNames) },
 	{ "Shaders.CinematicDOF.Main.Mode",                        ENUM_OPT(kCinematicDofModeNames) },
 	{ "Shaders.TAA.Main.DebugView",                            ENUM_OPT(kTAADebugNames) },
-	{ "Shaders.Grass.Main.DebugView",                          ENUM_OPT(kGrassDebugNames) },
 };
 
 #undef ENUM_OPT
