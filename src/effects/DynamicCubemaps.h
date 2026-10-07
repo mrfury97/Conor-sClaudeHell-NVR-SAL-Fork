@@ -23,7 +23,10 @@ public:
 	struct DynamicCubemapsStruct {
 		D3DXVECTOR4		Face;       // x face, y 1 / face size, z roughness, w coverage kept per frame where nothing is seen
 		D3DXVECTOR4		Fallback;   // rgb the room's ambient light (linear), w 1 outdoors
-		D3DXVECTOR4		Capture;    // y 1 to restart the capture
+		D3DXVECTOR4		Capture;    // y 1 to restart the capture, z 1 tracking positions, w coverage kept per frame without
+		D3DXVECTOR4		Motion;     // xyz camera minus anchor, w KeepDistance
+		D3DXVECTOR4		AnchorShift;// xyz old anchor minus new anchor (the frame it moves)
+		D3DXVECTOR4		Fade;       // x walked-into distance, y KeepDistance, z kept per frame while out of range, w kept per frame by the stale fade
 		D3DXVECTOR4		Debug;      // x DebugView (0 off, 1 panorama, 2 mirror, 3 coverage), y mip shown
 	};
 	DynamicCubemapsStruct	Constants = {};
@@ -33,6 +36,10 @@ public:
 	IDirect3DCubeTexture9*	GetEnvironment() { return Valid ? Env : nullptr; }
 
 	void	RenderCubemaps(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget);
+
+	// Set by MaterialMaps (NewVegas/Hooks/Shaders.cpp) whenever a material with an _rmaos map is drawn;
+	// RenderCubemaps updates the cube only on frames that drew one (or every IdleInterval seconds).
+	bool	PBRDrawn = false;
 	// [Shaders.DynamicCubemaps.Main] DebugView over the finished frame (end of ShaderManager::RenderEffects).
 	void	RenderDebug(IDirect3DDevice9* Device, IDirect3DSurface9* RenderTarget);
 
@@ -42,6 +49,13 @@ public:
 
 private:
 	IDirect3DCubeTexture9*	CaptureCube[2] = {};
+	IDirect3DCubeTexture9*	PositionCube[2] = {};      // where each capture texel's surface is (Capture in the .fx)
+	IDirect3DSurface9*		PositionSurfaces[2][6] = {};
+	bool		TrackPositions = false;    // the device takes two render targets at once
+	float		SinceUpdate = 1e6f;        // seconds since the cube was last updated: the fades' time step
+	D3DXVECTOR3	Anchor = { 0.0f, 0.0f, 0.0f };
+	D3DXVECTOR3	PendingAnchorShift = { 0.0f, 0.0f, 0.0f };
+	struct { float KeepDistance, DropTime, StaleHalfLife; } Tracking = { 2000.0f, 1.0f, 0.0f };
 	IDirect3DCubeTexture9*	Inferred = nullptr;
 	IDirect3DCubeTexture9*	Env = nullptr;
 	IDirect3DSurface9*		CaptureSurfaces[2][6][Mips] = {};
@@ -59,9 +73,17 @@ private:
 	D3DXHANDLE	FallbackHandle = NULL;
 	D3DXHANDLE	CaptureHandle = NULL;
 	D3DXHANDLE	DebugHandle = NULL;
+	D3DXHANDLE	MotionHandle = NULL;
+	D3DXHANDLE	AnchorShiftHandle = NULL;
+	D3DXHANDLE	FadeHandle = NULL;
+	D3DXHANDLE	BasisHandles[6] = {};      // CubeForward, CubeRight, CubeUp, CubeViewForward, CubeViewRight, CubeViewUp
+	D3DXVECTOR4	ViewBasis[6][3] = {};      // per face: forward, right, up in view space (this update's camera)
+	float		FaceSince[6] = {};         // seconds since each face was last captured (faces out of view skip updates)
+	UINT		Updates = 0;
 
 	bool	EnsureTextures(IDirect3DDevice9* Device);
 	void	ReleaseTextures();
 	void	DrawFace(IDirect3DDevice9* Device, IDirect3DSurface9* Target, UINT Face, UINT Mip, float Roughness);
+	void	SetFaceFade(UINT Face);
 	void	DownsampleMips(IDirect3DDevice9* Device, IDirect3DSurface9* Surfaces[6][Mips]);
 };

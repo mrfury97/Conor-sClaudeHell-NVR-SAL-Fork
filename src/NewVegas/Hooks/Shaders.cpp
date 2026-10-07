@@ -194,6 +194,7 @@ namespace MaterialMaps {
         if (!Property || !Property->ppTextures[0] || !Property->ppTextures[0][0]) return;
         IDirect3DTexture9* Map = Find(Property->ppTextures[0][0]);
         if (!Map) return;
+        TheShaderManager->Effects.DynamicCubemaps->PBRDrawn = true;   // the cube is worth updating this frame
 
         IDirect3DDevice9* Device = TheRenderManager->device;
         // The game's env map passes come after the mesh's light, texture and highlight passes, so

@@ -8,7 +8,8 @@
 //
 //   0 Capture   every texel of the capture cube looks along four directions across its footprint;
 //               where they are on screen and far enough away, it takes the scene's colour there
-//               (filtered, decoded to linear, averaged), blended 50/50 with what it held. Elsewhere it keeps what it held, its
+//               (filtered, decoded to linear, averaged), blended 50/50 with what it held, and writes
+//               where that surface is to a second cube (position tracking, see Capture). Elsewhere it keeps what it held, its
 //               coverage decaying. Stored premultiplied by coverage, so the mip chain (built by
 //               box-filtering the faces) averages only what was seen.
 //   1 Infer     fills what was never seen: coarser and coarser mips until the coverage reaches 1,
@@ -23,9 +24,21 @@
 #define CUBE_MIPS 9      // DynamicCubemapsEffect::Mips
 #define CUBE_SIZE 256.0f // DynamicCubemapsEffect::Size
 
-float4 CubeFace;       // x face (0-5, D3D9 order +X -X +Y -Y +Z -Z), y 1 / face size, z roughness (prefilter), w coverage kept per frame
+float4 CubeFace;       // x face (0-5, D3D9 order +X -X +Y -Y +Z -Z), y 1 / face size, z roughness (prefilter)
+// The current face's basis: direction = Forward + s * Right + t * Up for s, t in -1..1 across the face
+// (D3D9's cube addressing), in world space and the same three already in view space, so a direction's
+// view-space vector is the same sum, without a branch per face or a matrix per sample.
+float4 CubeForward;
+float4 CubeRight;
+float4 CubeUp;
+float4 CubeViewForward;
+float4 CubeViewRight;
+float4 CubeViewUp;
 float4 CubeFallback;   // rgb the room's ambient light (linear), w 1 outdoors
-float4 CubeCapture;    // y 1 to ignore what the cube held (reset)
+float4 CubeCapture;    // y 1 to ignore what the cube held (reset), z 1 tracking positions, w coverage kept per frame without
+float4 CubeMotion;     // xyz the camera minus the anchor positions are stored against, w KeepDistance
+float4 CubeAnchorShift;// xyz the old anchor minus the new one: non-zero only on the frame the anchor moves
+float4 CubeFade;       // x distance under which a stored surface fades (walked into), y KeepDistance, z coverage kept per frame while out of range, w kept per frame by the stale fade
 
 float4 TESR_SkyIrradiance[9];
 
@@ -36,6 +49,7 @@ sampler2D TESR_DepthBufferViewModel : register(s2) = sampler_state { ADDRESSU = 
 samplerCUBE PreviousCube : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 samplerCUBE CaptureCube : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 samplerCUBE InferredCube : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+samplerCUBE PreviousPositions : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 // Debug view only (technique Debug).
 samplerCUBE EnvCube : register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_NormalsBuffer : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -64,21 +78,19 @@ VSOUT FrameVS(VSIN IN) {
     return OUT;
 }
 
-// The world direction through a point of the current face, in texels (texel = vpos + 0..1 each
-// way), inverting D3D9's cube face selection (sc, tc and the major axis per face, as texCUBE uses them).
+// The face coordinates (-1..1) of a point of the current face, in texels (texel = vpos + 0..1 each way).
+float2 CubeFaceCoords(float2 texel) {
+    return texel * (2.0f * CubeFace.y) - 1.0f;
+}
+
+// The world direction through a point of the current face, unnormalised and normalised.
+float3 CubeVectorAt(float2 texel) {
+    float2 st = CubeFaceCoords(texel);
+    return CubeForward.xyz + st.x * CubeRight.xyz + st.y * CubeUp.xyz;
+}
+
 float3 CubeDirectionAt(float2 texel) {
-    float2 st = texel * CubeFace.y;
-    float sc = 2.0f * st.x - 1.0f;
-    float tc = 2.0f * st.y - 1.0f;
-    float face = CubeFace.x;
-    float3 d;
-    if (face < 0.5f)      d = float3(1.0f, -tc, -sc);
-    else if (face < 1.5f) d = float3(-1.0f, -tc, sc);
-    else if (face < 2.5f) d = float3(sc, 1.0f, tc);
-    else if (face < 3.5f) d = float3(sc, -1.0f, -tc);
-    else if (face < 4.5f) d = float3(sc, -tc, 1.0f);
-    else                  d = float3(-sc, -tc, -1.0f);
-    return normalize(d);
+    return normalize(CubeVectorAt(texel));
 }
 
 // The direction through the centre of the texel at vpos.
@@ -90,9 +102,14 @@ float3 CubeDirection(float2 vpos) {
 // Closer than this, a surface is the player or what they hold, not the surroundings (CS: 16.5).
 #define CAPTURE_MIN_DISTANCE 24.0f
 
-// One of a texel's four samples: the scene's linear colour along dir, alpha 1 where it was seen.
-float4 CaptureSample(float3 dir) {
-    float3 view = mul(float4(dir, 0.0f), TESR_ViewTransform).xyz;
+// One of a texel's four samples, at a point of the texel: the scene's linear colour there, alpha 1
+// where it was seen, and the surface's position from the camera. The world and view vectors are the
+// same unnormalised sum of the face's basis, so view depth over the view vector's z scales the world
+// vector straight to the surface.
+float4 CaptureSample(float2 texel, out float3 position) {
+    position = 0.0f;
+    float2 st = CubeFaceCoords(texel);
+    float3 view = CubeViewForward.xyz + st.x * CubeViewRight.xyz + st.y * CubeViewUp.xyz;
     [branch] if (view.z > 0.01f) {
         float3 screen = projectPosition(view);
         [branch] if (all(abs(screen.xy - 0.5f) < 0.5f)) {
@@ -101,6 +118,7 @@ float4 CaptureSample(float3 dir) {
             [branch] if (depth > CAPTURE_MIN_DISTANCE && !viewModel) {
                 float3 color = tex2Dlod(TESR_RenderedBuffer, float4(screen.xy, 0.0f, 0.0f)).rgb;
                 color *= color;   // linear: the frame is gamma 2 encoded with LinearLighting, display gamma without
+                position = (CubeForward.xyz + st.x * CubeRight.xyz + st.y * CubeUp.xyz) * (depth / view.z);
                 return float4(min(max(color, 0.0f), 64.0f), 1.0f);   // the sun's disc would otherwise flood whole mips
             }
         }
@@ -108,21 +126,75 @@ float4 CaptureSample(float3 dir) {
     return 0.0f;
 }
 
+// One sample folded into the texel's totals: colour and seen count, and for near surfaces their
+// position and count (far ones and the sky are only counted in seen).
+void AddSample(float2 texel, inout float4 seen, inout float4 near) {
+    float3 position;
+    float4 s = CaptureSample(texel, position);
+    seen += s;
+    [flatten] if (s.a > 0.0f && dot(position, position) < CubeMotion.w * CubeMotion.w) near += float4(position, 1.0f);
+}
+
+struct CaptureOutput {
+    float4 color : COLOR0;      // the capture cube: linear colour x coverage, coverage
+    float4 position : COLOR1;   // the position cube: xyz the surface minus the anchor, w its share of near surfaces
+};
+
 // Four filtered samples per texel on a rotated grid across its footprint: one point sample per
 // texel caught or missed thin bright details (railings, string lights) from texel to texel, which
 // showed as jagged, shimmering edges in sharp reflections.
-float4 Capture(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
-    float4 previous = CubeCapture.y > 0.5f ? 0.0f : texCUBElod(PreviousCube, float4(CubeDirection(vpos), 0.0f));
+//
+// Position tracking, as Community Shaders' Dynamic Cubemaps (UpdateCubemapCS.hlsl). Each texel also
+// stores where the surface it captured is (relative to an anchor near the camera, so FP16 keeps it
+// to a fraction of a unit, rebased as the camera moves away). Off screen a texel keeps what it holds
+// for as long as the camera stays within KeepDistance of that surface, however it turns or moves,
+// and fades once the camera is farther than that or right up against the surface: CS's distance
+// rule. Differences from CS: surfaces captured beyond KeepDistance, and the sky, are kept off screen
+// (CS drops them), and nearby content is not dimmed by its distance (CS does, and undoes it with a
+// luminance normalisation when shading, which this build does not use). StaleHalfLife adds a time
+// fade if set (off by default, as in CS).
+CaptureOutput Capture(VSOUT IN, float2 vpos : VPOS) {
+    float3 dir = CubeDirection(vpos);
+    bool reset = CubeCapture.y > 0.5f;
+    float4 previous = reset ? 0.0f : texCUBElod(PreviousCube, float4(dir, 0.0f));
+    float4 previousPosition = reset ? 0.0f : texCUBElod(PreviousPositions, float4(dir, 0.0f));
+    previousPosition.xyz += CubeAnchorShift.xyz;
 
-    float4 seen = CaptureSample(CubeDirectionAt(vpos + float2(0.375f, 0.125f)))
-                + CaptureSample(CubeDirectionAt(vpos + float2(0.875f, 0.375f)))
-                + CaptureSample(CubeDirectionAt(vpos + float2(0.125f, 0.625f)))
-                + CaptureSample(CubeDirectionAt(vpos + float2(0.625f, 0.875f)));
+    float4 seen = 0.0f;
+    float4 near = 0.0f;
+    AddSample(vpos + float2(0.375f, 0.125f), seen, near);
+    AddSample(vpos + float2(0.875f, 0.375f), seen, near);
+    AddSample(vpos + float2(0.125f, 0.625f), seen, near);
+    AddSample(vpos + float2(0.625f, 0.875f), seen, near);
+
+    CaptureOutput OUT;
     [branch] if (seen.a > 0.0f) {
-        // The part of the texel that was seen blends in by its share of the texel.
-        return lerp(previous, float4(seen.rgb / seen.a, 1.0f), 0.5f * 0.25f * seen.a);
+        // The part of the texel that was seen blends in by its share of the texel; what it held
+        // before is replaced outright where it held next to nothing.
+        float weight = 0.5f * 0.25f * seen.a;
+        OUT.color = lerp(previous, float4(seen.rgb / seen.a, 1.0f), weight);
+        float positionWeight = previous.a < 0.05f ? 1.0f : weight;
+        float3 position = near.a > 0.0f ? CubeMotion.xyz + near.xyz / near.a : previousPosition.xyz;
+        OUT.position = lerp(previousPosition, float4(position, near.a / seen.a), positionWeight);
+        return OUT;
     }
-    return previous * CubeFace.w;
+
+    float keep = CubeFade.w;
+    [branch] if (CubeCapture.z > 0.5f) {
+        // Out of range: farther than KeepDistance from the stored surface (fully out half as far
+        // again), or nearer than CubeFade.x (walked into it). Far surfaces and the sky (w 0) are kept.
+        // A texel that never captured anything holds w 0 too.
+        float nearShare = saturate(previousPosition.w * 2.0f);
+        float distance = length(previousPosition.xyz - CubeMotion.xyz);
+        float outOfRange = saturate((distance - CubeFade.y) / (0.5f * CubeFade.y))
+                         + saturate((CubeFade.x - distance) / CubeFade.x);
+        keep *= lerp(1.0f, CubeFade.z, saturate(outOfRange) * nearShare);
+    }
+    else
+        keep *= CubeCapture.w;   // no second render target: the plain time fade
+    OUT.color = previous * keep;
+    OUT.position = previousPosition;
+    return OUT;
 }
 
 // --- 1: infer -----------------------------------------------------------------------------------

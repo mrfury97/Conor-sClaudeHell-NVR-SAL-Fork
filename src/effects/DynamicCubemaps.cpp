@@ -5,9 +5,36 @@
 // Farther than this between two frames, the camera went through a door or a load: what the cube
 // holds is somewhere else.
 static const float DynamicCubemapJumpDistance = 1500.0f;
+// The anchor stored positions are relative to moves to the camera once it is this far away. FP16
+// steps grow with the value: within 500 units of the anchor a surface near the camera is stored to
+// a quarter or half a unit. (At 2000 the steps were 1-2
+// units, enough to fade close surfaces with the camera standing still.)
+static const float DynamicCubemapAnchorRange = 500.0f;
+// Only materials with an _rmaos map reflect the cube. On frames that draw none it is updated only
+// this often, in seconds, so it is not out of date when one comes into view.
+static const float DynamicCubemapIdleInterval = 0.5f;
+// Faces that point away from everything on screen cannot capture anything new; only their slow,
+// distance-based fade changes. They are captured every this many updates and copied in between.
+static const UINT DynamicCubemapHiddenFaceInterval = 8;
 
+// Each face's basis in D3D9's cube addressing: direction = Forward + s * Right + t * Up, s and t
+// -1..1 across the face from its top left (the sc/tc of the cube face selection, inverted).
+static const D3DXVECTOR3 FaceBasis[6][3] = {
+	{ D3DXVECTOR3( 1, 0, 0), D3DXVECTOR3( 0, 0,-1), D3DXVECTOR3( 0,-1, 0) },   // +X
+	{ D3DXVECTOR3(-1, 0, 0), D3DXVECTOR3( 0, 0, 1), D3DXVECTOR3( 0,-1, 0) },   // -X
+	{ D3DXVECTOR3( 0, 1, 0), D3DXVECTOR3( 1, 0, 0), D3DXVECTOR3( 0, 0, 1) },   // +Y
+	{ D3DXVECTOR3( 0,-1, 0), D3DXVECTOR3( 1, 0, 0), D3DXVECTOR3( 0, 0,-1) },   // -Y
+	{ D3DXVECTOR3( 0, 0, 1), D3DXVECTOR3( 1, 0, 0), D3DXVECTOR3( 0,-1, 0) },   // +Z
+	{ D3DXVECTOR3( 0, 0,-1), D3DXVECTOR3(-1, 0, 0), D3DXVECTOR3( 0,-1, 0) },   // -Z
+};
+
+// Changing a setting no longer restarts the capture (it used to, on every change anywhere in NVR).
 void DynamicCubemapsEffect::UpdateSettings() {
-	Reset = true;
+	const char* Section = "Shaders.DynamicCubemaps.Main";
+	auto orDefault = [](float v, float d) { return v > 0.0f ? v : d; };
+	Tracking.KeepDistance = (std::max)(orDefault(TheSettingManager->GetSettingF(Section, "KeepDistance"), 2000.0f), 100.0f);
+	Tracking.DropTime = std::clamp(orDefault(TheSettingManager->GetSettingF(Section, "DropTime"), 1.0f), 0.05f, 30.0f);
+	Tracking.StaleHalfLife = (std::max)(TheSettingManager->GetSettingF(Section, "StaleHalfLife"), 0.0f);   // 0: no time fade
 	Constants.Debug.x = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.DynamicCubemaps.Main", "DebugView"), 0, 3);
 	Constants.Debug.y = std::clamp(TheSettingManager->GetSettingF("Shaders.DynamicCubemaps.Main", "DebugRoughness"), 0.0f, 1.0f) * (Mips - 1);
 }
@@ -41,7 +68,11 @@ void DynamicCubemapsEffect::UpdateConstants() {
 	Constants.Fallback.w = isExterior ? 1.0f : 0.0f;
 
 	Constants.Face.y = 1.0f / Size;
-	Constants.Face.w = 0.995f;   // out of view, a texel's coverage halves in about 140 frames and the fallback returns
+
+	SinceUpdate += (float)TheFrameRateManager->ElapsedTime;
+	Constants.Fade.x = 32.0f;   // walked into: a little past the capture's own minimum distance (24)
+	Constants.Fade.y = Tracking.KeepDistance;
+	Constants.Motion.w = Tracking.KeepDistance;      // captured farther than this: kept off screen, like the sky
 }
 
 // --- Textures -------------------------------------------------------------------------------------
@@ -53,6 +84,9 @@ void DynamicCubemapsEffect::ReleaseTextures() {
 		if (InferredSurfaces[f][m]) { InferredSurfaces[f][m]->Release(); InferredSurfaces[f][m] = nullptr; }
 		if (EnvSurfaces[f][m]) { EnvSurfaces[f][m]->Release(); EnvSurfaces[f][m] = nullptr; }
 	}
+	for (int c = 0; c < 2; c++) for (int f = 0; f < 6; f++)
+		if (PositionSurfaces[c][f]) { PositionSurfaces[c][f]->Release(); PositionSurfaces[c][f] = nullptr; }
+	for (int c = 0; c < 2; c++) if (PositionCube[c]) { PositionCube[c]->Release(); PositionCube[c] = nullptr; }
 	for (int c = 0; c < 2; c++) if (CaptureCube[c]) { CaptureCube[c]->Release(); CaptureCube[c] = nullptr; }
 	if (Inferred) { Inferred->Release(); Inferred = nullptr; }
 	if (Env) { Env->Release(); Env = nullptr; }
@@ -85,13 +119,33 @@ bool DynamicCubemapsEffect::EnsureTextures(IDirect3DDevice9* Device) {
 		return false;
 	}
 
+	// Position tracking writes a second render target in the capture pass.
+	D3DCAPS9 Caps;
+	Device->GetDeviceCaps(&Caps);
+	TrackPositions = Caps.NumSimultaneousRTs >= 2;
+	for (int c = 0; TrackPositions && c < 2; c++) {
+		if (FAILED(Device->CreateCubeTexture(Size, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A16B16G16R16F, D3DPOOL_DEFAULT, &PositionCube[c], NULL))) {
+			PositionCube[c] = nullptr;
+			TrackPositions = false;
+			break;
+		}
+		for (UINT f = 0; f < 6; f++)
+			if (FAILED(PositionCube[c]->GetCubeMapSurface((D3DCUBEMAP_FACES)f, 0, &PositionSurfaces[c][f]))) TrackPositions = false;
+	}
+	if (!TrackPositions) Logger::Log("[WARNING] DynamicCubemaps: no second render target; reflections fade by time instead of by position");
+
 	FaceHandle = Effect->GetParameterByName(NULL, "CubeFace");
 	FallbackHandle = Effect->GetParameterByName(NULL, "CubeFallback");
 	CaptureHandle = Effect->GetParameterByName(NULL, "CubeCapture");
 	DebugHandle = Effect->GetParameterByName(NULL, "CubeDebug");
+	MotionHandle = Effect->GetParameterByName(NULL, "CubeMotion");
+	AnchorShiftHandle = Effect->GetParameterByName(NULL, "CubeAnchorShift");
+	FadeHandle = Effect->GetParameterByName(NULL, "CubeFade");
+	static const char* BasisNames[6] = { "CubeForward", "CubeRight", "CubeUp", "CubeViewForward", "CubeViewRight", "CubeViewUp" };
+	for (int i = 0; i < 6; i++) BasisHandles[i] = Effect->GetParameterByName(NULL, BasisNames[i]);
 	Created = true;
 	Reset = true;
-	Logger::Log("DynamicCubemaps: %u px cubemaps, %u mips", Size, Mips);
+	Logger::Log("DynamicCubemaps: %u px cubemaps, %u mips, position tracking %s", Size, Mips, TrackPositions ? "on" : "off");
 	return true;
 }
 
@@ -103,8 +157,24 @@ void DynamicCubemapsEffect::DrawFace(IDirect3DDevice9* Device, IDirect3DSurface9
 	Constants.Face.y = (float)(1 << Mip) / Size;
 	Constants.Face.z = Roughness;
 	Effect->SetVector(FaceHandle, &Constants.Face);
+	for (int i = 0; i < 3; i++) {
+		const D3DXVECTOR4 world(FaceBasis[Face][i].x, FaceBasis[Face][i].y, FaceBasis[Face][i].z, 0.0f);
+		Effect->SetVector(BasisHandles[i], &world);
+		Effect->SetVector(BasisHandles[3 + i], &ViewBasis[Face][i]);
+	}
 	Effect->CommitChanges();
 	Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+}
+
+// The fades for one face, stepped by the time since that face was last captured.
+void DynamicCubemapsEffect::SetFaceFade(UINT Face) {
+	const float dt = std::clamp(FaceSince[Face], 0.0f, 1.0f);
+	FaceSince[Face] = 0.0f;
+	Constants.Fade.z = expf(-dt / Tracking.DropTime);
+	Constants.Fade.w = Tracking.StaleHalfLife > 0.0f ? powf(0.5f, dt / Tracking.StaleHalfLife) : 1.0f;
+	Constants.Capture.w = powf(0.5f, dt / 2.3f);   // without position tracking: the old fade, halving in 2.3 s
+	Effect->SetVector(FadeHandle, &Constants.Fade);
+	Effect->SetVector(CaptureHandle, &Constants.Capture);
 }
 
 // A box filter: each mip is half the one above it, averaged by linear filtering. The capture is
@@ -126,6 +196,43 @@ void DynamicCubemapsEffect::RenderCubemaps(IDirect3DDevice9* Device, IDirect3DSu
 	}
 	if (!EnsureTextures(Device)) return;
 
+	// Skipped on frames that drew no material with an _rmaos map: nothing reflects the cube then. A
+	// reset (load, door, interior/exterior) or the idle interval still updates it.
+	const bool pbrDrawn = PBRDrawn;
+	PBRDrawn = false;
+	if (Valid && !Reset && !pbrDrawn && SinceUpdate < DynamicCubemapIdleInterval) {
+		renderTime = 0.0f;
+		return;
+	}
+
+	// The fades step by the time since each face was last captured (SetFaceFade), which covers
+	// skipped frames and skipped faces.
+	for (UINT f = 0; f < 6; f++) FaceSince[f] += SinceUpdate;
+	SinceUpdate = 0.0f;
+
+	// This update's camera: each face's basis in view space, and which faces point at anything on
+	// screen. A face's directions lie within 54.74 degrees of its axis (to its corners), the screen's
+	// within the half-diagonal of the field of view of the camera's forward; a face farther off than
+	// both together, plus a margin, sees nothing on screen.
+	const D3DXMATRIX& View = TheRenderManager->viewMatrix;
+	const D3DXMATRIX& Proj = TheRenderManager->projMatrix;
+	D3DXVECTOR3 forward(TheRenderManager->CameraForward.x, TheRenderManager->CameraForward.y, TheRenderManager->CameraForward.z);
+	D3DXVec3Normalize(&forward, &forward);
+	const float tanX = Proj._11 != 0.0f ? 1.0f / Proj._11 : 1.0f;
+	const float tanY = Proj._22 != 0.0f ? 1.0f / Proj._22 : 1.0f;
+	const float screenHalfAngle = atanf(sqrtf(tanX * tanX + tanY * tanY));
+	const float visibleCos = cosf((std::min)(screenHalfAngle + 0.9553f + 0.1f, D3DX_PI));   // 0.9553: 54.74 degrees
+	const bool everyFace = Reset || (Updates++ % DynamicCubemapHiddenFaceInterval) == 0;
+	bool captureFace[6];
+	for (UINT f = 0; f < 6; f++) {
+		for (int i = 0; i < 3; i++) {
+			D3DXVECTOR3 v;
+			D3DXVec3TransformNormal(&v, &FaceBasis[f][i], &View);
+			ViewBasis[f][i] = D3DXVECTOR4(v.x, v.y, v.z, 0.0f);
+		}
+		captureFace[f] = everyFace || D3DXVec3Dot(&FaceBasis[f][0], &forward) > visibleCos;
+	}
+
 	auto timer = TimeLogger();
 	const int next = Current ^ 1;
 
@@ -138,11 +245,31 @@ void DynamicCubemapsEffect::RenderCubemaps(IDirect3DDevice9* Device, IDirect3DSu
 	Device->SetDepthStencilSurface(NULL);
 
 	Constants.Capture.y = Reset ? 1.0f : 0.0f;
+	Constants.Capture.z = TrackPositions ? 1.0f : 0.0f;
+
+	// Positions are stored relative to Anchor; it follows the camera once it is too far away, and the
+	// capture pass shifts every stored position by the difference on that frame.
+	const D3DXVECTOR3 camera(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+	D3DXVECTOR3 shift(0.0f, 0.0f, 0.0f);
+	D3DXVECTOR3 fromAnchor = camera - Anchor;
+	if (Reset) Anchor = camera;
+	else if (D3DXVec3Length(&fromAnchor) > DynamicCubemapAnchorRange) {
+		shift = Anchor - camera;
+		Anchor = camera;
+	}
+	fromAnchor = camera - Anchor;
+	Constants.Motion.x = fromAnchor.x;
+	Constants.Motion.y = fromAnchor.y;
+	Constants.Motion.z = fromAnchor.z;
+	Constants.AnchorShift = D3DXVECTOR4(shift.x, shift.y, shift.z, 0.0f);
 
 	Effect->SetTechnique(Effect->GetTechnique(0));
 	SetCT();   // the scene, depth and view model mask on s0-s2; the TESR_ constants
 	Effect->SetVector(FallbackHandle, &Constants.Fallback);
 	Effect->SetVector(CaptureHandle, &Constants.Capture);
+	Effect->SetVector(MotionHandle, &Constants.Motion);
+	Effect->SetVector(AnchorShiftHandle, &Constants.AnchorShift);
+	Effect->SetVector(FadeHandle, &Constants.Fade);
 
 	UINT passes = 0;
 	Effect->Begin(&passes, 0);   // restores the device's states at End
@@ -155,11 +282,34 @@ void DynamicCubemapsEffect::RenderCubemaps(IDirect3DDevice9* Device, IDirect3DSu
 	Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 	Device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
 
-	// 1 Capture into the other cube, reading last frame's.
+	// 1 Capture into the other cube, reading last frame's; positions likewise, on render target 1,
+	// whose write mask others change (skin scattering's MRT draws): set here, put back after.
+	DWORD savedWriteMask1 = 0xF;
 	Effect->BeginPass(0);
 	Device->SetTexture(4, CaptureCube[Current]);
-	for (UINT f = 0; f < 6; f++) DrawFace(Device, CaptureSurfaces[next][f][0], f, 0, 0.0f);
+	if (TrackPositions) {
+		Device->SetTexture(8, PositionCube[Current]);
+		Device->GetRenderState(D3DRS_COLORWRITEENABLE1, &savedWriteMask1);
+		Device->SetRenderState(D3DRS_COLORWRITEENABLE1, 0xF);
+	}
+	for (UINT f = 0; f < 6; f++) {
+		if (!captureFace[f]) continue;
+		if (TrackPositions) Device->SetRenderTarget(1, PositionSurfaces[next][f]);
+		SetFaceFade(f);
+		DrawFace(Device, CaptureSurfaces[next][f][0], f, 0, 0.0f);
+	}
 	Effect->EndPass();
+	// Faces not captured this update: last update's colour and positions, copied across.
+	for (UINT f = 0; f < 6; f++) {
+		if (captureFace[f]) continue;
+		Device->StretchRect(CaptureSurfaces[Current][f][0], NULL, CaptureSurfaces[next][f][0], NULL, D3DTEXF_NONE);
+		if (TrackPositions) Device->StretchRect(PositionSurfaces[Current][f], NULL, PositionSurfaces[next][f], NULL, D3DTEXF_NONE);
+	}
+	if (TrackPositions) {
+		Device->SetRenderTarget(1, NULL);
+		Device->SetTexture(8, NULL);
+		Device->SetRenderState(D3DRS_COLORWRITEENABLE1, savedWriteMask1);
+	}
 	DownsampleMips(Device, CaptureSurfaces[next]);
 
 	// 2 Infer what was never seen.
@@ -190,7 +340,7 @@ void DynamicCubemapsEffect::RenderCubemaps(IDirect3DDevice9* Device, IDirect3DSu
 	// cache says is already there, so a stage left empty here stayed empty for the next draw that
 	// wanted the same texture: decals lost their environment map and highlights, depending on which
 	// draws happened to rebind those stages first -- and so on the view.
-	static const UINT TouchedStages[] = { 0, 1, 2, 4, 5, 6, 11 };
+	static const UINT TouchedStages[] = { 0, 1, 2, 4, 5, 6, 8, 11 };
 	for (UINT Stage : TouchedStages)
 		Device->SetTexture(Stage, TheRenderManager->renderState->GetTexture(Stage));
 
