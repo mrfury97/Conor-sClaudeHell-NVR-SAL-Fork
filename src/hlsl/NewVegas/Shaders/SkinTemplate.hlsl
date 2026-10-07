@@ -294,10 +294,10 @@ float3 PointLight(int i, float3 d, float3 albedo, float3 N, float3 Nsoft, float3
         float3 diffuse = 0.0f;
         specular = 0.0f;
         [branch] if ((FIRST_POINT + i) < EmittanceColor.a)
-            diffuse = SkinLight(albedo, N, Nsoft, geometricNormal, V, d, lightColor, 1.0f, false, specular);
+            diffuse = SkinLight(albedo, N, Nsoft, geometricNormal, V, d, lightColor, 1.0f, 1.0f, false, specular);
         return diffuse;
     #else
-        return SkinLight(albedo, N, Nsoft, geometricNormal, V, d, lightColor, 1.0f, false, specular);
+        return SkinLight(albedo, N, Nsoft, geometricNormal, V, d, lightColor, 1.0f, 1.0f, false, specular);
     #endif
 }
 
@@ -409,8 +409,11 @@ PS_OUTPUT main(PS_INPUT IN) {
         #if FORWARD_SHADOWS
             float3 shadowNormal = GetShadowGeometricNormal(worldPos);
             float sunShadow = GetSunShadow(worldPos, shadowNormal);   // this template always supplies worldPos
+            // The same SKIN_SELF_SHADOW_REACH toward the sun: lit there, a shadow here is the skin's own.
+            float sunShadowBeyond = GetSunShadow(worldPos + TESR_SmoothedSunDir.xyz * SKIN_SELF_SHADOW_REACH, shadowNormal);
         #else
             float sunShadow = 1.0f;
+            float sunShadowBeyond = 1.0f;
         #endif
 
         // Vanilla's projected actor shadow, a gamma factor on the sun's colour.
@@ -429,7 +432,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #if !defined(DIFFUSE)
         float3 sunDir = float3(IN.uv.zw, IN.tangent.w);
-        diffuseLight += SkinLight(albedo, N, Nsoft, geometricNormal, V, sunDir, PSLightColor[0].rgb * projShadow, sunShadow, true, specular);
+        diffuseLight += SkinLight(albedo, N, Nsoft, geometricNormal, V, sunDir, PSLightColor[0].rgb * projShadow, sunShadow, sunShadowBeyond, true, specular);
         specularLight += specular;
     #endif
 

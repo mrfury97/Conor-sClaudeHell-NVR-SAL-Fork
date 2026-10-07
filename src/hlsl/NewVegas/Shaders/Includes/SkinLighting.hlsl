@@ -170,11 +170,18 @@ float3 SkinSpecular(float3 N, float3 V, float3 L, float3 light, bool sun) {
     return lerp(lobe0, lobe1, SKIN_LOBE_MIX) * skinSpecScale * skinVanillaMatch;
 }
 
+// How far toward the sun the skin template looks a second time into the shadow map, in game units
+// (16 = 23 cm): past the far side of a hand or a head, so a point there is lit unless something else
+// casts the shadow. See selfShadowEscape below.
+#define SKIN_SELF_SHADOW_REACH 16.0f
+
 // One light: returns the diffuse light (with transmission), and the highlight in specular, kept
 // apart for the skin scattering effect. lightColor is the engine's GAMMA colour with any gamma-space factor (attenuation,
 // the projected actor shadow) multiplied in; shadow is a LINEAR visibility (NVR's sun shadow).
+// selfShadowEscape: the sun's visibility SKIN_SELF_SHADOW_REACH toward it (1 for lamps), which says
+// whether a shadow is the surface's own (lit out there) or cast by something else (dark there too).
 // albedo must already be decoded.
-float3 SkinLight(float3 albedo, float3 N, float3 Nsoft, float3 geometricNormal, float3 V, float3 L, float3 lightColor, float shadow, bool sun, out float3 specular) {
+float3 SkinLight(float3 albedo, float3 N, float3 Nsoft, float3 geometricNormal, float3 V, float3 L, float3 lightColor, float shadow, float selfShadowEscape, bool sun, out float3 specular) {
     float3 light = decodeColor(lightColor) * TESR_PBRData.z;
     L = normalize(L);
 
@@ -188,9 +195,12 @@ float3 SkinLight(float3 albedo, float3 N, float3 Nsoft, float3 geometricNormal, 
     // The shadow map also marks the surface's own far side as shadowed, which would cut the
     // scattered wrap off at the geometric terminator. On that far side only (geometric N.L 0.05
     // to -0.1), the WRAPPED part escapes the shadow map; plain N.L always keeps it. Skin facing
-    // the light inside another surface's shadow (a neck under the jaw) stays shadowed.
+    // the light inside another surface's shadow (a neck under the jaw) stays shadowed. So does the
+    // terminator itself when the whole surface lies in something else's shadow (hands under a
+    // roof): the second look toward the sun (selfShadowEscape) is dark there too. Without it the
+    // terminator kept a red band in every cast shadow.
     float selfShadowed = saturate((0.05f - geometricNdotL) / 0.15f);
-    selfShadowed = selfShadowed * selfShadowed * (3.0f - 2.0f * selfShadowed) * saturate(TESR_SkinExtraData.z);
+    selfShadowed = selfShadowed * selfShadowed * (3.0f - 2.0f * selfShadowed) * saturate(TESR_SkinExtraData.z) * saturate(selfShadowEscape);
     float3 shadowColor = SkinShadow(shadow);
     float3 diffuse = albedo * (direct * shadowColor + wrapped * lerp(shadowColor, 1.0f, selfShadowed));
 
