@@ -5,7 +5,7 @@
 // Cubemaps (GPL-3.0-or-later); see Effects/DynamicCubemaps.fx.hlsl for the passes.
 //
 // Each frame, on the scene exactly as drawn (RenderEffectsPreTonemapping, before any effect):
-//   1 Capture: the scene's colour is projected into a 128 px capture cube along each texel's
+//   1 Capture: the scene's colour is projected into a 256 px capture cube along each texel's
 //     direction and blended over what the cube held (two cubes, ping-ponged), then box-filtered
 //     down its mips. It accumulates as the camera looks around.
 //   2 Infer: what was never seen is filled from coarser mips, then the sky or the room's light.
@@ -17,8 +17,8 @@ class DynamicCubemapsEffect : public EffectRecord
 public:
 	DynamicCubemapsEffect() : EffectRecord("DynamicCubemaps") {};
 
-	static const UINT Size = 128;
-	static const UINT Mips = 8;    // 128 .. 1; prefiltered roughness = mip / (Mips - 1)
+	static const UINT Size = 256;  // DynamicCubemaps.fx.hlsl CUBE_SIZE
+	static const UINT Mips = 9;    // 256 .. 1; prefiltered roughness = mip / (Mips - 1); CUBE_MIPS, and ENVIRONMENT_CUBE_MIPS (Mips - 1) in Object.hlsl
 
 	struct DynamicCubemapsStruct {
 		D3DXVECTOR4		Face;       // x face, y 1 / face size, z roughness, w coverage kept per frame where nothing is seen

@@ -6,21 +6,22 @@
 // shaders; here each step is a pixel shader pass drawn into one cube face at a time
 // (src/effects/DynamicCubemaps.cpp drives them):
 //
-//   0 Capture   every texel of the capture cube looks along its direction; where that direction
-//               is on screen and far enough away, it takes the scene's colour (decoded to linear,
-//               coverage 1), blended 50/50 with what it held. Elsewhere it keeps what it held, its
+//   0 Capture   every texel of the capture cube looks along four directions across its footprint;
+//               where they are on screen and far enough away, it takes the scene's colour there
+//               (filtered, decoded to linear, averaged), blended 50/50 with what it held. Elsewhere it keeps what it held, its
 //               coverage decaying. Stored premultiplied by coverage, so the mip chain (built by
 //               box-filtering the faces) averages only what was seen.
 //   1 Infer     fills what was never seen: coarser and coarser mips until the coverage reaches 1,
 //               the rest from the sky (outdoors) or the room's ambient light (indoors).
 //   2 Prefilter GGX importance sampling of the inferred cube, one roughness per mip
-//               (roughness = mip / 7), with mip-filtered sampling.
+//               (roughness = mip / 8), with mip-filtered sampling.
 //
-// The objects' PBR materials sample the result along their reflection at mip roughness x 7
+// The objects' PBR materials sample the result along their reflection at mip roughness x 8
 // (Shaders/Includes/Object.hlsl). Everything is camera-centred: one cube for the scene, not one
 // per object, as in CS.
 
-#define CUBE_MIPS 8   // DynamicCubemapsEffect::Mips
+#define CUBE_MIPS 9      // DynamicCubemapsEffect::Mips
+#define CUBE_SIZE 256.0f // DynamicCubemapsEffect::Size
 
 float4 CubeFace;       // x face (0-5, D3D9 order +X -X +Y -Y +Z -Z), y 1 / face size, z roughness (prefilter), w coverage kept per frame
 float4 CubeFallback;   // rgb the room's ambient light (linear), w 1 outdoors
@@ -28,7 +29,7 @@ float4 CubeCapture;    // y 1 to ignore what the cube held (reset)
 
 float4 TESR_SkyIrradiance[9];
 
-sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBufferViewModel : register(s2) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 // Bound by DynamicCubemapsEffect, not by name.
@@ -63,10 +64,10 @@ VSOUT FrameVS(VSIN IN) {
     return OUT;
 }
 
-// The world direction a texel of the current face stands for, inverting D3D9's cube face
-// selection (sc, tc and the major axis per face, as texCUBE uses them).
-float3 CubeDirection(float2 vpos) {
-    float2 st = (vpos + 0.5f) * CubeFace.y;
+// The world direction through a point of the current face, in texels (texel = vpos + 0..1 each
+// way), inverting D3D9's cube face selection (sc, tc and the major axis per face, as texCUBE uses them).
+float3 CubeDirectionAt(float2 texel) {
+    float2 st = texel * CubeFace.y;
     float sc = 2.0f * st.x - 1.0f;
     float tc = 2.0f * st.y - 1.0f;
     float face = CubeFace.x;
@@ -80,14 +81,17 @@ float3 CubeDirection(float2 vpos) {
     return normalize(d);
 }
 
+// The direction through the centre of the texel at vpos.
+float3 CubeDirection(float2 vpos) {
+    return CubeDirectionAt(vpos + 0.5f);
+}
+
 // --- 0: capture ---------------------------------------------------------------------------------
 // Closer than this, a surface is the player or what they hold, not the surroundings (CS: 16.5).
 #define CAPTURE_MIN_DISTANCE 24.0f
 
-float4 Capture(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
-    float3 dir = CubeDirection(vpos);
-    float4 previous = CubeCapture.y > 0.5f ? 0.0f : texCUBElod(PreviousCube, float4(dir, 0.0f));
-
+// One of a texel's four samples: the scene's linear colour along dir, alpha 1 where it was seen.
+float4 CaptureSample(float3 dir) {
     float3 view = mul(float4(dir, 0.0f), TESR_ViewTransform).xyz;
     [branch] if (view.z > 0.01f) {
         float3 screen = projectPosition(view);
@@ -97,10 +101,26 @@ float4 Capture(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
             [branch] if (depth > CAPTURE_MIN_DISTANCE && !viewModel) {
                 float3 color = tex2Dlod(TESR_RenderedBuffer, float4(screen.xy, 0.0f, 0.0f)).rgb;
                 color *= color;   // linear: the frame is gamma 2 encoded with LinearLighting, display gamma without
-                color = min(max(color, 0.0f), 64.0f);   // the sun's disc would otherwise flood whole mips
-                return lerp(previous, float4(color, 1.0f), 0.5f);
+                return float4(min(max(color, 0.0f), 64.0f), 1.0f);   // the sun's disc would otherwise flood whole mips
             }
         }
+    }
+    return 0.0f;
+}
+
+// Four filtered samples per texel on a rotated grid across its footprint: one point sample per
+// texel caught or missed thin bright details (railings, string lights) from texel to texel, which
+// showed as jagged, shimmering edges in sharp reflections.
+float4 Capture(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
+    float4 previous = CubeCapture.y > 0.5f ? 0.0f : texCUBElod(PreviousCube, float4(CubeDirection(vpos), 0.0f));
+
+    float4 seen = CaptureSample(CubeDirectionAt(vpos + float2(0.375f, 0.125f)))
+                + CaptureSample(CubeDirectionAt(vpos + float2(0.875f, 0.375f)))
+                + CaptureSample(CubeDirectionAt(vpos + float2(0.125f, 0.625f)))
+                + CaptureSample(CubeDirectionAt(vpos + float2(0.625f, 0.875f)));
+    [branch] if (seen.a > 0.0f) {
+        // The part of the texel that was seen blends in by its share of the texel.
+        return lerp(previous, float4(seen.rgb / seen.a, 1.0f), 0.5f * 0.25f * seen.a);
     }
     return previous * CubeFace.w;
 }
@@ -167,8 +187,8 @@ float4 Prefilter(VSOUT IN, float2 vpos : VPOS) : COLOR0 {
     T = dot(T, T) > 1e-5f ? normalize(T) : normalize(cross(N, float3(1.0f, 0.0f, 0.0f)));
     float3 S = cross(N, T);
 
-    // Solid angle of one texel of the inferred cube's top mip (128 x 128 per face).
-    const float texelSolidAngle = 4.0f * PI_F / (6.0f * 128.0f * 128.0f);
+    // Solid angle of one texel of the inferred cube's top mip (CUBE_SIZE x CUBE_SIZE per face).
+    const float texelSolidAngle = 4.0f * PI_F / (6.0f * CUBE_SIZE * CUBE_SIZE);
 
     float3 color = 0.0f;
     float weight = 0.0f;

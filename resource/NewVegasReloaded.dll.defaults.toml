@@ -619,7 +619,7 @@ DebugView = 0                        # Shows the dynamic cubemap over the screen
 DebugRoughness = 0.0                 # [0.0-1.0] Which blur level DebugView 1 and 2 show: 0 the sharp mirror image, 1 the blurriest (what a fully rough material reflects).
 
 [_Shaders.DynamicCubemaps.Status]
-Enabled = true                       # What authored PBR materials (_rmaos) reflect, as Community Shaders' Dynamic Cubemaps: every frame the screen is projected into a cubemap around the camera, which fills in as you look around, and is blurred into one level per roughness. Directions never seen show the sky outdoors and the room's light indoors. Off, they reflect only the sky outdoors and the ambient light indoors. Costs well under a millisecond (128 px cubes). The game's own env map is drawn on top of them as well while [Shaders.PBR.Main] VanillaEnvMapOnPBR is on.
+Enabled = true                       # What authored PBR materials (_rmaos) reflect, as Community Shaders' Dynamic Cubemaps: every frame the screen is projected into a cubemap around the camera, which fills in as you look around, and is blurred into one level per roughness. Directions never seen show the sky outdoors and the room's light indoors. Off, they reflect only the sky outdoors and the ambient light indoors. Costs well under a millisecond (256 px cubes). The game's own env map is drawn on top of them as well while [Shaders.PBR.Main] VanillaEnvMapOnPBR is on.
 
 [_Shaders.POM.Main]
 HeightMapScale = 0.4                 # Parallax mapping scale. Keep 0.4 for a widely working value.

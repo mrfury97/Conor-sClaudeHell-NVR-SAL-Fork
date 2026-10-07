@@ -48,12 +48,15 @@ float4 ObjectMaterial : register(c150);
 // it also scales the metal's Fresnel). Not Community Shaders' A, which stores F0 itself: a CS map
 // needs its alpha divided by 0.04.
 // y is 1 when the dynamic environment cube (effects/DynamicCubemaps.h) is bound to EnvCubeMap:
-// what is around the camera, linear, GGX prefiltered with roughness = mip / 7.
+// what is around the camera, linear, GGX prefiltered with roughness = mip / 8 (256 px, 9 mips).
 float4 MaterialMap : register(c152);
 sampler2D RMAOSMap : register(s10);
 samplerCUBE EnvCubeMap : register(s11);
 #define ENVIRONMENT_CUBE (MaterialMap.y > 0.5f)
-#define ENVIRONMENT_CUBE_MIPS 7.0f
+#define ENVIRONMENT_CUBE_MIPS 8.0f
+// Never sharper than half a level: at mip 0 a near-mirror material on a small curved part stretches
+// a few cube texels over itself, and their edges show as blocks.
+#define ENVIRONMENT_CUBE_MIN_LOD 0.5f
 
 // --- Light-only passes ---------------------------------------------------------------------
 // Meshes lit by several lights or casting projected shadows (actors especially) are drawn in
@@ -332,7 +335,7 @@ float3 getObjectSkyReflection(float3 worldPos, float3 geometricNormal, float3 no
     float horizon = saturate(1.0f + 1.2f * dot(r, geometricNormal));
     float3 radiance;   // linear
     [branch] if (ENVIRONMENT_CUBE)
-        radiance = texCUBElod(EnvCubeMap, float4(r, envRough * ENVIRONMENT_CUBE_MIPS)).rgb;
+        radiance = texCUBElod(EnvCubeMap, float4(r, max(envRough * ENVIRONMENT_CUBE_MIPS, ENVIRONMENT_CUBE_MIN_LOD))).rgb;
     else
         radiance = SkyReflectionRadiance(r, envRough);
     // Into the lighting space: the radiance is gamma 2 linear, the lighting space gamma lightingGamma.
