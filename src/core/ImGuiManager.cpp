@@ -2205,6 +2205,21 @@ static const char* kShadowOrthoResolutionNames[] = {
 static const char* kEdgeDetectionNames[] = {
 	"0 - Luma", "1 - Color", "2 - Depth", "3 - Luma + Depth",
 };
+static const char* kCinematicDofModeNames[] = {
+	"0 - Always", "1 - Dialogue only",
+};
+static const char* kCinematicDofDebugNames[] = {
+	"0 - Off", "1 - Blur map (red far, blue near)", "2 - Weapon blur", "3 - Focus & autofocus taps",
+};
+static const char* kWeaponDofNames[] = {
+	"0 - Off", "1 - Hip-fire only", "2 - Always",
+};
+static const char* kBokehQualityNames[] = {
+	"0 - Low (48 samples)", "1 - Medium (96 samples)", "2 - High (160 samples)",
+};
+static const char* kBokehShapeNames[] = {
+	"0 - Aperture (round/blades)", "1 - Star", "2 - Donut (mirror lens)", "3 - Heart", "4 - Cross",
+};
 
 #define ENUM_OPT(names) EnumOptions{ names, (int)(sizeof(names) / sizeof(names[0])) }
 
@@ -2222,6 +2237,11 @@ static const std::unordered_map<std::string, EnumOptions> kEnumSettings = {
 	{ "Shaders.ShadowsExteriors.ShadowMaps.CascadeResolution", ENUM_OPT(kShadowCascadeResolutionNames) },
 	{ "Shaders.ShadowsExteriors.Ortho.Resolution",             ENUM_OPT(kShadowOrthoResolutionNames) },
 	{ "Shaders.SMAA.Main.EdgeDetection",                       ENUM_OPT(kEdgeDetectionNames) },
+	{ "Shaders.CinematicDOF.Main.BokehShape",                  ENUM_OPT(kBokehShapeNames) },
+	{ "Shaders.CinematicDOF.Main.BokehQuality",                ENUM_OPT(kBokehQualityNames) },
+	{ "Shaders.CinematicDOF.Main.WeaponDOF",                   ENUM_OPT(kWeaponDofNames) },
+	{ "Shaders.CinematicDOF.Main.DebugView",                   ENUM_OPT(kCinematicDofDebugNames) },
+	{ "Shaders.CinematicDOF.Main.Mode",                        ENUM_OPT(kCinematicDofModeNames) },
 };
 
 #undef ENUM_OPT

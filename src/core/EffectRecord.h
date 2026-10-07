@@ -25,4 +25,9 @@ public:
 
 	ID3DXEffect* Effect;
 	const char* Name;
+
+	// Bumped every time LoadEffect installs a new Effect. Anything cached from the Effect (technique or
+	// parameter handles) belongs to one generation and has to be looked up again when this changes --
+	// a reloaded effect can land at the address the old one had, so comparing pointers is not enough.
+	UInt32					LoadGeneration = 0;
 };

@@ -38,6 +38,7 @@
 #include "WetWorld.h"
 #include "DitherBuster.h"
 #include "SMAA.h"
+#include "CinematicDOF.h"
 #include "TAA.h"
 
 #include "Water.h"

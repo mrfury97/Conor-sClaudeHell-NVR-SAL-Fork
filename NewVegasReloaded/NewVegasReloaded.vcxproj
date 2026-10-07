@@ -163,6 +163,7 @@
     <ClCompile Include="..\src\effects\Rain.cpp" />
     <ClCompile Include="..\src\effects\SMAA.cpp" />
     <ClCompile Include="..\src\effects\TAA.cpp" />
+    <ClCompile Include="..\src\effects\CinematicDOF.cpp" />
     <ClCompile Include="..\src\effects\ShadowsExterior.cpp" />
     <ClCompile Include="..\src\effects\ShadowsInteriors.cpp" />
     <ClCompile Include="..\src\effects\Sharpening.cpp" />
@@ -273,6 +274,7 @@
     <ClInclude Include="..\src\effects\Rain.h" />
     <ClInclude Include="..\src\effects\SMAA.h" />
     <ClInclude Include="..\src\effects\TAA.h" />
+    <ClInclude Include="..\src\effects\CinematicDOF.h" />
     <ClInclude Include="..\src\effects\ShadowsExterior.h" />
     <ClInclude Include="..\src\effects\ShadowsInteriors.h" />
     <ClInclude Include="..\src\effects\Sharpening.h" />

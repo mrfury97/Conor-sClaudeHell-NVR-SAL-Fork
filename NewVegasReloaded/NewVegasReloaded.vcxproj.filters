@@ -331,6 +331,9 @@
     <ClInclude Include="..\src\effects\TAA.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\CinematicDOF.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Main.cpp">
@@ -577,6 +580,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\TAA.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\CinematicDOF.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\SunShadows.cpp">

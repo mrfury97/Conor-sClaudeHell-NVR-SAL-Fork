@@ -179,6 +179,7 @@ bool EffectRecord::LoadEffect() {
 
 	if (Effect) {
 		this->Effect = Effect;
+		LoadGeneration++;
 		CreateCT(EffectSource, NULL); //Create the object which will associate a register index to a float pointer for constants updates;
 		Logger::Log("Effect loaded: %s", EffectCompiledPath);
 	}

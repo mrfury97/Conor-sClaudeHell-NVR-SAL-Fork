@@ -81,6 +81,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<WetWorldEffect>(&TheShaderManager->Effects.WetWorld);
 	TheShaderManager->RegisterEffect<DitherBusterEffect>(&TheShaderManager->Effects.DitherBuster);
 	TheShaderManager->RegisterEffect<SMAAEffect>(&TheShaderManager->Effects.SMAA);
+	TheShaderManager->RegisterEffect<CinematicDOFEffect>(&TheShaderManager->Effects.CinematicDOF);
 	TheShaderManager->RegisterEffect<TAAEffect>(&TheShaderManager->Effects.TAA);
 
 	TheShaderManager->RegisterShaderCollection<TonemappingShaders>(&TheShaderManager->Shaders.Tonemapping);
@@ -942,6 +943,7 @@ void ShaderManager::RenderEffects(IDirect3DSurface9* RenderTarget) {
 	if (!Effects.LUT->Settings.PreTonemapping)
 		Effects.LUT->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
 	Effects.DepthOfField->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	Effects.CinematicDOF->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
 	Effects.MotionBlur->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
 
 	// lens effects

@@ -116,6 +116,7 @@ public:
 		WetWorldEffect*			WetWorld;
 		DitherBusterEffect*		DitherBuster;
 		SMAAEffect*				SMAA;
+		CinematicDOFEffect*		CinematicDOF;
 		TAAEffect*				TAA;
 	};
 
