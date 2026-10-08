@@ -320,12 +320,18 @@ void DynamicCubemapsEffect::RenderCubemaps(IDirect3DDevice9* Device, IDirect3DSu
 	Effect->EndPass();
 	DownsampleMips(Device, InferredSurfaces);
 
-	// 3 Prefilter: mip 0 is the mirror, a copy; each mip below it one roughness step more.
-	for (UINT f = 0; f < 6; f++) Device->StretchRect(InferredSurfaces[f][0], NULL, EnvSurfaces[f][0], NULL, D3DTEXF_NONE);
+	// 3 Prefilter: mip 0 is the mirror, a copy; each mip below it one roughness step more. Mip 1
+	// (roughness 1/8) is the inferred cube's own box-filtered mip 1, copied too: a GGX lobe that
+	// narrow (alpha 0.016) is about a texel wide at 128 px, so the box filter is a close match, and
+	// mip 1 is three quarters of the prefilter's texels. GGX from mip 2 on.
+	for (UINT f = 0; f < 6; f++) {
+		Device->StretchRect(InferredSurfaces[f][0], NULL, EnvSurfaces[f][0], NULL, D3DTEXF_NONE);
+		Device->StretchRect(InferredSurfaces[f][1], NULL, EnvSurfaces[f][1], NULL, D3DTEXF_NONE);
+	}
 	Effect->BeginPass(2);
 	Device->SetTexture(5, NULL);
 	Device->SetTexture(6, Inferred);
-	for (UINT m = 1; m < Mips; m++)
+	for (UINT m = 2; m < Mips; m++)
 		for (UINT f = 0; f < 6; f++) DrawFace(Device, EnvSurfaces[f][m], f, m, (float)m / (Mips - 1));
 	Effect->EndPass();
 	Device->SetTexture(6, NULL);
