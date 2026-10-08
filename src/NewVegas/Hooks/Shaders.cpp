@@ -71,29 +71,23 @@ namespace MaterialMaps {
     static bool  sMuted = false;
     static DWORD sSavedWriteMask = 0xF;
 
-    // s10/s11 sampler states are set straight on the device, past the engine's render state cache,
-    // so they go back to what they were after the draw: the cache still holds those values and never
-    // re-sends them. Left changed, land (NormalMap[3], [4] at s10, s11 in TerrainTemplate) kept
-    // s11's CLAMP and LINEAR and drew that layer's normal map smeared out from its edge.
-    static const D3DSAMPLERSTATETYPE kSavedStates[] = {
-        D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_ADDRESSW,
-        D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER, D3DSAMP_SRGBTEXTURE };
-    static const int kSavedStateCount = sizeof(kSavedStates) / sizeof(kSavedStates[0]);
-    // The textures likewise: cleared to NULL, the next mesh with the same texture in that slot (the
-    // cache says it is still bound) read an empty map.
-    static DWORD sSavedSampler[2][kSavedStateCount];
-    static IDirect3DBaseTexture9* sSavedTexture[2] = {};
-
-    static void SaveSampler(IDirect3DDevice9* Device, int Slot) {
-        for (int i = 0; i < kSavedStateCount; i++) Device->GetSamplerState(10 + Slot, kSavedStates[i], &sSavedSampler[Slot][i]);
-        Device->GetTexture(10 + Slot, &sSavedTexture[Slot]);   // AddRef'd, released on restore
-    }
-
-    static void RestoreSampler(IDirect3DDevice9* Device, int Slot) {
-        for (int i = 0; i < kSavedStateCount; i++) Device->SetSamplerState(10 + Slot, kSavedStates[i], sSavedSampler[Slot][i]);
-        Device->SetTexture(10 + Slot, sSavedTexture[Slot]);
-        if (sSavedTexture[Slot]) sSavedTexture[Slot]->Release();
-        sSavedTexture[Slot] = nullptr;
+    // s10/s11 are shared with the game: land binds NormalMap[3], [4] there (TerrainTemplate). So the
+    // map, the cube and their sampler states go through the engine's render state cache
+    // (NiDX9RenderState::SetTexture / SetSamplerState, as MaterialPass does), never straight to the
+    // device. The cache then knows what is bound, and land re-sends its own textures and states where
+    // they differ: nothing to save or restore around each draw. (Set on the device behind the cache's
+    // back, land kept s11's CLAMP and LINEAR and drew that layer's normal map smeared from its edge,
+    // and a texture cleared to NULL stayed empty for the next mesh the cache thought still had it.)
+    // Unchanged values cost a compare in the cache, so after the first PBR draw this is nearly free.
+    static void BindSampler(NiDX9RenderState* State, UInt32 Slot, IDirect3DBaseTexture9* Texture, D3DTEXTUREADDRESS Address) {
+        State->SetTexture(Slot, Texture);
+        State->SetSamplerState(Slot, D3DSAMP_ADDRESSU, Address, false);
+        State->SetSamplerState(Slot, D3DSAMP_ADDRESSV, Address, false);
+        State->SetSamplerState(Slot, D3DSAMP_ADDRESSW, Address, false);
+        State->SetSamplerState(Slot, D3DSAMP_MINFILTER, D3DTEXF_LINEAR, false);
+        State->SetSamplerState(Slot, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR, false);
+        State->SetSamplerState(Slot, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR, false);
+        State->SetSamplerState(Slot, D3DSAMP_SRGBTEXTURE, FALSE, false);
     }
 
     // The engine's file, read whole through its stream interface, as Font::Load (0xA15320) does:
@@ -134,6 +128,22 @@ namespace MaterialMaps {
         Path.insert(Path.size() - 4, "_rmaos");
         Out = Path;
         return true;
+    }
+
+    // Every loaded map is released at each loading screen (a door, a load, fast travel: see
+    // UpdateFaceGenInteriorFlag), and found again on first use. Without this they stayed in video
+    // memory for the whole session. Run between frames, so none is in use; slot 10 is unbound
+    // through the render state cache first, so neither the device nor the cache keeps a freed map.
+    static void ReleaseAll() {
+        if (sByPath.empty() && sByTexture.empty()) return;
+        TheRenderManager->renderState->SetTexture(10, nullptr);
+        size_t Released = 0;
+        for (auto& Entry : sByPath)
+            if (Entry.second) { Entry.second->Release(); Released++; }
+        sByPath.clear();
+        sByTexture.clear();
+        sBound = false;
+        if (Released) Logger::Log("MaterialMaps: released %u maps", (UInt32)Released);
     }
 
     static IDirect3DTexture9* Find(const NiSourceTexture* Diffuse) {
@@ -207,25 +217,10 @@ namespace MaterialMaps {
             sMuted = true;
             return;
         }
-        SaveSampler(Device, 0);
-        SaveSampler(Device, 1);
-        Device->SetTexture(10, Map);
-        Device->SetSamplerState(10, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
-        Device->SetSamplerState(10, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
-        Device->SetSamplerState(10, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-        Device->SetSamplerState(10, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-        Device->SetSamplerState(10, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+        NiDX9RenderState* State = TheRenderManager->renderState;
+        BindSampler(State, 10, Map, D3DTADDRESS_WRAP);
         IDirect3DCubeTexture9* Environment = TheShaderManager->Effects.DynamicCubemaps->GetEnvironment();
-        if (Environment) {
-            Device->SetTexture(11, Environment);
-            Device->SetSamplerState(11, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-            Device->SetSamplerState(11, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-            Device->SetSamplerState(11, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
-            Device->SetSamplerState(11, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-            Device->SetSamplerState(11, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-            Device->SetSamplerState(11, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
-            Device->SetSamplerState(11, D3DSAMP_SRGBTEXTURE, FALSE);
-        }
+        if (Environment) BindSampler(State, 11, Environment, D3DTADDRESS_CLAMP);
         const float Flag[4] = { 1.0f, Environment ? 1.0f : 0.0f, 0.0f, 0.0f };
         Device->SetPixelShaderConstantF(152, Flag, 1);
         sBound = true;
@@ -235,8 +230,8 @@ namespace MaterialMaps {
     void EndDraw() {
         IDirect3DDevice9* Device = TheRenderManager->device;
         if (sBound) {
-            RestoreSampler(Device, 0);
-            RestoreSampler(Device, 1);
+            // The map and cube stay bound (and known to the cache): MaterialMap at 0 is what keeps
+            // every other draw from sampling them.
             const float Zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
             Device->SetPixelShaderConstantF(152, Zero, 1);
             sBound = false;
@@ -979,6 +974,18 @@ void __fastcall TestFrustumCullHook(ShadowSceneLight* This, void*, NiCullingProc
 // Every frame, before the scene's pass lists are built (RenderHook).
 void UpdateFaceGenInteriorFlag() {
     MergedLights::BeginFrame();
+
+    // A loading screen behind us -- interior/exterior changed, or the camera jumped farther than any
+    // frame's movement (a door, a load, fast travel) -- releases the material maps (MaterialMaps).
+    static D3DXVECTOR4 LastCamera = TheRenderManager->CameraPosition;
+    static bool LastExterior = TheShaderManager->GameState.isExterior;
+    const D3DXVECTOR4 Camera = TheRenderManager->CameraPosition;
+    const D3DXVECTOR3 Moved(Camera.x - LastCamera.x, Camera.y - LastCamera.y, Camera.z - LastCamera.z);
+    if (TheShaderManager->GameState.isExterior != LastExterior || D3DXVec3Length(&Moved) > 1500.0f)
+        MaterialMaps::ReleaseAll();
+    LastCamera = Camera;
+    LastExterior = TheShaderManager->GameState.isExterior;
+
     const UInt8 Interior = *(UInt8*)0x011F9427;   // BSShaderManager::bInterior
     const bool NVRSkin = TheShaderManager->Shaders.Skin && TheShaderManager->Shaders.Skin->Enabled && TheSettingManager->SettingsMain.Main.RenderEffects;
     FaceGenInteriorFlag = NVRSkin ? 0 : Interior;
