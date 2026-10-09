@@ -52,6 +52,9 @@ public:
 		D3DXMATRIX		ShadowSpotlightCameraToLight[SpotLightsMax];
 		D3DXVECTOR4		ShadowCubeMapLightPosition;
 		D3DXVECTOR4		ShadowLightPosition[ShadowCubeMapsMax];
+		D3DXVECTOR4		ShadowLightFade[ShadowCubeMapsMax / 4];   // slot i's shadow strength in component i % 4 of [i / 4]: 0 none, 1 full (fading as clusters trade slots)
+		D3DXVECTOR4		PointShadowData;   // Shaders/Includes/PointShadow.hlsl: x 1 when lamps are shadowed in the object shaders, y 1 / atlas width, z 1 / atlas height, w a face's size
+		D3DXVECTOR4		PointShadowParams; // Shaders/Includes/PointShadow.hlsl: x NearFade, y the atlas's tiles per row
 		D3DXVECTOR4		ShadowMapRadius;
 		D3DXVECTOR4		ShadowBlur;
 		// Forward sun shadows, runtime side. x: 1 when the forward path is SUPPRESSED.
@@ -138,6 +141,13 @@ public:
 		int					DrawDistance;
 		float				Darkness;
 		float				LightRadiusMult;
+		float				LightClusterRadius;   // lamps closer than this share one shadow (ShaderManager::GetNearbyLights)
+		bool				ForwardPointShadows;  // shadow each lamp's own light in the object shaders, not the finished frame
+		float				FillLightRadius;      // lamps reaching farther are a level's fill lights (ShaderManager::GetNearbyLights)
+		float				FillLightShadowStrength;
+		float				NearFade;             // occluders this close to a lamp cast less of its shadow (Shaders/Includes/PointShadow.hlsl)
+		bool				PlayerInsideLamp;     // a lamp inside the player leaves the player out of its cube (ShadowManager::RenderShadowCubeMap)
+		float				ShadowSoftness;       // lamp shadow blur, in cube texels (ShadowManager::ConvertCubeFaces)
 		bool				UseCastShadowFlag;
 		bool				PlayerShadowThirdPerson;
 		bool				PlayerShadowFirstPerson;
@@ -173,12 +183,21 @@ public:
 	struct ShadowTextures {
 		IDirect3DTexture9* ShadowPassTexture;
 		IDirect3DSurface9* ShadowPassSurface;
-		IDirect3DCubeTexture9* ShadowCubeMapTexture[ShadowCubeMapsMax];
-		IDirect3DSurface9* ShadowCubeMapSurface[ShadowCubeMapsMax][6];
+		IDirect3DCubeTexture9* ShadowCubeMapTexture[ShadowSlotsMax];   // past ShadowCubeMapsMax made when first needed (EnsureShadowCube)
+		IDirect3DSurface9* ShadowCubeMapSurface[ShadowSlotsMax][6];
 		IDirect3DTexture9* ShadowSpotlightTexture[SpotLightsMax];
 		IDirect3DSurface9* ShadowSpotlightSurface[SpotLightsMax];
 		IDirect3DSurface9* ShadowCubeMapDepthSurface;
+		// Every slot's six faces in one texture, for the object shaders (Shaders/Includes/PointShadow.hlsl):
+		// 9 tiles by 8, slot s face f at tile s * 6 + f. ShadowManager::RenderShadowCubeMap copies each
+		// face it draws.
+		IDirect3DTexture9* PointShadowAtlasTexture;
+		IDirect3DSurface9* PointShadowAtlasSurface;
+		UInt32 PointShadowAtlasColumns;   // tiles per row (tile slot * 6 + face)
+		UInt32 PointShadowAtlasRows;
+		UInt32 PointShadowAtlasSlots;     // the slots it has room for: LightPoints at startup, at least 12
 	};
+	bool EnsureShadowCube(UInt32 Slot);
 	ShadowTextures	Textures;
 
 	// Main shadow atlas, used for cascades.

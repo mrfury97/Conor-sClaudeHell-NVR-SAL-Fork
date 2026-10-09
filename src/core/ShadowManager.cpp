@@ -25,6 +25,9 @@ void ShadowManager::Initialize() {
     TheShadowManager->ShadowMapBlurPixel = (ShaderRecordPixel*) ShaderRecord::LoadShader("ShadowMapBlur.pso", "Shadows\\");
 
 	TheShadowManager->ShadowMapClearPixel = (ShaderRecordPixel*) ShaderRecord::LoadShader("ShadowMapClear.pso", "Shadows\\");
+	TheShadowManager->ShadowCubeToAtlasPixel = (ShaderRecordPixel*) ShaderRecord::LoadShader("ShadowCubeToAtlas.pso", "Shadows\\");
+	if (TheShadowManager->ShadowCubeToAtlasPixel) TheShadowManager->ShadowCubeToAtlasPixel->ClearSamplers = false;
+	else Logger::Log("[ERROR]: Could not load ShadowCubeToAtlas.pso: lamps are shadowed in post-process.");
 
 	// Make sure samplers are not reset on SetCT as that causes errors.
 	TheShadowManager->ShadowMapVertex->ClearSamplers = false;
@@ -46,6 +49,79 @@ void ShadowManager::Initialize() {
 	TheShadowManager->ShadowCubeMapViewPort = { 0, 0, ShadowCubeMapSize, ShadowCubeMapSize, 0.0f, 1.0f };
 
 	TheShadowManager->shadowMapsRenderTime = 0;
+	TheShadowManager->InvalidateCubeCache();
+}
+
+// Forget every cached point light cubemap: their textures were recreated, or their content lost.
+void ShadowManager::InvalidateCubeCache() {
+	memset(CubeCache, 0, sizeof(CubeCache));
+}
+
+// Drop what the passes accumulated without drawing it.
+void ShadowManager::ClearAccums() {
+	RenderPass* Passes[] = { geometryPass, terrainLODPass, alphaPass, skinnedGeoPass, speedTreePass };
+	for (RenderPass* Pass : Passes)
+		while (!Pass->GeometryList.empty()) Pass->GeometryList.pop();
+}
+
+// Whether a bounding sphere, its centre relative to the light, reaches the 90 degree frustum of
+// the cube face looking along Axis (a world axis): inside the four planes through the light at 45
+// degrees to it, and not wholly behind the light.
+static bool SphereInCubeFace(const D3DXVECTOR3& Centre, float Radius, const D3DXVECTOR3& Axis) {
+	const float Along = D3DXVec3Dot(&Centre, &Axis);
+	if (Along < -Radius) return false;
+	// the other two world axes
+	const D3DXVECTOR3 SideA = Axis.x != 0.0f ? D3DXVECTOR3(0.0f, 1.0f, 0.0f) : D3DXVECTOR3(1.0f, 0.0f, 0.0f);
+	const D3DXVECTOR3 SideB = Axis.z != 0.0f ? D3DXVECTOR3(0.0f, 1.0f, 0.0f) : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+	const float A = D3DXVec3Dot(&Centre, &SideA);
+	const float B = D3DXVec3Dot(&Centre, &SideB);
+	const float Reach = -Radius * 1.41421356f;   // the planes' normals are (Axis +- Side) / sqrt(2)
+	return Along - A >= Reach && Along + A >= Reach && Along - B >= Reach && Along + B >= Reach;
+}
+
+static inline void HashMix(UInt32& Hash, UInt32 Value) {
+	Hash = (Hash ^ Value) * 16777619u;   // FNV-1a, a word at a time
+}
+
+static inline void HashTransform(UInt32& Hash, const NiTransform& Transform) {
+	const UInt32* Words = (const UInt32*)&Transform;   // rotation, position, scale
+	for (int w = 0; w < (int)(sizeof(NiTransform) / sizeof(UInt32)); w++) HashMix(Hash, Words[w]);
+}
+
+// A skinned mesh's bound as posed now, and its pose hashed: each bone's vertex sphere (NiSkinData,
+// in bone space) through the bone's world transform, merged; and each bone's world transform. The
+// mesh's own world bound does not follow the pose, and its world transform does not change as it
+// animates. False when the skin has no bones to go by.
+static bool GetSkinnedBound(NiGeometry* Geo, NiBound* Bound, UInt32* PoseHash) {
+	NiSkinInstance* Skin = Geo->skinInstance;
+	if (!Skin || !Skin->BoneObjects || !Skin->SkinData || !Skin->SkinData->BoneData) return false;
+	// NiSkinData's count: NiSkinInstance's word at 0x1C is the software skinning matrix count, 0 for
+	// the hardware-skinned meshes the game draws (every actor's skin returned false here).
+	const UInt32 Bones = Skin->SkinData->Bones;
+	if (!Bones) return false;
+
+	D3DXVECTOR3 Min(FLT_MAX, FLT_MAX, FLT_MAX), Max(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+	UInt32 Hash = 2166136261u;
+	for (UInt32 b = 0; b < Bones; b++) {
+		const NiAVObject* Bone = Skin->BoneObjects[b];
+		if (!Bone) continue;
+		const NiTransform& World = Bone->m_worldTransform;
+		HashTransform(Hash, World);
+		const NiBound& Local = Skin->SkinData->BoneData[b].Bound;
+		const NiPoint3 Rotated = World.rot * NiPoint3{ Local.Center.x * World.scale, Local.Center.y * World.scale, Local.Center.z * World.scale };
+		const D3DXVECTOR3 Centre(Rotated.x + World.pos.x, Rotated.y + World.pos.y, Rotated.z + World.pos.z);
+		const float Radius = max(Local.Radius * World.scale, 0.0f);
+		const D3DXVECTOR3 Low(Centre.x - Radius, Centre.y - Radius, Centre.z - Radius), High(Centre.x + Radius, Centre.y + Radius, Centre.z + Radius);
+		D3DXVec3Minimize(&Min, &Min, &Low);
+		D3DXVec3Maximize(&Max, &Max, &High);
+	}
+	if (Min.x > Max.x) return false;
+	const D3DXVECTOR3 Centre = (Min + Max) * 0.5f;
+	const D3DXVECTOR3 HalfSize = (Max - Min) * 0.5f;
+	Bound->Center = NiPoint3{ Centre.x, Centre.y, Centre.z };
+	Bound->Radius = D3DXVec3Length(&HalfSize) + 8.0f;   // a little slack for the sphere fit
+	*PoseHash = Hash;
+	return true;
 }
 
 
@@ -385,24 +461,58 @@ static bool IsUnderNode(const NiAVObject* Object, const NiNode* Root) {
 
 void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightIndex) {
 	if (Lights[LightIndex] == NULL) return; // No light at current index
-	
+
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
 	ShadowsExteriorEffect::InteriorsStruct* Settings = &Shadows->Settings.Interiors;
 
 	IDirect3DDevice9* Device = TheRenderManager->device;
 	NiDX9RenderState* RenderState = TheRenderManager->renderState;
 	float Radius = 0.0f;
-	float MinRadius = Settings->Forms.MinRadius;
 	NiPoint3* LightPos = NULL;
 	D3DXMATRIX View, Proj;
 	D3DXVECTOR3 Eye, At, Up, CameraDirection;
 
+	// The slot holds a cluster of lamps (ShaderManager::GetNearbyLights): Lights[LightIndex] is its
+	// key lamp, SlotMembers its lamps, and ShadowLightPosition its centre and radius.
+	if (!Shadows->EnsureShadowCube(LightIndex)) return;
 	NiPointLight* pNiLight = Lights[LightIndex]->sourceLight;
-
-	LightPos = &pNiLight->m_worldTransform.pos;
-	Radius = pNiLight->Spec.r * Shadows->Settings.Interiors.LightRadiusMult;
-	if (pNiLight->CanCarry)
+	D3DXVECTOR4* SlotPosition = &this->SlotPosition[LightIndex];
+	Radius = SlotPosition->w;
+	if (pNiLight->CanCarry) {
+		// Carried lamps draw with a 256 unit radius; the shaders now compare against the same one
+		// (they were given the lamp's own radius, so the depths written and compared disagreed).
 		Radius = 256.0f;
+		SlotPosition->w = Radius;
+	}
+
+	// This slot's cached faces hold another light, or this one from another place or radius, or a
+	// texture since recreated: none of them can be kept. A light's place is its anchor: where its
+	// cube was drawn from, kept while the light stays within 6 units of it. Flickering lamps wander
+	// a few units around a point; at half a unit of tolerance they redrew their whole cube every
+	// frame for nothing. The cube is drawn from the anchor, and the shaders get the anchor too
+	// (ShadowLightPosition), so depth written and depth compared come from the same point.
+	CubeCacheEntry* Cache = &CubeCache[LightIndex];
+	IDirect3DCubeTexture9* CubeTexture = Shadows->Textures.ShadowCubeMapTexture[LightIndex];
+	const D3DXVECTOR3 Position(SlotPosition->x, SlotPosition->y, SlotPosition->z);
+	const D3DXVECTOR3 Drift = Position - Cache->Position;
+	if (Cache->Light != pNiLight || Cache->Texture != CubeTexture || D3DXVec3LengthSq(&Drift) > 36.0f || fabsf(Cache->Radius - Radius) > 0.5f) {
+		if (Cache->Light != pNiLight) CubeResetLight++;
+		else if (Cache->Texture != CubeTexture) CubeResetTexture++;
+		else if (D3DXVec3LengthSq(&Drift) > 36.0f) { CubeResetMoved++; CubeMaxDrift = max(CubeMaxDrift, D3DXVec3Length(&Drift)); }
+		else { CubeResetRadius++; CubeMaxRadiusChange = max(CubeMaxRadiusChange, fabsf(Cache->Radius - Radius)); }
+		memset(Cache->Valid, 0, sizeof(Cache->Valid));
+		Cache->Light = pNiLight;
+		Cache->Texture = CubeTexture;
+		Cache->Position = Position;
+		Cache->Radius = Radius;
+	}
+	NiPoint3 Anchor = { Cache->Position.x, Cache->Position.y, Cache->Position.z };
+	LightPos = &Anchor;
+	SlotPosition->x = Anchor.x;
+	SlotPosition->y = Anchor.y;
+	SlotPosition->z = Anchor.z;
+	if (LightIndex < ShadowCubeMapsMax) Shadows->Constants.ShadowLightPosition[LightIndex] = *SlotPosition;   // the effects' copy
+
 	Eye.x = LightPos->x - TheRenderManager->CameraPosition.x;
 	Eye.y = LightPos->y - TheRenderManager->CameraPosition.y;
 	Eye.z = LightPos->z - TheRenderManager->CameraPosition.z;
@@ -413,15 +523,127 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	Shadows->Constants.Data.z = Radius;
 	D3DXMatrixPerspectiveFovRH(&Proj, D3DXToRadian(90.0f), 1.0f, 0.1f, Radius);
 
+	// The casters, gathered and filtered once for the six faces: every mesh any lamp of the cluster
+	// lights (the game's per-lamp lists, merged, in pointer order so the face hashes do not depend
+	// on list order), with the bound each face culls it by. Each face used to walk the list and run
+	// the filters (including two walks up the scene graph per mesh) itself.
+	std::vector<NiGeometry*>& Gathered = GatheredScratch;
+	Gathered.clear();
+	for (ShadowSceneLight* Member : SlotMembers[LightIndex]) {
+		for (auto iter = Member ? Member->kGeometryList.start : nullptr; iter; iter = iter->next)
+			if (iter->data) Gathered.push_back(iter->data);
+	}
+	std::sort(Gathered.begin(), Gathered.end());
+	Gathered.erase(std::unique(Gathered.begin(), Gathered.end()), Gathered.end());
+	const bool UseGeometryLists = !Gathered.empty();
+
+	// A lamp of the cluster whose light point is inside the player, or within 16 units of the body
+	// (PlayerInsideLamp): the player is left out of this cube. A point inside a model is blocked on
+	// every side, so walking through a lamp without a fixture threw the player's shadow onto every
+	// wall. The body as an upright cylinder from the feet: 32 units across (by the player's scale),
+	// as tall as the player's bound reaches (at most 200), as NVR Unofficial Optimized has it.
+	bool LampInsidePlayer = false;
+	if (Settings->PlayerInsideLamp && Player) {
+		const float Scale = Player->scale > 0.0f ? Player->scale : 1.0f;
+		const float Margin = 16.0f;
+		const NiPoint3& Feet = Player->pos;
+		float Top = Feet.z + 128.0f * Scale;
+		if (NiNode* Node = Player->GetNode())
+			if (Node->m_kWorldBound) Top = min(Node->m_kWorldBound->Center.z + Node->m_kWorldBound->Radius, Feet.z + 200.0f * Scale);
+		const float Reach = 32.0f * Scale + Margin;
+		float Nearest = FLT_MAX, NearestAbove = 0.0f, NearestAcross = 0.0f;
+		for (ShadowSceneLight* Member : SlotMembers[LightIndex]) {
+			if (!Member || !Member->sourceLight) continue;
+			const NiPoint3& Lamp = Member->sourceLight->m_worldTransform.pos;
+			const float dx = Lamp.x - Feet.x, dy = Lamp.y - Feet.y;
+			const float Across = sqrtf(dx * dx + dy * dy);
+			if (Across < Reach && Lamp.z > Feet.z - Margin && Lamp.z < Top + Margin) {
+				LampInsidePlayer = true;
+				break;
+			}
+			// Develop.DebugMode: how far the nearest lamp is from the body, for the log below.
+			const float Gap = max(Across - 32.0f * Scale, 0.0f) + max(Lamp.z - Top, 0.0f) + max(Feet.z - Lamp.z, 0.0f);
+			if (Gap < Nearest) { Nearest = Gap; NearestAbove = Lamp.z - Top; NearestAcross = Across; }
+		}
+		static UInt32 LogFrames = 0;
+		if (TheSettingManager->SettingsMain.Develop.DebugMode && Nearest < 96.0f && ++LogFrames >= 120) {
+			LogFrames = 0;
+			Logger::Log("ShadowManager: slot %u lamp %.0f units from the player's body (%.0f above the head, %.0f across from the feet): not inside, the player casts its shadow",
+				LightIndex, Nearest, NearestAbove, NearestAcross);
+		}
+	}
+
+	std::vector<CubeCaster>& Casters = CastersScratch;
+	Casters.clear();
+	for (NiGeometry* geo : Gathered) {
+		if (geo->m_flags & NiAVObject::APP_CULLED)
+			continue;
+
+		BSShaderProperty* shaderProp = static_cast<BSShaderProperty*>(geo->GetProperty(NiProperty::kType_Shade));
+		NiMaterialProperty* matProp = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
+
+		if (!shaderProp)
+			continue;
+
+		// Skip refraction and fire refraction.
+		if (!CheckShaderFlags(geo))
+			continue;
+
+		// The flags FlagPlayerGeometry sets are refreshed only every 50 frames, so meshes attached to
+		// the player since (a drawn weapon, equipment, a first-person body mod's parts) went unflagged
+		// and cast the player's shadow in first person: an arm or weapon next to a lamp at eye height
+		// threw a shadow over the room that swung with the camera. Where the mesh hangs decides it.
+		bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson) || IsUnderNode(geo, Player->firstPersonNiNode);
+		bool isThirdPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kThirdPerson) || IsUnderNode(geo, Player->GetNode());
+
+		// Skip objects if they are barely visible.
+		if ((matProp && matProp->fAlpha < 0.05f))
+			continue;
+
+		// Also skip viewmodel due to issues, and render player's model only in 3rd person
+		if (isFirstPerson) continue;
+
+		if (!Player->isThirdPerson && !Settings->PlayerShadowFirstPerson && isThirdPerson)
+			continue;
+
+		if (Player->isThirdPerson && !Settings->PlayerShadowThirdPerson && isThirdPerson)
+			continue;
+
+		if (LampInsidePlayer && isThirdPerson)
+			continue;
+
+		// A skinned mesh goes by its bones (GetSkinnedBound): its own bound does not follow the
+		// pose, and its pose joins the hash, so an actor redraws only the faces it is in while it
+		// moves, and a still one (a corpse) is kept like any other mesh. A skin without bones to go
+		// by is drawn in every face, every frame.
+		CubeCaster Caster = {};
+		Caster.Geo = geo;
+		if (geo->skinInstance) {
+			if (GetSkinnedBound(geo, &Caster.Bound, &Caster.PoseHash))
+				Caster.HasBound = true;
+			else {
+				Caster.AlwaysRedraw = true;
+				if (!CubeDynamicExample[0])
+					strncpy_s(CubeDynamicExample, geo->m_pcName ? geo->m_pcName : "(unnamed)", _TRUNCATE);
+			}
+		}
+		else if (geo->m_kWorldBound) {
+			Caster.Bound = *geo->m_kWorldBound;
+			Caster.HasBound = true;
+		}
+		Casters.push_back(Caster);
+	}
+
 	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ZWRITEENABLE, D3DZB_TRUE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE, RenderStateArgs);
-	
+
 	RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ALPHAREF, 0, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_ALWAYS, RenderStateArgs);
 
+	UInt32 DrawnFaces = 0;   // into the atlas after the loop (ConvertCubeFaces)
 	for (int Face = 0; Face < 6; Face++) {
 		At = Eye;
 		switch (Face) {
@@ -452,44 +674,24 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 		At += CameraDirection;
 
-		// Since this is pure geometry, getting reference data will be difficult (read: slow)
-		auto iter = Lights[LightIndex]->kGeometryList.start;
-		if (iter) {
-			while (iter) {
-				NiGeometry* geo = iter->data;
-				iter = iter->next;
-				if (!geo || geo->m_flags & NiAVObject::APP_CULLED)
-					continue;
+		// What this face draws, hashed as it is gathered; a skin without bones or the form-based
+		// fallback below make it redraw regardless.
+		UInt32 Signature = 2166136261u;
+		bool Dynamic = false;
+		HashMix(Signature, Settings->Forms.AlphaEnabled ? 1u : 0u);
 
-				BSShaderProperty* shaderProp = static_cast<BSShaderProperty*>(geo->GetProperty(NiProperty::kType_Shade));
-				NiMaterialProperty* matProp = static_cast<NiMaterialProperty*>(geo->GetProperty(NiProperty::kType_Material));
-
-				if (!shaderProp)
-					continue;
-
-				// Skip refraction and fire refraction.
-				if (!CheckShaderFlags(geo))
-					continue;
-
-				// The flags FlagPlayerGeometry sets are refreshed only every 50 frames, so meshes attached to
-				// the player since (a drawn weapon, equipment, a first-person body mod's parts) went unflagged
-				// and cast the player's shadow in first person: an arm or weapon next to a lamp at eye height
-				// threw a shadow over the room that swung with the camera. Where the mesh hangs decides it.
-				bool isFirstPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kFirstPerson) || IsUnderNode(geo, Player->firstPersonNiNode);
-				bool isThirdPerson = shaderProp->m_usFlags.GetBit(NiShadeProperty::kThirdPerson) || IsUnderNode(geo, Player->GetNode());
-
-				// Skip objects if they are barely visible. 
-				if ((matProp && matProp->fAlpha < 0.05f))
-					continue;
-
-				// Also skip viewmodel due to issues, and render player's model only in 3rd person
-				if (isFirstPerson) continue;
-
-				if (!Player->isThirdPerson && !Settings->PlayerShadowFirstPerson && isThirdPerson)
-					continue;
-
-				if (Player->isThirdPerson && !Settings->PlayerShadowThirdPerson && isThirdPerson)
-					continue;
+		if (UseGeometryLists) {
+			for (const CubeCaster& Caster : Casters) {
+				// Only what this face can see. Each face used to draw the light's whole list.
+				if (Caster.HasBound) {
+					const D3DXVECTOR3 Centre(Caster.Bound.Center.x - LightPos->x, Caster.Bound.Center.y - LightPos->y, Caster.Bound.Center.z - LightPos->z);
+					if (!SphereInCubeFace(Centre, Caster.Bound.Radius, CameraDirection)) continue;
+				}
+				Dynamic |= Caster.AlwaysRedraw;
+				NiGeometry* geo = Caster.Geo;
+				HashMix(Signature, (UInt32)geo);
+				HashTransform(Signature, geo->m_worldTransform);
+				HashMix(Signature, Caster.PoseHash);
 
 				if (skinnedGeoPass->AccumObject(geo)) {}
 				else if (speedTreePass->AccumObject(geo)) {}
@@ -499,16 +701,10 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 		else {
 			// old form based geo accumulation when the one perform by the game has not handled this light
+			Dynamic = true;
 			TList<TESObjectREFR>::Entry* Entry = &Player->parentCell->objectList.First;
 			while (Entry) {
 				if (NiNode* RefNode = GetRefNode(Entry->item, &Settings->Forms)) {
-					// Detect if the object is in front of the light in the direction of the current face
-					// TODO: improve to base on frustum
-					D3DXVECTOR3 ObjectPos = RefNode->m_worldTransform.pos.toD3DXVEC3();
-					D3DXVECTOR3 ObjectToLight = ObjectPos - LightPos->toD3DXVEC3();
-
-					D3DXVec3Normalize(&ObjectToLight, &ObjectToLight);
-					bool inFront = D3DXVec3Dot(&ObjectToLight, &CameraDirection) > 0;
 					if (RefNode->GetDistance(LightPos) <= Radius + RefNode->GetWorldBoundRadius() && !IsRefracting(Entry->item))
 						AccumChildren(RefNode, &Settings->Forms, false, false);
 				}
@@ -516,6 +712,19 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 			}
 		}
 
+
+		// Nothing this face sees changed since it was drawn: keep it.
+		if (!Dynamic && Cache->Valid[Face] && Cache->Signature[Face] == Signature) {
+			ClearAccums();
+			CubeFacesKept++;
+			continue;
+		}
+		if (!Cache->Valid[Face]) CubeFacesFirst++;
+		else if (Dynamic) CubeFacesDynamic++;
+		else CubeFacesChanged++;
+		Cache->Valid[Face] = true;
+		Cache->Signature[Face] = Signature;
+		CubeFacesDrawn++;
 
 		D3DXMatrixLookAtRH(&View, &Eye, &At, &Up);
 		Shadows->Constants.ShadowViewProj = View * Proj;
@@ -527,7 +736,67 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		Device->Clear(0L, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DXCOLOR(1.0f, 1.0f, 1.0f, 1.0f), 1.0f, 0L);
 
 		RenderAccums();
+		DrawnFaces |= 1u << Face;
 	}
+	ConvertCubeFaces(LightIndex, DrawnFaces, Radius);
+}
+
+// The faces just drawn into the atlas the object shaders read (Shaders/Includes/PointShadow.hlsl):
+// tile slot * 6 + face, PointShadowAtlasColumns to a row, as exponential shadow maps blurred by ShadowSoftness texels
+// (Shaders/Shadows/ShadowCubeToAtlas.pso). Only redrawn faces: a kept face keeps its tile.
+void ShadowManager::ConvertCubeFaces(UInt32 LightIndex, UInt32 Faces, float Radius) {
+	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
+	if (!Faces || !Shadows->Textures.PointShadowAtlasSurface || !ShadowCubeToAtlasPixel || !ShadowMapBlurVertex) return;
+	if (LightIndex >= Shadows->Textures.PointShadowAtlasSlots) return;   // no room in the atlas (not shadowed by the object shaders)
+	const UINT Columns = Shadows->Textures.PointShadowAtlasColumns;
+
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	NiDX9RenderState* RenderState = TheRenderManager->renderState;
+	const UINT Size = ShadowCubeMapViewPort.Width;
+	if (!AtlasTileVertexBuffer || AtlasTileVertexSize != Size) {
+		if (AtlasTileVertexBuffer) AtlasTileVertexBuffer->Release();
+		AtlasTileVertexBuffer = nullptr;
+		TheShaderManager->CreateFrameVertex(Size, Size, &AtlasTileVertexBuffer);
+		AtlasTileVertexSize = Size;
+		if (!AtlasTileVertexBuffer) return;
+	}
+
+	Device->SetRenderTarget(0, Shadows->Textures.PointShadowAtlasSurface);
+	Device->SetDepthStencilSurface(NULL);
+	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ZWRITEENABLE, FALSE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE, RenderStateArgs);
+	RenderState->SetVertexShader(ShadowMapBlurVertex->ShaderHandle, false);   // passes the quad through
+	RenderState->SetPixelShader(ShadowCubeToAtlasPixel->ShaderHandle, false);
+	RenderState->SetFVF(FrameFVF, false);
+	Device->SetStreamSource(0, AtlasTileVertexBuffer, 0, sizeof(FrameVS));
+	RenderState->SetTexture(0, Shadows->Textures.ShadowCubeMapTexture[LightIndex]);
+	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP, false);
+	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP, false);
+	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP, false);
+	RenderState->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR, false);
+	RenderState->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR, false);
+	RenderState->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE, false);
+
+	// The blur step in the face's -1..1 coordinates, and the exponent (PointShadowExponent in
+	// PointShadow.hlsl: the shaders reading the tile must use the same).
+	const float Step = Shadows->Settings.Interiors.ShadowSoftness * 2.0f / (float)Size;
+	const float Exponent = min(0.15f * Radius, 80.0f);
+	for (UInt32 Face = 0; Face < 6; Face++) {
+		if (!(Faces & (1u << Face))) continue;
+		const UINT Tile = LightIndex * 6 + Face;
+		const D3DVIEWPORT9 Viewport = { (Tile % Columns) * Size, (Tile / Columns) * Size, Size, Size, 0.0f, 1.0f };
+		Device->SetViewport(&Viewport);
+		const float Data[4] = { (float)Face, Step, Exponent, 0.0f };
+		Device->SetPixelShaderConstantF(0, Data, 1);
+		Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+	}
+
+	RenderState->SetTexture(0, nullptr);
+	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ZWRITEENABLE, TRUE, RenderStateArgs);
 }
 
 
@@ -601,7 +870,7 @@ void ShadowManager::RenderShadowMaps() {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // cancel out if rendering effects is disabled
 
 	// track point lights for interiors and exteriors
-	ShadowSceneLight* ShadowLights[ShadowCubeMapsMax] = { NULL };
+	ShadowSceneLight* ShadowLights[ShadowSlotsMax] = { NULL };
 	NiPointLight* Lights[TrackedLightsMax] = { NULL };
 	NiSpotLight* SpotLights[SpotLightsMax] = { NULL };
 
@@ -803,9 +1072,16 @@ void ShadowManager::RenderShadowMaps() {
 	speedTreePass->PixelShader = ShadowCubeMapPixel;
 
 	auto shadowMapTimer = TimeLogger();
+	// The atlas tiles hold the faces blurred by ShadowSoftness (ConvertCubeFaces): a new value
+	// reaches kept faces only when they are drawn again, so they all are.
+	static float ConvertedSoftness = -1.0f;
+	if (ShadowsInteriors->ShadowSoftness != ConvertedSoftness) {
+		ConvertedSoftness = ShadowsInteriors->ShadowSoftness;
+		InvalidateCubeCache();
+	}
 	if ((isExterior && usePointLights) || (!isExterior && InteriorEnabled)) {
 		// render the cubemaps for each light
-		for (int i = 0; i < ShadowsInteriors->LightPoints; i++) {
+		for (int i = 0; i < SlotCount; i++) {
 
 			// Render targets set in function due to rendering multiple faces.
 			RenderShadowCubeMap(ShadowLights, i);
@@ -813,6 +1089,23 @@ void ShadowManager::RenderShadowMaps() {
 			std::string message = "ShadowManager::RenderShadowCubeMap ";
 			message += std::to_string(i);
 			shadowMapTimer.LogTime(message.c_str());
+		}
+
+		// Develop.DebugMode: how much the cubemap cache saves, every 600 frames.
+		static UInt32 LogFrames = 0;
+		if (TheSettingManager->SettingsMain.Develop.DebugMode && ++LogFrames >= 600) {
+			Logger::Log("ShadowManager: point light cubemaps over %u frames: %u faces drawn, %u kept. Whole cubes reset: %u new light, %u moved (max %.2f), %u radius (max %.2f), %u texture. Faces redrawn: %u first draw, %u skinned geometry (e.g. %s), %u content changed",
+				LogFrames, CubeFacesDrawn, CubeFacesKept, CubeResetLight, CubeResetMoved, CubeMaxDrift, CubeResetRadius, CubeMaxRadiusChange, CubeResetTexture,
+				CubeFacesFirst, CubeFacesDynamic, CubeDynamicExample[0] ? CubeDynamicExample : "-", CubeFacesChanged);
+			Logger::Log("ShadowManager: shadow slots over %u frames: %u clusters given a slot (%u taking a held one), dropped: %u outranked, %u gone, %u inactive past grace; up to %u shadow-casting lamps gathered, in %u clusters",
+				LogFrames, SlotAssigned, SlotEvicted, SlotDropOutranked, SlotDropGone, SlotDropExpired, SlotMaxGathered, SlotMaxClusters);
+			SlotAssigned = SlotEvicted = SlotDropOutranked = SlotDropGone = SlotDropExpired = SlotMaxGathered = SlotMaxClusters = 0;
+			LogFrames = 0;
+			CubeFacesDrawn = CubeFacesKept = 0;
+			CubeResetLight = CubeResetMoved = CubeResetRadius = CubeResetTexture = 0;
+			CubeFacesDynamic = CubeFacesChanged = CubeFacesFirst = 0;
+			CubeMaxDrift = CubeMaxRadiusChange = 0.0f;
+			CubeDynamicExample[0] = 0;
 		}
 	}
 

@@ -27,8 +27,8 @@ void PBRShaders::UpdateSettings() {
 	MaterialSettings.KeepOffscreenLights = TheSettingManager->GetSettingI("Shaders.PBR.Main", "KeepOffscreenLights");
 	MaterialSettings.VanillaEnvMapOnPBR = TheSettingManager->GetSettingI("Shaders.PBR.Main", "VanillaEnvMapOnPBR");
 	MaterialSettings.PBRLinearLighting = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Main", "PBRLinearLighting"), 0.0f, 1.0f);
-	MaterialSettings.LightingModel = std::clamp(TheSettingManager->GetSettingI("Shaders.PBR.Main", "LightingModel"), 0, 1);
 	MaterialSettings.DebugView = TheSettingManager->GetSettingI("Shaders.PBR.Main", "DebugView");
+	MaterialSettings.LightSourceSize = std::clamp(TheSettingManager->GetSettingF("Shaders.PBR.Main", "LightSourceSize"), 0.0f, 64.0f);
 }
 
 // The value of one per-weather setting for the current weather, time and rain.
@@ -52,6 +52,6 @@ void PBRShaders::UpdateConstants() {
 	Constants.ExtraData.z = MaterialSettings.PBRLinearLighting;   // authored materials' linear lighting amount (Object.hlsl)
 	Constants.ExtraData.w = MaterialSettings.LinearLighting ? 1.0f : 0.0f;
 
-	Constants.SpecularData = D3DXVECTOR4((float)MaterialSettings.LightingModel, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f, 0.0f, 1.0f);   // x: lighting model of authored materials
+	Constants.SpecularData = D3DXVECTOR4(0.0f, TheShaderManager->GameState.isExterior ? 1.0f : 0.0f, MaterialSettings.LightSourceSize, 1.0f);   // y: outdoors, z: light source size
 	Constants.DebugData.x = (float)std::clamp(MaterialSettings.DebugView, 0, 5);
 }

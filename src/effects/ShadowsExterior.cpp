@@ -89,6 +89,15 @@ void ShadowsExteriorEffect::UpdateConstants() {
 		Constants.Data.z = 1.0f / (float)Settings.Interiors.ShadowCubeMapSize;
 	}
 
+	// Lamps shadowed in the object shaders (Shaders/Includes/PointShadow.hlsl), indoors, when the atlas
+	// exists. ShaderManager then skips the point shadow post-process.
+	const float FaceSize = (float)Settings.Interiors.ShadowCubeMapSize;
+	const bool ForwardPoint = !TheShaderManager->GameState.isExterior && Settings.Interiors.ForwardPointShadows
+		&& TheShaderManager->Effects.ShadowsInteriors->Enabled && Textures.PointShadowAtlasTexture && TheShadowManager && TheShadowManager->ShadowCubeToAtlasPixel;
+	const float Columns = (float)max(Textures.PointShadowAtlasColumns, 1u), Rows = (float)max(Textures.PointShadowAtlasRows, 1u);
+	Constants.PointShadowData = D3DXVECTOR4(ForwardPoint ? 1.0f : 0.0f, 1.0f / (Columns * FaceSize), 1.0f / (Rows * FaceSize), FaceSize);
+	Constants.PointShadowParams = D3DXVECTOR4(Settings.Interiors.NearFade, Columns, 0.0f, 0.0f);
+
 	// Force-rebind FormatData/ForwardData directly, once per frame, bypassing the
 	// per-shader "bound by name" constant table.
 	//
@@ -450,11 +459,20 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.Forms.Statics = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Statics");
 	Settings.Interiors.Forms.MinRadius = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "MinRadius");
 	Settings.Interiors.Quality = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "Quality");
-	Settings.Interiors.LightPoints = max(0, min(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LightPoints"), ShadowCubeMapsMax));
+	// Up to ShadowSlotsMax with ForwardPointShadows indoors (and room in the atlas, made at startup
+	// for LightPoints then: ShaderManager::GetNearbyLights caps it), else ShadowCubeMapsMax.
+	Settings.Interiors.LightPoints = max(0, min(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "LightPoints"), ShadowSlotsMax));
 	Settings.Interiors.TorchesCastShadows = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "TorchesCastShadows");
 	Settings.Interiors.ShadowCubeMapSize = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ShadowCubeMapSize");
 	Settings.Interiors.Darkness = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "Darkness");
 	Settings.Interiors.LightRadiusMult = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "LightRadiusMult");
+	Settings.Interiors.LightClusterRadius = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "LightClusterRadius");
+	Settings.Interiors.ForwardPointShadows = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ForwardPointShadows");
+	Settings.Interiors.FillLightRadius = max(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "FillLightRadius"), 0.0f);
+	Settings.Interiors.FillLightShadowStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "FillLightShadowStrength"), 0.0f, 1.0f);
+	Settings.Interiors.NearFade = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "NearFade"), 0.0f, 256.0f);
+	Settings.Interiors.PlayerInsideLamp = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PlayerInsideLamp");
+	Settings.Interiors.ShadowSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ShadowSoftness"), 0.0f, 4.0f);
 	Settings.Interiors.DrawDistance = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "DrawDistance");
 	Settings.Interiors.UseCastShadowFlag = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "UseCastShadowFlag");
 	Settings.Interiors.PlayerShadowFirstPerson = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PlayerShadowFirstPerson");
@@ -508,6 +526,23 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowCameraToLightTransformOrtho", (D3DXVECTOR4*)&ShadowMaps[MapOrtho].ShadowCameraToLight);
 	TheShaderManager->RegisterConstant("TESR_ShadowCubeMapLightPosition", &Constants.ShadowCubeMapLightPosition);
 	TheShaderManager->RegisterConstant("TESR_ShadowLightPosition", (D3DXVECTOR4*)&Constants.ShadowLightPosition);
+	TheShaderManager->RegisterConstant("TESR_ShadowLightFade", (D3DXVECTOR4*)&Constants.ShadowLightFade);
+	TheShaderManager->RegisterConstant("TESR_PointShadowData", &Constants.PointShadowData);
+	TheShaderManager->RegisterConstant("TESR_PointShadowParams", &Constants.PointShadowParams);
+}
+
+// A shadow slot's cubemap, made the first time a slot past the first ShadowCubeMapsMax is used.
+bool ShadowsExteriorEffect::EnsureShadowCube(UInt32 Slot) {
+	if (Slot >= ShadowSlotsMax) return false;
+	if (Textures.ShadowCubeMapTexture[Slot]) return true;
+	const UINT Size = Settings.Interiors.ShadowCubeMapSize;
+	if (FAILED(TheRenderManager->device->CreateCubeTexture(Size, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &Textures.ShadowCubeMapTexture[Slot], NULL))) {
+		Textures.ShadowCubeMapTexture[Slot] = nullptr;
+		return false;
+	}
+	for (int Face = 0; Face < 6; Face++)
+		Textures.ShadowCubeMapTexture[Slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)Face, 0, &Textures.ShadowCubeMapSurface[Slot][Face]);
+	return true;
 }
 
 void ShadowsExteriorEffect::RegisterTextures() {
@@ -564,6 +599,39 @@ void ShadowsExteriorEffect::RegisterTextures() {
 	}
 	// Create the stencil surface used for rendering cubemaps
 	TheRenderManager->device->CreateDepthStencilSurface(ShadowCubeMapSize, ShadowCubeMapSize, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, true, &Textures.ShadowCubeMapDepthSurface, NULL);
+	if (TheShadowManager) TheShadowManager->InvalidateCubeCache();   // new cubemaps: nothing cached is in them
+
+	// The faces again, all in one texture, for the object shaders: room for LightPoints slots (at
+	// least 12), six tiles each, in a near-square grid that fits the device's largest texture (fewer
+	// slots if it must). None fits: lamps keep the post-process shadows.
+	D3DCAPS9 Caps = {};
+	TheRenderManager->device->GetDeviceCaps(&Caps);
+	const UINT MaxColumns = Caps.MaxTextureWidth / ShadowCubeMapSize, MaxRows = Caps.MaxTextureHeight / ShadowCubeMapSize;
+	UINT AtlasSlots = (UINT)std::clamp(Settings.Interiors.LightPoints, (int)ShadowCubeMapsMax, (int)ShadowSlotsMax);
+	UINT Columns = 0, Rows = 0;
+	for (; AtlasSlots > 0; AtlasSlots--) {
+		const UINT Tiles = AtlasSlots * 6;
+		Columns = min(MaxColumns, (UINT)ceilf(sqrtf((float)Tiles)));
+		Rows = Columns ? (Tiles + Columns - 1) / Columns : 0;
+		if (Columns && Rows <= MaxRows) break;
+	}
+	if (AtlasSlots)
+		TheTextureManager->InitTexture("TESR_PointShadowAtlas", &Textures.PointShadowAtlasTexture, &Textures.PointShadowAtlasSurface, Columns * ShadowCubeMapSize, Rows * ShadowCubeMapSize, D3DFMT_R32F);
+	Textures.PointShadowAtlasColumns = Columns;
+	Textures.PointShadowAtlasRows = Rows;
+	Textures.PointShadowAtlasSlots = Textures.PointShadowAtlasTexture ? AtlasSlots : 0;
+	if (!Textures.PointShadowAtlasTexture)
+		Logger::Log("[ERROR] Point shadow atlas: no room for even one lamp at face size %u on this device (%u x %u); lamps are shadowed in post-process", ShadowCubeMapSize, Caps.MaxTextureWidth, Caps.MaxTextureHeight);
+	else
+		Logger::Log("Point shadow atlas: %u lamp shadow slots, %u x %u", AtlasSlots, Columns * ShadowCubeMapSize, Rows * ShadowCubeMapSize);
+	if (Textures.PointShadowAtlasSurface) {   // nothing drawn yet: lit everywhere
+		IDirect3DSurface9* Target = nullptr;
+		TheRenderManager->device->GetRenderTarget(0, &Target);
+		TheRenderManager->device->SetRenderTarget(0, Textures.PointShadowAtlasSurface);
+		TheRenderManager->device->Clear(0, NULL, D3DCLEAR_TARGET, D3DXCOLOR(1.0f, 1.0f, 1.0f, 1.0f), 1.0f, 0);
+		TheRenderManager->device->SetRenderTarget(0, Target);
+		if (Target) Target->Release();
+	}
 
 	//TheShadowManager->ShadowCubeMapViewPort = { 0, 0, ShadowCubeMapSize, ShadowCubeMapSize, 0.0f, 1.0f };
 	//memset(TheShadowManager->ShadowCubeMapLights, NULL, sizeof(ShadowCubeMapLights));

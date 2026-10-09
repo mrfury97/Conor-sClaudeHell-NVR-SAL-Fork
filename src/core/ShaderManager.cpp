@@ -626,15 +626,19 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	auto timer = TimeLogger();
 
 	// create a map of all nearby valid lights and sort them per distance to player
-	std::map<int, ShadowSceneLight*> SceneLights;
+	std::multimap<int, ShadowSceneLight*> SceneLights;   // a multimap: two lamps at the same distance used to overwrite each other
 	NiTList<ShadowSceneLight>::Entry* Entry = SceneNode->lights.start;
 
 	ShadowsExteriorEffect::InteriorsStruct* Settings = &Effects.ShadowsExteriors->Settings.Interiors;
 	ShadowsExteriorEffect::ShadowStruct* ShadowsConstants = &Effects.ShadowsExteriors->Constants;
 
+	std::vector<ShadowSceneLight*>& PresentLights = PresentLightsScratch;   // every scene light, any state
+	PresentLights.clear();
+
 	// Creating list of lights in order of distance to the player
 	while (Entry) {
 		NiPointLight* Light = Entry->data->sourceLight;
+		PresentLights.push_back(Entry->data);
 		D3DXVECTOR4 LightPosition = Light->m_worldTransform.pos.toD3DXVEC4();
 
 		bool lightCulled = Light->m_flags & NiAVObject::NiFlags::APP_CULLED;
@@ -659,7 +663,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		// select lights that will be tracked by removing culled lights and lights entirely behind the camera
 		float drawDistance = 8000;//TheShaderManager->GameState.isExterior ? TheSettingManager->SettingsShadows.Exteriors.ShadowMapRadius[TheShadowManager->ShadowMapTypeEnum::MapLod] : TheSettingManager->SettingsShadows.Interiors.DrawDistance;
 		if ((inFront || Distance < radius) && (Distance + radius) < drawDistance) {
-			SceneLights[(int)(Distance * 10000)] = Entry->data; // multiplying distance (used as key) before conversion to avoid overwriting in case of similar values
+			SceneLights.emplace((int)(Distance * 10000), Entry->data); // distance x 10000 as the key, to sort by
 		}
 
 		Entry = Entry->next;
@@ -677,10 +681,13 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	// Filling past that gives the shader a live position and colour for a face that is never
 	// redrawn, so it samples whatever that cubemap last held -- a shadow frozen from an earlier
 	// frame or cell. Lights beyond the cap fall through to the non-shadowing tracked list.
-	const int ShadowLightsMax = min(Settings->LightPoints, (int)ShadowCubeMapsMax);
+	// Past ShadowCubeMapsMax only with the object shaders' lamp shadows (indoors), as far as the
+	// atlas has room (sized at startup): the post-process and the other effects see 12.
+	const bool ForwardSlots = Effects.ShadowsExteriors->Constants.PointShadowData.x > 0.0f;
+	const int ShadowLightsMax = min(Settings->LightPoints, ForwardSlots ? (int)Effects.ShadowsExteriors->Textures.PointShadowAtlasSlots : (int)ShadowCubeMapsMax);
+	TheShadowManager->SlotCount = ShadowLightsMax;
 
 	// get the data for all tracked lights
-	int ShadowIndex = 0;
 	int LightIndex = 0;
 	TheShadowManager->PointLightsNum = 0;
 
@@ -701,70 +708,305 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		SpotLightList[0] = nullptr;
 	}
 
-	std::map<int, ShadowSceneLight*>::iterator v = SceneLights.begin();
-	for (int i = 0; i < TrackedLightsMax + ShadowCubeMapsMax; i++) {
-		// set null values if we reached the end of lights in the scene and current index is lower than max amount
-		if (v == SceneLights.end()) {
-			if (ShadowIndex < ShadowCubeMapsMax) {
-				//Logger::Log("clearing shadow casting light at index %i", ShadowIndex);
-				ShadowLightsList[ShadowIndex] = NULL;
-				ShadowsConstants->ShadowLightPosition[ShadowIndex] = Empty;
-				LightColor[ShadowIndex] = Empty;
-				ShadowIndex++;
-			}
-			if (LightIndex < TrackedLightsMax) {
-				//Logger::Log("clearing light at index %i", LightIndex);
-				LightsList[LightIndex] = NULL;
-				LightPosition[LightIndex] = Empty;
-				LightColor[ShadowCubeMapsMax + LightIndex] = Empty;
-				LightIndex++;
-			}
+	// Shadow-casting lamps keep their cubemap slot from frame to frame (ShadowManager caches each
+	// slot's cubemap while nothing it sees moves). The slots used to be refilled in distance order
+	// every frame, so walking past a lamp moved every farther lamp to another slot: shadows popped,
+	// and no slot could keep its map. Now the LightPoints lamps lighting the player's surroundings
+	// most (Score) always have a slot, and a lamp keeps its slot while it stays among the first
+	// LightPoints + SlotMargin, so two lamps close in rank no longer trade it back and forth as the
+	// player moves.
+	//
+	// A lamp holding a slot that drops out of the lights gathered above -- culled by the game's room
+	// and portal system, a flickering lamp dipping dark for a frame, its sphere passing behind the
+	// camera, or out of range -- keeps it for SlotGrace seconds while it still exists: such lamps
+	// came back a moment later, and losing and regaining the slot made their shadows blink on and
+	// off and handed the slot (and a redraw) to another lamp each time. While inactive it lights
+	// nothing on screen, so keeping its shadow costs nothing visible; a lamp that needs the slot
+	// takes it first.
+	//
+	// Lamps closer together than LightClusterRadius share one slot and one shadow, drawn from their
+	// centre: a chandelier's bulbs, a pair of sconces. The Prospector Saloon gathers 45 shadow-casting
+	// lamps for 12 slots; the nearest 12 changed every few steps, and shadows came and went. Clusters
+	// are built from the lamps alone, in a fixed order (their addresses), so they do not change as
+	// the player moves. A cluster is known by its key lamp (its widest), lights as its active lamps
+	// summed, and its cube draws what any of its lamps lights (ShadowManager::RenderShadowCubeMap).
+	// What follows says lamp for a cluster.
+	static NiPointLight* SlotLights[ShadowSlotsMax] = {};   // each slot's cluster's key lamp
+	static float SlotIdle[ShadowSlotsMax] = {};             // seconds the holder has been inactive
+	// A slot's shadow fades in over SlotFadeTime when a cluster gets it, and out before the cluster
+	// gives it up (it keeps the slot until its shadow is gone): shadows no longer pop on and off as
+	// clusters trade slots.
+	static float SlotFade[ShadowSlotsMax] = {};
+	static bool SlotLeaving[ShadowSlotsMax] = {};
+	const float SlotFadeTime = 0.5f;
+	const int SlotMargin = 4;
+	const float SlotGrace = 1.5f;
+	const int InactiveRank = 1 << 20;   // ranks after every active cluster: evicted first
+	const float FrameTime = (float)TheFrameRateManager->ElapsedTime;
+	const float FadeStep = FrameTime / SlotFadeTime;
+	const float ClusterRadius = max(Settings->LightClusterRadius, 0.0f);
+	ShadowManager* SlotStats = TheShadowManager;
 
-			continue;
-		}
-
-		NiPointLight* Light = v->second->sourceLight;
-		if (!Light) {
-			v++;
-			continue;
-		}
-
-		if (Light->EffectType == NiDynamicEffect::EffectTypes::POINT_LIGHT) {
-			// determin if light is a shadow caster
-			//bool CastShadow = Settings->UseCastShadowFlag ? Light->CastShadows : true; // Flag is broken by JIP
-			bool CastShadow = true;
-
+	auto IsShadowCaster = [&](NiPointLight* Light) {
+		if (!Light || Light->EffectType != NiDynamicEffect::EffectTypes::POINT_LIGHT) return false;
+		//bool CastShadow = Settings->UseCastShadowFlag ? Light->CastShadows : true; // Flag is broken by JIP
 #if defined(OBLIVION)
-			// Oblivion exception for carried torch lights 
-			if (TorchOnBeltEnabled && Light->CanCarry == 2) {
-				HighProcessEx* Process = (HighProcessEx*)Player->process;
-				if (Process->OnBeltState == HighProcessEx::State::In) CastShadow = false;
+		// Oblivion exception for carried torch lights
+		if (TorchOnBeltEnabled && Light->CanCarry == 2) {
+			HighProcessEx* Process = (HighProcessEx*)Player->process;
+			if (Process->OnBeltState == HighProcessEx::State::In) return false;
 		}
 #endif
-			float radius = Light->Spec.r * Settings->LightRadiusMult;
-			D3DXVECTOR4 LightPos = Light->m_worldTransform.pos.toD3DXVEC4();
-			LightPos.w = radius;
+		return Light->Spec.r * Settings->LightRadiusMult > 10;
+	};
 
-			if (CastShadow && ShadowIndex < ShadowLightsMax && radius > 10) {
-				// add found light to list of lights that cast shadows
-				ShadowLightsList[ShadowIndex] = v->second;
-				ShadowsConstants->ShadowLightPosition[ShadowIndex] = LightPos;
-				LightColor[ShadowIndex] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+	// The active shadow casters (gathered above: on, not culled, in range, not wholly behind the
+	// camera), nearest first.
+	std::vector<ShadowSceneLight*>& Ranked = RankedLightsScratch;
+	Ranked.clear();
+	for (auto& Entry : SceneLights)
+		if (IsShadowCaster(Entry.second->sourceLight)) Ranked.push_back(Entry.second);
+	auto RankOf = [&Ranked](const NiPointLight* Light) {
+		for (int r = 0; r < (int)Ranked.size(); r++)
+			if (Ranked[r]->sourceLight == Light) return r;
+		return -1;
+	};
 
-				ShadowIndex++;
-				TheShadowManager->PointLightsNum++; // Constant to track number of shadow casting lights are present
+	// Every shadow caster in the scene, active or not, clustered greedily in address order: each lamp
+	// not yet taken starts a cluster and takes the lamps within ClusterRadius of it.
+	std::vector<ShadowSceneLight*>& Casters = EligibleLightsScratch;
+	Casters.clear();
+	for (ShadowSceneLight* SceneLight : PresentLights)
+		if (SceneLight && IsShadowCaster(SceneLight->sourceLight)) Casters.push_back(SceneLight);
+	std::sort(Casters.begin(), Casters.end());
+	Casters.erase(std::unique(Casters.begin(), Casters.end()), Casters.end());
+
+	std::vector<ShadowLampCluster>& Clusters = ClustersScratch;
+	std::vector<ShadowSceneLight*>& ClusterLamps = ClusterLampsScratch;
+	std::vector<char>& Taken = ClusterTakenScratch;
+	Clusters.clear();
+	ClusterLamps.clear();
+	Taken.assign(Casters.size(), 0);
+	for (size_t i = 0; i < Casters.size(); i++) {
+		if (Taken[i]) continue;
+		ShadowLampCluster Cluster = {};
+		Cluster.Colour = D3DXVECTOR3(0.0f, 0.0f, 0.0f);   // D3DXVECTOR3's constructor leaves it unset, = {} or not
+		Cluster.First = (UInt32)ClusterLamps.size();
+		const NiPoint3& Seed = Casters[i]->sourceLight->m_worldTransform.pos;
+		for (size_t j = i; j < Casters.size(); j++) {
+			if (Taken[j]) continue;
+			const NiPoint3& P = Casters[j]->sourceLight->m_worldTransform.pos;
+			const float dx = P.x - Seed.x, dy = P.y - Seed.y, dz = P.z - Seed.z;
+			if (j != i && dx * dx + dy * dy + dz * dz > ClusterRadius * ClusterRadius) continue;
+			Taken[j] = 1;
+			ClusterLamps.push_back(Casters[j]);
+		}
+		Cluster.Count = (UInt32)ClusterLamps.size() - Cluster.First;
+
+		// Centre: the lamps' mean. Radius: reaching every lamp's sphere from there. Key: the widest.
+		D3DXVECTOR3 Sum(0.0f, 0.0f, 0.0f);
+		for (UInt32 k = 0; k < Cluster.Count; k++)
+			Sum += ClusterLamps[Cluster.First + k]->sourceLight->m_worldTransform.pos.toD3DXVEC3();
+		Cluster.Centre = Sum / (float)Cluster.Count;
+		Cluster.Rank = -1;
+		Cluster.Score = FLT_MAX;
+		float KeyRadius = -1.0f;
+		for (UInt32 k = 0; k < Cluster.Count; k++) {
+			ShadowSceneLight* Lamp = ClusterLamps[Cluster.First + k];
+			NiPointLight* Light = Lamp->sourceLight;
+			const float LampRadius = Light->Spec.r * Settings->LightRadiusMult;
+			const D3DXVECTOR3 Offset = Light->m_worldTransform.pos.toD3DXVEC3() - Cluster.Centre;
+			Cluster.Radius = max(Cluster.Radius, LampRadius + D3DXVec3Length(&Offset));
+			if (LampRadius > KeyRadius) {
+				KeyRadius = LampRadius;
+				Cluster.Key = Light;
+				Cluster.KeyScene = Lamp;
+				Cluster.Fill = Settings->FillLightRadius > 0.0f && Light->Spec.r > Settings->FillLightRadius;
 			}
-			else if (LightIndex < TrackedLightsMax) {
-				LightsList[LightIndex] = Light;
-				LightPosition[LightIndex] = LightPos;
-				LightColor[ShadowCubeMapsMax + LightIndex] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
-				LightIndex++;
-			};
+			const int Rank = RankOf(Light);
+			if (Rank >= 0) {
+				Cluster.Rank = Cluster.Rank < 0 ? Rank : min(Cluster.Rank, Rank);
+				Cluster.Colour += D3DXVECTOR3(Light->Diff.r, Light->Diff.g, Light->Diff.b) * Light->Dimmer;
+				// How strongly it lights where the player is: distance over reach (below 1 inside its
+				// sphere). By distance alone a candle in the next room took a slot from the chandelier
+				// lighting the whole room in view. A fill light counts as reaching FillLightRadius at
+				// most, so it competes like a big lamp instead of always winning.
+				float Reach = max(LampRadius, 1.0f);
+				if (Settings->FillLightRadius > 0.0f) Reach = min(Reach, Settings->FillLightRadius * Settings->LightRadiusMult);
+				Cluster.Score = min(Cluster.Score, Light->GetDistance(&Player->pos) / Reach);
+			}
 		}
-		else if (Light->EffectType == NiDynamicEffect::EffectTypes::SPOT_LIGHT) {
-			// Here will go the collecting of the spotlights and setting of constants
+		Clusters.push_back(Cluster);
+	}
+
+	// The active clusters, the ones lighting the player's surroundings most first (Score).
+	std::vector<int>& Order = ClusterOrderScratch;
+	Order.clear();
+	for (int c = 0; c < (int)Clusters.size(); c++)
+		if (Clusters[c].Rank >= 0) Order.push_back(c);
+	std::sort(Order.begin(), Order.end(), [&Clusters](int A, int B) {
+		if (Clusters[A].Score != Clusters[B].Score) return Clusters[A].Score < Clusters[B].Score;
+		return Clusters[A].Key < Clusters[B].Key;   // a fixed order for equal scores
+	});
+	auto ClusterOf = [&Clusters](const NiPointLight* Key) {
+		for (int c = 0; c < (int)Clusters.size(); c++)
+			if (Clusters[c].Key == Key) return c;
+		return -1;
+	};
+	auto OrderOf = [&Order](int Cluster) {
+		for (int r = 0; r < (int)Order.size(); r++)
+			if (Order[r] == Cluster) return r;
+		return -1;
+	};
+
+	// Keep the clusters still near enough, and inactive ones within their grace; the rest fade
+	// their shadow out and then free the slot (a cluster whose lamps are gone frees it at once, and
+	// so does every slot past LightPoints).
+	int SlotCluster[ShadowSlotsMax];
+	int SlotRank[ShadowSlotsMax];
+	auto FreeSlot = [&](int s) {
+		SlotLights[s] = nullptr;
+		SlotCluster[s] = SlotRank[s] = -1;
+		SlotFade[s] = 0.0f;
+		SlotLeaving[s] = false;
+	};
+	for (int s = 0; s < ShadowSlotsMax; s++) {
+		SlotCluster[s] = SlotRank[s] = -1;
+		if (!SlotLights[s]) continue;
+		if (s >= ShadowLightsMax) {
+			FreeSlot(s);
+			continue;
 		}
-		v++;
+		const int Cluster = ClusterOf(SlotLights[s]);
+		if (Cluster < 0) {   // the lamp is gone, or keys another cluster no more
+			SlotStats->SlotDropGone++;
+			FreeSlot(s);
+			continue;
+		}
+		const int Rank = OrderOf(Cluster);
+		SlotCluster[s] = Cluster;
+		if (Rank >= 0 && Rank < ShadowLightsMax + SlotMargin) {
+			SlotRank[s] = Rank;
+			SlotIdle[s] = 0.0f;
+			if (Rank < ShadowLightsMax) SlotLeaving[s] = false;   // among the nearest again: fade back in
+		}
+		else if (Rank >= 0) {   // active, but more than SlotMargin clusters past the nearest LightPoints
+			if (!SlotLeaving[s]) SlotStats->SlotDropOutranked++;
+			SlotRank[s] = Rank;
+			SlotLeaving[s] = true;
+		}
+		else {
+			SlotRank[s] = InactiveRank;
+			SlotIdle[s] += FrameTime;
+			if (SlotIdle[s] > SlotGrace) {
+				if (!SlotLeaving[s]) SlotStats->SlotDropExpired++;
+				SlotLeaving[s] = true;
+			}
+		}
+	}
+	// Fade: leaving slots out (freed when their shadow is gone), the rest in.
+	for (int s = 0; s < ShadowLightsMax; s++) {
+		if (SlotCluster[s] < 0) continue;
+		if (SlotLeaving[s]) {
+			SlotFade[s] -= FadeStep;
+			if (SlotFade[s] <= 0.0f) FreeSlot(s);
+		}
+		else
+			SlotFade[s] = min(SlotFade[s] + FadeStep, 1.0f);
+	}
+	// Give each of the nearest LightPoints clusters a slot: a free one (its shadow fades in from
+	// nothing), else make one -- the farthest cluster kept only by the margin or the grace starts
+	// fading out, and the slot goes to whichever cluster still waits for one when it is free. A
+	// slot already fading out counts as one on its way.
+	int Arriving = 0;
+	for (int s = 0; s < ShadowLightsMax; s++)
+		if (SlotCluster[s] >= 0 && SlotLeaving[s]) Arriving++;
+	for (int r = 0; r < min((int)Order.size(), ShadowLightsMax); r++) {
+		NiPointLight* Key = Clusters[Order[r]].Key;
+		if (std::find(SlotLights, SlotLights + ShadowLightsMax, Key) != SlotLights + ShadowLightsMax) continue;
+		int Target = -1;
+		for (int s = 0; s < ShadowLightsMax && Target < 0; s++)
+			if (!SlotLights[s]) Target = s;
+		if (Target >= 0) {
+			SlotStats->SlotAssigned++;
+			SlotLights[Target] = Key;
+			SlotCluster[Target] = Order[r];
+			SlotRank[Target] = r;
+			SlotIdle[Target] = 0.0f;
+			SlotFade[Target] = 0.0f;
+			SlotLeaving[Target] = false;
+			continue;
+		}
+		if (Arriving > 0) {   // a slot is already fading out for this one
+			Arriving--;
+			continue;
+		}
+		int Victim = -1;
+		for (int s = 0; s < ShadowLightsMax; s++)
+			if (!SlotLeaving[s] && SlotRank[s] >= ShadowLightsMax && (Victim < 0 || SlotRank[s] > SlotRank[Victim])) Victim = s;
+		if (Victim < 0) break;
+		SlotStats->SlotEvicted++;
+		SlotLeaving[Victim] = true;
+	}
+	SlotStats->SlotMaxGathered = max(SlotStats->SlotMaxGathered, (UInt32)Ranked.size());
+	SlotStats->SlotMaxClusters = max(SlotStats->SlotMaxClusters, (UInt32)Order.size());
+
+	// The slots' constants: the cluster's centre and radius, its active lamps' light summed. Slots
+	// past ShadowCubeMapsMax go only to the object shaders (ShadowManager::SlotPosition, LampSlot);
+	// their lamps stay in the lights tracked without shadows, which the other effects read.
+	std::vector<NiPointLight*>& Shadowed = ShadowedLampsScratch;   // every lamp of a cluster with one of the first ShadowCubeMapsMax slots
+	Shadowed.clear();
+	SlotStats->LampSlot.clear();
+	for (int s = 0; s < ShadowSlotsMax; s++) {
+		SlotStats->SlotMembers[s].clear();
+		// A fill light casts FillLightShadowStrength of a shadow (at full strength they blacked out
+		// whole floors under ceilings and stairs).
+		const float Fade = SlotCluster[s] < 0 ? 0.0f
+			: SlotFade[s] * (Clusters[SlotCluster[s]].Fill ? Settings->FillLightShadowStrength : 1.0f);
+		SlotStats->SlotFadeValue[s] = Fade;
+		if (s < ShadowCubeMapsMax) ((float*)ShadowsConstants->ShadowLightFade)[s] = Fade;
+		if (SlotCluster[s] < 0) {
+			ShadowLightsList[s] = NULL;
+			SlotStats->SlotPosition[s] = Empty;
+			if (s < ShadowCubeMapsMax) {
+				ShadowsConstants->ShadowLightPosition[s] = Empty;
+				LightColor[s] = Empty;
+			}
+			continue;
+		}
+		const ShadowLampCluster& Cluster = Clusters[SlotCluster[s]];
+		ShadowLightsList[s] = Cluster.KeyScene;
+		SlotStats->SlotPosition[s] = D3DXVECTOR4(Cluster.Centre.x, Cluster.Centre.y, Cluster.Centre.z, Cluster.Radius);
+		if (s < ShadowCubeMapsMax) {
+			ShadowsConstants->ShadowLightPosition[s] = SlotStats->SlotPosition[s];
+			LightColor[s] = D3DXVECTOR4(Cluster.Colour.x, Cluster.Colour.y, Cluster.Colour.z, 1.0f);
+		}
+		for (UInt32 k = 0; k < Cluster.Count; k++) {
+			ShadowSceneLight* Lamp = ClusterLamps[Cluster.First + k];
+			SlotStats->SlotMembers[s].push_back(Lamp);
+			SlotStats->LampSlot[Lamp] = s;
+			if (s < ShadowCubeMapsMax) Shadowed.push_back(Lamp->sourceLight);
+		}
+		TheShadowManager->PointLightsNum++; // Constant to track number of shadow casting lights are present
+	}
+
+	// Every other point light, nearest first, goes to the lights tracked without shadows.
+	for (auto& Entry : SceneLights) {
+		if (LightIndex >= TrackedLightsMax) break;
+		NiPointLight* Light = Entry.second->sourceLight;
+		if (!Light || Light->EffectType != NiDynamicEffect::EffectTypes::POINT_LIGHT) continue;
+		if (std::find(Shadowed.begin(), Shadowed.end(), Light) != Shadowed.end()) continue;   // lit as part of its cluster
+		D3DXVECTOR4 LightPos = Light->m_worldTransform.pos.toD3DXVEC4();
+		LightPos.w = Light->Spec.r * Settings->LightRadiusMult;
+		LightsList[LightIndex] = Light;
+		LightPosition[LightIndex] = LightPos;
+		LightColor[ShadowCubeMapsMax + LightIndex] = D3DXVECTOR4(Light->Diff.r, Light->Diff.g, Light->Diff.b, Light->Dimmer);
+		LightIndex++;
+	}
+	for (; LightIndex < TrackedLightsMax; LightIndex++) {
+		LightsList[LightIndex] = NULL;
+		LightPosition[LightIndex] = Empty;
+		LightColor[ShadowCubeMapsMax + LightIndex] = Empty;
 	}
 
 	timer.LogTime("ShaderManager::GetNearbyLights");
@@ -809,8 +1051,13 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	RenderEffectToRT(Effects.CombineDepth->Textures.CombinedDepthSurface, Effects.CombineDepth, false);
 	RenderEffectToRT(Effects.Normals->Textures.NormalsSurface, Effects.Normals, false);
 
+	// Indoors, with ForwardPointShadows, the object shaders shadow each lamp's own light
+	// (Shaders/Includes/PointShadow.hlsl): the point shadow pass and the interior shadow
+	// post-process, which darkened the finished frame, are skipped.
+	const bool ForwardPointShadows = !GameState.isExterior && Effects.ShadowsExteriors->Constants.PointShadowData.x > 0.0f;
+
 	// render a shadow pass for point lights
-	if ((GameState.isExterior && Effects.ShadowsExteriors->Enabled) || (!GameState.isExterior && Effects.ShadowsInteriors->Enabled)) {
+	if (!ForwardPointShadows && ((GameState.isExterior && Effects.ShadowsExteriors->Enabled) || (!GameState.isExterior && Effects.ShadowsInteriors->Enabled))) {
 		// separate lights in 2 batches
 		RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
 		if (Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6) RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
@@ -842,9 +1089,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	// scattering only blurs skin; RenderedSurface holds its result).
 	Effects.DynamicCubemaps->RenderCubemaps(Device, RenderTarget);
 
-	if (GameState.isExterior) 
+	if (GameState.isExterior)
 		Effects.ShadowsExteriors->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
-	else 
+	else if (!ForwardPointShadows)
 		Effects.ShadowsInteriors->Render(Device, RenderTarget, RenderedSurface, 0, true, SourceSurface);
 
 	Effects.SnowAccumulation->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);

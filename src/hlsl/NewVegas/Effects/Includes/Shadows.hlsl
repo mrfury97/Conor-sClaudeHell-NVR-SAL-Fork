@@ -39,6 +39,21 @@ float GetPointLightAmount(samplerCUBE ShadowCubeMapBuffer, float4 WorldPos, floa
 }
 
 
+// GetPointLightAmount with the shadow at strength Fade: 0 lit as if unshadowed, 1 fully shadowed.
+// The shadow slots fade their shadow in and out as lamps trade them (ShaderManager::GetNearbyLights).
+float GetPointLightAmountFaded(samplerCUBE ShadowCubeMapBuffer, float4 WorldPos, float4 LightPos, float4 normal, float Fade) {
+	if (!LightPos.w) return 0; // w is light radius.
+
+	float3 LightDir = LightPos.xyz - WorldPos.xyz;
+	float3 LightUV = LightDir * float3(-1, -1, 1);
+
+	float Distance = length(LightDir) / LightPos.w; // normalize distance over light range
+
+	float Visibility = lerp(1.0f, GetPointLightAmountValue(ShadowCubeMapBuffer, LightUV, Distance), Fade);
+	return saturate(Visibility * GetPointLightAtten(LightDir, Distance, normal));
+}
+
+
 // get the normalized distance between the light and a point as a ratio of the light radius
 float4 GetPointLightDistance(float4 WorldPos, float4 LightPos){
 	float3 LightDir = LightPos.xyz - WorldPos.xyz;

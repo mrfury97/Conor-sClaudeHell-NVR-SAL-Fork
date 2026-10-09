@@ -1,8 +1,9 @@
 // Shader To compute a shadow pass for point light shadows (Only for 6 lights)
 
 float4 TESR_ShadowLightPosition[12];
-float4 TESR_LightPosition[12];
-float4 TESR_LightColor[24];
+float4 TESR_ShadowLightFade[3];   // slot i's shadow strength: [i / 4], component i % 4
+float4 TESR_LightPosition[48];   // the point lights without a shadow slot, nearest first (TrackedLightsMax); w 0 past the last
+float4 TESR_LightColor[60];      // 0-11 the shadow slots', 12-59 these
 float4 TESR_ShadowFade;
 float4 TESR_SpotLightPosition;
 float4 TESR_SpotLightDirection;
@@ -73,16 +74,17 @@ float4 Shadow( VSOUT IN ) : COLOR0 {
 	float4 normal = float4(GetWorldNormal(uv), 1);
 	// float Shadow = 0.0;
 
-	float Shadow = GetPointLightAmount(TESR_ShadowCubeMapBuffer0, world_pos, TESR_ShadowLightPosition[0], normal) * luma(TESR_LightColor[0].rgb) * TESR_LightColor[0].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer1, world_pos, TESR_ShadowLightPosition[1], normal) * luma(TESR_LightColor[1].rgb) * TESR_LightColor[1].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer2, world_pos, TESR_ShadowLightPosition[2], normal) * luma(TESR_LightColor[2].rgb) * TESR_LightColor[2].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer3, world_pos, TESR_ShadowLightPosition[3], normal) * luma(TESR_LightColor[3].rgb) * TESR_LightColor[3].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer4, world_pos, TESR_ShadowLightPosition[4], normal) * luma(TESR_LightColor[4].rgb) * TESR_LightColor[4].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer5, world_pos, TESR_ShadowLightPosition[5], normal) * luma(TESR_LightColor[5].rgb) * TESR_LightColor[5].w;
+	float Shadow = GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer0, world_pos, TESR_ShadowLightPosition[0], normal, TESR_ShadowLightFade[0].x) * luma(TESR_LightColor[0].rgb) * TESR_LightColor[0].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer1, world_pos, TESR_ShadowLightPosition[1], normal, TESR_ShadowLightFade[0].y) * luma(TESR_LightColor[1].rgb) * TESR_LightColor[1].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer2, world_pos, TESR_ShadowLightPosition[2], normal, TESR_ShadowLightFade[0].z) * luma(TESR_LightColor[2].rgb) * TESR_LightColor[2].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer3, world_pos, TESR_ShadowLightPosition[3], normal, TESR_ShadowLightFade[0].w) * luma(TESR_LightColor[3].rgb) * TESR_LightColor[3].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer4, world_pos, TESR_ShadowLightPosition[4], normal, TESR_ShadowLightFade[1].x) * luma(TESR_LightColor[4].rgb) * TESR_LightColor[4].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer5, world_pos, TESR_ShadowLightPosition[5], normal, TESR_ShadowLightFade[1].y) * luma(TESR_LightColor[5].rgb) * TESR_LightColor[5].w;
 
 	Shadow += GetSpotLightAmount(world_pos, TESR_SpotLightPosition, TESR_SpotLightDirection, normal) * luma(TESR_SpotLightColor.rgb) * TESR_SpotLightColor.w;
 	
-	for (int i = 0; i< 12; i++){
+	[loop] for (int i = 0; i < 48; i++){
+		if (TESR_LightPosition[i].w <= 0.0f) break;   // the list is filled from the start
 		Shadow += GetPointLightContribution(world_pos, TESR_LightPosition[i], normal) * luma(TESR_LightColor[i + 12].rgb) * TESR_LightColor[i + 12].w;
 	}
 

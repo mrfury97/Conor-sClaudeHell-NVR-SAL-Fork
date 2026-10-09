@@ -27,14 +27,14 @@
 // Lamps and highlights went dark in interiors depending on draw order, and so on the view.
 float4 TESR_PBRData : register(c148);       // z: light scale, w: ambient scale
 float4 TESR_PBRExtraData : register(c149);  // y: skylight strength, w: linear lighting
-float4 TESR_PBRSpecularData : register(c151);   // x: lighting model of authored materials (1 Anomaly), y: 1 outdoors (the sky is the environment), 0 indoors
+float4 TESR_PBRSpecularData : register(c151);   // y: 1 outdoors (the sky is the environment), 0 indoors, z: LightSourceSize
 float4 TESR_PBRDebugData : register(c153);  // x: DebugView (0 off)
 
 #define LIGHT_SCALE         (TESR_PBRData.z)
 #define AMBIENT_SCALE       (TESR_PBRData.w)
 #define SKY_AMBIENT_STRENGTH (TESR_PBRExtraData.y)
 #define OUTDOORS            (TESR_PBRSpecularData.y > 0.5f)
-#define ANOMALY_LIGHTING    (TESR_PBRSpecularData.x > 0.5f)   // [Shaders.PBR.Main] LightingModel 1: authored materials lit as S.T.A.L.K.E.R. Anomaly (PBR.hlsl Anomaly_*)
+#define LIGHT_SOURCE_SIZE   (TESR_PBRSpecularData.z)          // [Shaders.PBR.Main] LightSourceSize: point lights' radius in game units, for highlights (directLight)
 
 // Per-object data written for every draw by the per-geometry hooks (NewVegas/Hooks/Shaders.cpp,
 // WriteObjectMaterial), not through the TESR_ constant table: x is 1 when the mesh carries the
@@ -145,11 +145,6 @@ void setupMaterial(float specularMask, float shine, float3 normalTS, float2 uv, 
     pbrAlbedo = decodeColor(albedoGamma);
 }
 
-// Anomaly lighting: F0 of the dielectric (0.04 x the specular level) or of the metal (its base colour).
-float3 anomalyF0() {
-    return lerp((0.04f * pbrSpecularWeight).xxx, pbrSpecularWeight * pbrAlbedo, pbrMetalness);
-}
-
 // --- Normal-mapped ambient -------------------------------------------------------------------
 // The direct lights use the normal map in tangent space, but the sky light needs to know which
 // way each normal-mapped pixel faces in the WORLD: up toward the sky or down toward the ground.
@@ -229,17 +224,35 @@ float3 vanillaHighlight(float3 N, float3 L, float3 V, float NdotL, float3 light)
     return saturate((NdotL <= 0.2f ? specStrength * saturate(NdotL + 0.5f) : specStrength) * light);
 }
 
-float3 directLight(float3 L, float3 light, float3 V, float3 N, float3 albedo) {
+// lightDistance is the distance to a point light, 0 for the sun and for lights whose distance the
+// variant does not have: those stay infinitely small.
+float3 directLight(float3 L, float3 light, float3 V, float3 N, float3 albedo, float lightDistance = 0.0f) {
     L = normalize(L);
     V = normalize(V);
     N = normalize(N);
 
     [branch] if (pbrMaterial) {
+        // Sphere lights (Karis 2013, Real Shading in Unreal Engine 4): the game's lamps are points,
+        // which on glossy materials give a pinpoint that sparkles from pixel to pixel. Given a size
+        // (LightSourceSize), the highlight is lit from the point of the lamp's sphere closest to the
+        // reflection ray -- a bulb-sized highlight -- and its peak lowered by how much the sphere
+        // widens the lobe, (alpha / alpha')^2 with alpha' = alpha + radius / (2 distance), so the
+        // highlight spreads instead of brightening. The diffuse keeps the lamp's centre.
+        float NdotL = dot(N, L);
+        float specNorm = 1.0f;
+        [branch] if (LIGHT_SOURCE_SIZE > 0.0f && lightDistance > 0.0f) {
+            float ratio = saturate(LIGHT_SOURCE_SIZE / lightDistance);   // the radius on the unit sphere around the surface
+            float3 R = reflect(-V, N);
+            float3 toRay = dot(L, R) * R - L;
+            L = normalize(L + toRay * saturate(ratio / max(length(toRay), 1e-4f)));   // from here, the highlight's direction
+            float alpha = max(pbrRoughness * pbrRoughness, 1e-3f);
+            float widened = alpha / saturate(alpha + 0.5f * ratio);
+            specNorm = widened * widened;
+        }
+
         float3 diffuse, specular;
-        [branch] if (ANOMALY_LIGHTING)
-            Anomaly_DirectLight(N, V, L, light, pbrRoughness, anomalyF0(), albedo * (1.0f - pbrMetalness), diffuse, specular);
-        else
-            OpenPBR_DirectLight(N, V, L, light, pbrRoughness, pbrMetalness, pbrSpecularWeight, pbrEta, albedo, pbrAlbedo, diffuse, specular);
+        OpenPBR_DirectLight(N, V, NdotL, L, light, pbrRoughness, pbrMetalness, pbrSpecularWeight, pbrEta, albedo, pbrAlbedo, diffuse, specular);
+        specular *= specNorm;
         #if defined(ONLY_SPECULAR)
             return specular;
         #else
@@ -265,13 +278,16 @@ float3 directLight(float3 L, float3 light, float3 V, float3 N, float3 albedo) {
 // it linear when linear lighting is on. Point light attenuation is applied inside the decode,
 // so lights keep the falloff the game was tuned with. visibility (the forward sun shadow) is a
 // real visibility and is applied to the decoded light. roughness is unused (the material state
-// holds it); the parameter stays for the templates.
-float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness) {
-    return directLight(lightDir, decodeColor(lightColor * att) * LIGHT_SCALE, viewDir, normal, albedo);
+// holds it); the parameter stays for the templates. lightDistance gives the lamp its size in the
+// highlights of authored materials (directLight); 0 leaves it a point. visibility is the lamp's
+// shadow (Includes/PointShadow.hlsl), a real visibility applied to the decoded light as the sun's.
+float3 getPointLightLightingAtt(float3 lightDir, float att, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float lightDistance = 0.0f, float visibility = 1.0f) {
+    return directLight(lightDir, decodeColor(lightColor * att) * (LIGHT_SCALE * visibility), viewDir, normal, albedo, lightDistance);
 }
 
-float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness) {
-    return getPointLightLightingAtt(lightDir, vanillaAtt(lightDir, radius), lightColor, viewDir, normal, albedo, roughness);
+// lightDir is the full vector to the lamp here (vanillaAtt takes its length as the distance).
+float3 getPointLightLighting(float3 lightDir, float radius, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float visibility = 1.0f) {
+    return getPointLightLightingAtt(lightDir, vanillaAtt(lightDir, radius), lightColor, viewDir, normal, albedo, roughness, length(lightDir), visibility);
 }
 
 float3 getSunLighting(float3 lightDir, float3 lightColor, float3 viewDir, float3 normal, float3 albedo, float roughness, float visibility = 1.0f) {
@@ -315,15 +331,9 @@ float3 getObjectSkyReflection(float3 worldPos, float3 geometricNormal, float3 no
 
     float3 V = -normalize(worldPos);
     float NdotV = saturate(dot(normal, V));
-    // Anomaly: the reflection is weighted by its split-sum (EnvBRDFApprox) and the diffuse ambient
-    // keeps the whole albedo of the dielectric part (Amb_BRDF); OpenPBR: the substrate's lobes.
+    // The substrate's environment lobes: the reflection's weight and the share the diffuse keeps.
     float envRough = pbrRoughness;
-    [branch] if (ANOMALY_LIGHTING) {
-        pbrSpecularLobe = Anomaly_EnvSpecular(anomalyF0(), envRough, NdotV);
-        pbrDiffuseShare = 1.0f - pbrMetalness;
-    }
-    else
-        OpenPBR_EnvironmentWeights(NdotV, pbrRoughness, pbrMetalness, pbrSpecularWeight, pbrEta, pbrAlbedo, pbrSpecularLobe, pbrDiffuseShare);
+    OpenPBR_EnvironmentWeights(NdotV, pbrRoughness, pbrMetalness, pbrSpecularWeight, pbrEta, pbrAlbedo, pbrSpecularLobe, pbrDiffuseShare);
     pbrSpecularOcclusion = CS_SpecularOcclusion(NdotV, pbrRoughness * pbrRoughness, pbrAO);
 
     [branch] if (!OUTDOORS && !ENVIRONMENT_CUBE)

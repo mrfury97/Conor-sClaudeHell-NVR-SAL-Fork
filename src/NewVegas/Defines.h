@@ -10,8 +10,12 @@
 #define BloodShaders ""
 
 #define SamplerStatesMax 12
-#define ShadowCubeMapsMax 12
-#define TrackedLightsMax 12
+#define ShadowCubeMapsMax 12   // the shadow slots every effect sees (TESR_ShadowLightPosition[12], TESR_LightColor[0..11]: PointShadows, water, WetWorld, snow)
+#define ShadowSlotsMax 32      // with ForwardPointShadows (indoors), the slots past ShadowCubeMapsMax only the object shaders' lamp shadows read (Shaders/Includes/PointShadow.hlsl)
+#define TrackedLightsMax 48   // point lights without a shadow slot, nearest first. Was 12: rooms like the Prospector Saloon
+                              // have ~25 such lamps, and the ones at the cut-off dropped in and out as the player moved, so
+                              // PointShadows saw their light come and go and the areas they lit flickered dark. Only
+                              // PointShadows reads past the first 12.
 #define SpotLightsMax 1
 
 #define WordWaterHeightMapBuffer "TESR_WaterHeightMapBuffer"

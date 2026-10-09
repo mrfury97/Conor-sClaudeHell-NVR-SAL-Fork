@@ -12,7 +12,10 @@ void RenderPass::RenderAccum() {
 	// Render normal geometry
 	while (!GeometryList.empty()) {
 		NiGeometry* Geo = GeometryList.top();
-		if (!Geo) continue;
+		if (!Geo) {
+			GeometryList.pop();
+			continue;
+		}
 
 		UpdateConstants(Geo);
 		PixelShader->SetCT();

@@ -147,6 +147,9 @@
 #ifdef MERGED_LIGHTS
     #include "includes/MergedLights.hlsl"
 #endif
+#ifdef PS
+    #include "includes/PointShadow.hlsl"
+#endif
 
 // Forward sun shadows -- see ObjectTemplate.hlsl. PAR shaders do full sun lighting but had
 // no shadow term at all, so every parallax-material object rendered fully sunlit once the
@@ -465,7 +468,7 @@ float4 EmittanceColor : register(c2);
 // world space: the normal map's normal (at the parallax offset) through the world frame the vertex
 // shader sent. The vanilla fallback (TESR_ParallaxData.y off) lights them the vanilla way, as the
 // passes it replaces did.
-float3 getMergedPointLights(float3 worldNormal, float3 worldTangent, float handedness, float4 normalTS, float3 worldPos, float3 albedo, float roughness) {
+float3 getMergedPointLights(float3 worldNormal, float3 worldTangent, float handedness, float4 normalTS, float3 worldPos, float worldPosValid, float3 albedo, float roughness) {
     float3 total = 0.0f;
     [branch] if (TESR_MergedLightCount.x > 0.0f) {
         float3 N = normalize(worldNormal);
@@ -480,7 +483,8 @@ float3 getMergedPointLights(float3 worldNormal, float3 worldTangent, float hande
             float att = vanillaAttSq(dot(L, L), TESR_MergedLightPosition[i].w);
             [branch] if (att > 0.0f) {
                 if (TESR_ParallaxData.y)
-                    total += getPointLightLightingAtt(L, att, TESR_MergedLightColor[i].rgb, V, n, albedo, roughness);
+                    total += getPointLightLightingAtt(L, att, TESR_MergedLightColor[i].rgb, V, n, albedo, roughness, length(L),
+                        PointShadowVisibility(TESR_MergedLightColor[i].w, TESR_PointShadowMerged[i], worldPos, worldPosValid));
                 else
                     total += getVanillaLightingAtt(L, att, TESR_MergedLightColor[i].rgb, V, n, albedo, normalTS.a, glossPower);
             }
@@ -635,14 +639,16 @@ PS_OUTPUT main(PS_INPUT IN)
         #elif defined(DIFFUSE)
             // Pointlight vanilla att.
             if (TESR_ParallaxData.y)
-                lighting = getPointLightLighting(IN.lightDir.xyz, IN.lightDir.w, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                lighting = getPointLightLighting(IN.lightDir.xyz, IN.lightDir.w, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness,
+                    PointShadowBase(0, IN.shadowWorldPos.xyz, shadowWorldPosValid));
             else {
                 finalAtt = saturate(1 - tex2D(AttenuationMap, IN.lightAtt.xy).x - tex2D(AttenuationMap, IN.lightAtt.zw).x);
                 lighting = getVanillaLightingAtt(IN.lightDir.xyz, finalAtt, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
             }
         #else
             if (TESR_ParallaxData.y)
-                lighting = getPointLightLighting(IN.lightDir.xyz, IN.lightDir.w, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                lighting = getPointLightLighting(IN.lightDir.xyz, IN.lightDir.w, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness,
+                    PointShadowBase(0, IN.shadowWorldPos.xyz, shadowWorldPosValid));
             else
                 lighting = getVanillaLighting(IN.lightDir.xyz, IN.lightDir.w, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
@@ -668,7 +674,8 @@ PS_OUTPUT main(PS_INPUT IN)
             finalAtt = saturate(1 - tex2D(AttenuationMap, IN.light2Att.xy).x - tex2D(AttenuationMap, ATTENUATION_UV2(IN.light2Att)).x);
 
             if (TESR_ParallaxData.y)
-                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, finalAtt, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                lighting += getPointLightLightingAtt(IN.light2Dir.xyz, finalAtt, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness, 0.0f,
+                    PointShadowBase(1, IN.shadowWorldPos.xyz, shadowWorldPosValid));
             else
                 lighting += getVanillaLightingAtt(IN.light2Dir.xyz, finalAtt, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
@@ -677,30 +684,33 @@ PS_OUTPUT main(PS_INPUT IN)
             finalAtt = saturate(1 - tex2D(AttenuationMap, IN.light3Att.xy).x - tex2D(AttenuationMap, ATTENUATION_UV2(IN.light3Att)).x);
 
             if (TESR_ParallaxData.y)
-                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, finalAtt, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                lighting += getPointLightLightingAtt(IN.light3Dir.xyz, finalAtt, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness, 0.0f,
+                    PointShadowBase(2, IN.shadowWorldPos.xyz, shadowWorldPosValid));
             else
                 lighting += getVanillaLightingAtt(IN.light3Dir.xyz, finalAtt, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
 
         #if NUM_PT_LIGHTS > 1
             if (TESR_ParallaxData.y)
-                lighting += getPointLightLighting(IN.light2Dir.xyz, IN.light2Dir.w, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                lighting += getPointLightLighting(IN.light2Dir.xyz, IN.light2Dir.w, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness,
+                    PointShadowBase(1, IN.shadowWorldPos.xyz, shadowWorldPosValid));
             else
                 lighting += getVanillaLighting(IN.light2Dir.xyz, IN.light2Dir.w, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
 
         #if NUM_PT_LIGHTS > 2
             if (TESR_ParallaxData.y)
-                lighting += getPointLightLighting(IN.light3Dir.xyz, IN.light3Dir.w, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness);
+                lighting += getPointLightLighting(IN.light3Dir.xyz, IN.light3Dir.w, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness,
+                    PointShadowBase(2, IN.shadowWorldPos.xyz, shadowWorldPosValid));
             else
                 lighting += getVanillaLighting(IN.light3Dir.xyz, IN.light3Dir.w, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
 
         // The lamps of this mesh's additive passes (MERGED_LIGHTS above); those passes are muted.
         #ifdef MERGED_PACKED
-            lighting += getMergedPointLights(IN.worldNormal.xyz * 2.0f - 1.0f, float3(IN.worldNormal.w * 2.0f - 1.0f, IN.light2Att.w, IN.light3Att.w), IN.lightDir.w, normal, IN.shadowWorldPos.xyz, baseColor.rgb, roughness);
+            lighting += getMergedPointLights(IN.worldNormal.xyz * 2.0f - 1.0f, float3(IN.worldNormal.w * 2.0f - 1.0f, IN.light2Att.w, IN.light3Att.w), IN.lightDir.w, normal, IN.shadowWorldPos.xyz, shadowWorldPosValid, baseColor.rgb, roughness);
         #elif defined(MERGED_LIGHTS)
-            lighting += getMergedPointLights(IN.worldNormal.xyz * 2.0f - 1.0f, IN.worldTangent.xyz * 2.0f - 1.0f, IN.worldNormal.w, normal, IN.shadowWorldPos.xyz, baseColor.rgb, roughness);
+            lighting += getMergedPointLights(IN.worldNormal.xyz * 2.0f - 1.0f, IN.worldTangent.xyz * 2.0f - 1.0f, IN.worldNormal.w, normal, IN.shadowWorldPos.xyz, shadowWorldPosValid, baseColor.rgb, roughness);
         #endif
     #endif
 

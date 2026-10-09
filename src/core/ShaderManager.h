@@ -65,6 +65,26 @@ public:
 	void					InitializeConstants();
 	void					UpdateConstants();
 	void					GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPointLight* LightsList[], NiSpotLight* SpotLightList[]);
+	std::vector<ShadowSceneLight*>	RankedLightsScratch;   // GetNearbyLights: shadow casters by distance, capacity kept
+	std::vector<ShadowSceneLight*>	PresentLightsScratch;  // GetNearbyLights: every scene light, any state
+	// GetNearbyLights: lamps close together share one shadow-casting slot.
+	struct ShadowLampCluster {
+		NiPointLight*		Key;        // its widest lamp: names the cluster from frame to frame
+		ShadowSceneLight*	KeyScene;
+		D3DXVECTOR3			Centre;     // the lamps' mean
+		float				Radius;     // reaching every lamp's sphere from the centre
+		D3DXVECTOR3			Colour;     // the active lamps' colour x dimmer, summed
+		int					Rank;       // >= 0 when one of its lamps is active, -1 when none is
+		float				Score;      // its best active lamp's distance from the player over the lamp's reach: lower ranks first
+		bool				Fill;       // its key lamp reaches past FillLightRadius: a fill light
+		UInt32				First, Count;   // its lamps in ClusterLampsScratch
+	};
+	std::vector<ShadowSceneLight*>	EligibleLightsScratch;
+	std::vector<ShadowSceneLight*>	ClusterLampsScratch;
+	std::vector<ShadowLampCluster>	ClustersScratch;
+	std::vector<int>				ClusterOrderScratch;
+	std::vector<char>				ClusterTakenScratch;
+	std::vector<NiPointLight*>		ShadowedLampsScratch;
 	bool					LoadShader(NiD3DVertexShader* VertexShader);
 	bool					LoadShader(NiD3DPixelShader* PixelShader);
 	void					ReloadEffects();

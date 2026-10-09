@@ -1,6 +1,7 @@
-// Shader To compute a shadow pass for point light shadows (Supports 5 more lights)
+// Shader To compute a shadow pass for point light shadows (shadow slots 6 to 11)
 
 float4 TESR_ShadowLightPosition[12];
+float4 TESR_ShadowLightFade[3];   // slot i's shadow strength: [i / 4], component i % 4
 float4 TESR_LightColor[24];
 float4 TESR_ShadowFade;
 
@@ -12,7 +13,7 @@ samplerCUBE TESR_ShadowCubeMapBuffer7 : register(s4) = sampler_state { ADDRESSU 
 samplerCUBE TESR_ShadowCubeMapBuffer8 : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 samplerCUBE TESR_ShadowCubeMapBuffer9 : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 samplerCUBE TESR_ShadowCubeMapBuffer10: register(s7) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
-// samplerCUBE TESR_ShadowCubeMapBuffer11 : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+samplerCUBE TESR_ShadowCubeMapBuffer11 : register(s8) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; ADDRESSW = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 
 #include "Includes/Helpers.hlsl"
 #include "Includes/Depth.hlsl"
@@ -48,13 +49,12 @@ float4 Shadow( VSOUT IN ) : COLOR0 {
 	float4 normal = float4(GetWorldNormal(uv), 1);
 
 	float Shadow = tex2D(TESR_PointShadowBuffer, IN.UVCoord).r;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer6, world_pos, TESR_ShadowLightPosition[6], normal) * luma(TESR_LightColor[6].rgb) * TESR_LightColor[6].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer7, world_pos, TESR_ShadowLightPosition[7], normal) * luma(TESR_LightColor[7].rgb) * TESR_LightColor[7].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer8, world_pos, TESR_ShadowLightPosition[8], normal) * luma(TESR_LightColor[8].rgb) * TESR_LightColor[8].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer9, world_pos, TESR_ShadowLightPosition[9], normal) * luma(TESR_LightColor[9].rgb) * TESR_LightColor[9].w;
-	Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer10, world_pos, TESR_ShadowLightPosition[10], normal) * luma(TESR_LightColor[10].rgb) * TESR_LightColor[10].w;
-	// Shadow += GetPointLightAmount(TESR_ShadowCubeMapBuffer11, world_pos, TESR_ShadowLightPosition11, normal);
-	Shadow += GetPointLightContribution(world_pos, TESR_ShadowLightPosition[11], normal);
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer6, world_pos, TESR_ShadowLightPosition[6], normal, TESR_ShadowLightFade[1].z) * luma(TESR_LightColor[6].rgb) * TESR_LightColor[6].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer7, world_pos, TESR_ShadowLightPosition[7], normal, TESR_ShadowLightFade[1].w) * luma(TESR_LightColor[7].rgb) * TESR_LightColor[7].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer8, world_pos, TESR_ShadowLightPosition[8], normal, TESR_ShadowLightFade[2].x) * luma(TESR_LightColor[8].rgb) * TESR_LightColor[8].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer9, world_pos, TESR_ShadowLightPosition[9], normal, TESR_ShadowLightFade[2].y) * luma(TESR_LightColor[9].rgb) * TESR_LightColor[9].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer10, world_pos, TESR_ShadowLightPosition[10], normal, TESR_ShadowLightFade[2].z) * luma(TESR_LightColor[10].rgb) * TESR_LightColor[10].w;
+	Shadow += GetPointLightAmountFaded(TESR_ShadowCubeMapBuffer11, world_pos, TESR_ShadowLightPosition[11], normal, TESR_ShadowLightFade[2].w) * luma(TESR_LightColor[11].rgb) * TESR_LightColor[11].w;
 
 
 	Shadow = saturate(Shadow);

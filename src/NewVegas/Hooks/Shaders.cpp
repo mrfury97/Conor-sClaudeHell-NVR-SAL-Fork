@@ -311,6 +311,52 @@ namespace DebugViewPasses {
     }
 }
 
+// --- Lamp shadows in the object shaders -------------------------------------------------------
+// Shaders/Includes/PointShadow.hlsl shadows each lamp's own light. Per draw, for each light of the
+// game's current pass (PSLightColor[j] is the pass's light j, ShadowLightShader::
+// SetupGeometryOpt_Lights*) and each merged lamp (MergedLights): the anchor and radius of the shadow
+// slot its cluster holds (ShaderManager::GetNearbyLights, ShadowManager::LampSlot), and slot * 2 +
+// fade, -1 for a lamp without one. EndDraw puts -1 back, so no other draw reads them.
+namespace ForwardPointShadows {
+
+    static const UINT BaseRegister = 190;       // TESR_PointShadowBase[6]
+    static const UINT BaseInfoRegister = 196;   // TESR_PointShadowBaseInfo[2]
+    static const UINT MergedRegister = 198;     // TESR_PointShadowMerged[16]
+    static const UINT BaseLights = 6;
+    static bool sUploaded = false;
+
+    bool Active() {
+        ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
+        return TheSettingManager->SettingsMain.Main.RenderEffects && Shadows && Shadows->Constants.PointShadowData.x > 0.0f && TheShadowManager;
+    }
+
+    // A lamp's shadow info (slot * 2 + fade, or -1), and its slot's anchor (camera-relative, as the
+    // merged lamps' positions) and radius into Anchor.
+    float LampInfo(const ShadowSceneLight* Light, float* Anchor) {
+        if (!Light || !Active()) return -1.0f;
+        const auto Found = TheShadowManager->LampSlot.find(Light);
+        if (Found == TheShadowManager->LampSlot.end()) return -1.0f;
+        const int Slot = Found->second;
+        if (Slot < 0 || Slot >= ShadowSlotsMax) return -1.0f;
+        const D3DXVECTOR4& Position = TheShadowManager->SlotPosition[Slot];   // the anchor, world space; w the radius
+        if (Position.w <= 0.0f) return -1.0f;
+        const NiPoint3& PosAdjust = *(NiPoint3*)0x011F474C;                   // NiRenderer::kPosAdjust
+        void* SceneNode = *(void**)0x011F91C8;                                // BSShaderManager::pShadowSceneNode[0]
+        const NiPoint3 Offset = SceneNode ? *(NiPoint3*)((UInt8*)SceneNode + 0x1E4) : NiPoint3(0.0f, 0.0f, 0.0f);   // kLightingOffset
+        Anchor[0] = Position.x + Offset.x - PosAdjust.x;
+        Anchor[1] = Position.y + Offset.y - PosAdjust.y;
+        Anchor[2] = Position.z + Offset.z - PosAdjust.z;
+        Anchor[3] = Position.w;
+        const float Fade = std::clamp(TheShadowManager->SlotFadeValue[Slot], 0.0f, 1.0f);
+        return (float)Slot * 2.0f + Fade;
+    }
+
+    void EndDraw();
+
+    // The current pass's lights, for a draw with one of NVR's object or parallax pixel shaders.
+    void OnDraw(NiGeometry* Geometry, const NiD3DPixelShaderEx* PixelShader);
+}
+
 namespace MergedLights {
 
     struct RenderPassData {                  // BSShaderProperty::RenderPass
@@ -499,6 +545,7 @@ namespace MergedLights {
 
             Data[0] = (float)M.Count;
             Data[1] = M.Specular ? 1.0f : 0.0f;
+            float Anchors[4 * MaxLights] = {};
             for (UInt32 k = 0; k < M.Count; k++) {
                 const ShadowSceneLight* Light = M.Lights[k];
                 const NiPointLight* Source = Light->sourceLight;
@@ -516,10 +563,12 @@ namespace MergedLights {
                 C[0] = Source->Diff.r * Scale;
                 C[1] = Source->Diff.g * Scale;
                 C[2] = Source->Diff.b * Scale;
-                C[3] = 1.0f;
+                C[3] = ForwardPointShadows::LampInfo(Light, &Anchors[4 * k]);   // its shadow (Includes/PointShadow.hlsl)
             }
             sMerged[Geometry] = M;
             TheRenderManager->device->SetPixelShaderConstantF(154, Data, 1 + 2 * MaxLights);
+            if (ForwardPointShadows::Active() && M.Count)
+                TheRenderManager->device->SetPixelShaderConstantF(ForwardPointShadows::MergedRegister, Anchors, M.Count);
             sLightsUploaded = true;
         }
         // Otherwise nothing to write: the count is 0 outside a merged draw (EndDraw).
@@ -597,6 +646,34 @@ namespace MergedLights {
     }
 }
 
+namespace ForwardPointShadows {
+
+    void OnDraw(NiGeometry* Geometry, const NiD3DPixelShaderEx* PixelShader) {
+        if (sUploaded) EndDraw();
+        if (!Geometry || !PixelShader || PixelShader->ShaderHandle == PixelShader->ShaderHandleBackup || !Active()) return;   // vanilla shader
+        const MergedLights::RenderPassData* Current = *(MergedLights::RenderPassData**)0x011F91E0;   // BSShaderManager::pCurrentRenderPass
+        if (!Current || Current->Geometry != Geometry || !Current->SceneLights) return;
+        float Anchors[4 * BaseLights] = {};
+        float Info[8] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
+        bool Any = false;
+        for (UInt32 j = 0; j < Current->NumLights && j < BaseLights; j++) {
+            Info[j] = LampInfo(Current->SceneLights[j], &Anchors[4 * j]);
+            Any |= Info[j] >= 0.0f;
+        }
+        if (!Any) return;
+        TheRenderManager->device->SetPixelShaderConstantF(BaseRegister, Anchors, BaseLights);
+        TheRenderManager->device->SetPixelShaderConstantF(BaseInfoRegister, Info, 2);
+        sUploaded = true;
+    }
+
+    void EndDraw() {
+        if (!sUploaded) return;
+        const float None[8] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
+        TheRenderManager->device->SetPixelShaderConstantF(BaseInfoRegister, None, 2);
+        sUploaded = false;
+    }
+}
+
 // --- Decals keep the game's shaders ------------------------------------------------------------
 // Decals (blood, bullet holes, impact marks and NIF decal meshes) lie on the surface they mark and
 // stay in front of it only through the game's depth bias. Drawn with NVR's object shaders, which
@@ -664,6 +741,7 @@ void* __fastcall ShadowLightShader__PrepareGeometryForRendering(void* apThis, vo
     NiD3DPixelShaderEx* PixelShader = Pass ? (NiD3DPixelShaderEx*)Pass->PixelShader : nullptr;
     MaterialMaps::OnDraw((NiGeometry*)apGeometry, PixelShader);
     MergedLights::OnDraw((NiGeometry*)apGeometry, PixelShader);
+    ForwardPointShadows::OnDraw((NiGeometry*)apGeometry, PixelShader);
     DebugViewPasses::OnDraw(PixelShader);
     return Result;
 }
@@ -671,6 +749,7 @@ void* __fastcall ShadowLightShader__PrepareGeometryForRendering(void* apThis, vo
 void __fastcall ShadowLightShader__PostGeometry(void* apThis, void*, void* apProperties) {
     ThisCall(kLightPostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
     DebugViewPasses::EndDraw();   // restored first: it muted after MergedLights and MaterialMaps
+    ForwardPointShadows::EndDraw();
     MergedLights::EndDraw();
     MaterialMaps::EndDraw();
     VanillaDecals::EndDraw();
@@ -688,6 +767,7 @@ void* __fastcall ParallaxShader__PrepareGeometryForRendering(void* apThis, void*
     NiD3DPixelShaderEx* PixelShader = Pass ? (NiD3DPixelShaderEx*)Pass->PixelShader : nullptr;
     MaterialMaps::OnDraw((NiGeometry*)apGeometry, PixelShader);
     MergedLights::OnDraw((NiGeometry*)apGeometry, PixelShader);
+    ForwardPointShadows::OnDraw((NiGeometry*)apGeometry, PixelShader);
     DebugViewPasses::OnDraw(PixelShader);
     return Result;
 }
@@ -695,6 +775,7 @@ void* __fastcall ParallaxShader__PrepareGeometryForRendering(void* apThis, void*
 void __fastcall ParallaxShader__PostGeometry(void* apThis, void*, void* apProperties) {
     ThisCall(kParallaxPostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
     DebugViewPasses::EndDraw();   // restored first: it muted after MergedLights and MaterialMaps
+    ForwardPointShadows::EndDraw();
     MergedLights::EndDraw();
     MaterialMaps::EndDraw();
     VanillaDecals::EndDraw();
@@ -710,11 +791,13 @@ void* __fastcall HairShader__PrepareGeometryForRendering(void* apThis, void*, vo
     WriteObjectMaterial((NiGeometry*)apGeometry);
     NiD3DPass* Pass = *(NiD3DPass**)0x0126F74C;   // NiD3DShader::m_pCurrentPass
     MergedLights::OnDraw((NiGeometry*)apGeometry, Pass ? (NiD3DPixelShaderEx*)Pass->PixelShader : nullptr);
+    ForwardPointShadows::OnDraw((NiGeometry*)apGeometry, Pass ? (NiD3DPixelShaderEx*)Pass->PixelShader : nullptr);
     return Result;
 }
 
 void __fastcall HairShader__PostGeometry(void* apThis, void*, void* apProperties) {
     ThisCall(kHairPostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
+    ForwardPointShadows::EndDraw();
     MergedLights::EndDraw();
 }
 

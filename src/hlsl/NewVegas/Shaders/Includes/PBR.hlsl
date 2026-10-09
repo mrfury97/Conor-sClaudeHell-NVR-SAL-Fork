@@ -305,15 +305,19 @@ float3 OpenPBR_EnergyCompensation(float3 f0, float2 envBRDF) {
 //             (the F82-tint model at its default white edge tint reduces to Schlick)
 //   diffuse:  (1 - M) base_color (1 - E_dielectric(view)) / PI, the albedo-scaling form of the
 //             glossy-diffuse slab with a Lambertian base
-void OpenPBR_DirectLight(float3 N, float3 V, float3 L, float3 light, float roughness, float metalness, float specularWeight, float eta,
+// NdotLd is N.L for the diffuse (the lamp's centre); L the direction the highlight is lit from:
+// the same for a point light, a sphere light's representative point otherwise (Object.hlsl
+// directLight, which also applies the sphere light's normalization).
+void OpenPBR_DirectLight(float3 N, float3 V, float NdotLd, float3 L, float3 light, float roughness, float metalness, float specularWeight, float eta,
                          float3 albedo, float3 metalF0, out float3 diffuse, out float3 specular) {
     float3 H = normalize(V + L);
-    float NdotL = clamp(dot(N, L), 1e-4f, 1.0f);
+    float NdotL = clamp(NdotLd, 1e-4f, 1.0f);
+    float NdotLs = clamp(dot(N, L), 1e-4f, 1.0f);
     float NdotV = saturate(abs(dot(N, V)) + 1e-4f);
     float NdotH = saturate(dot(N, H));
     float VdotH = saturate(dot(V, H));
 
-    float DV = CS_D_GGX(roughness, NdotH) * CS_Vis_SmithJointApprox(roughness, NdotV, NdotL);
+    float DV = CS_D_GGX(roughness, NdotH) * CS_Vis_SmithJointApprox(roughness, NdotV, NdotLs);
     float2 envBRDF = CS_EnvBRDF(roughness, NdotV);
     float dielectricF0 = OpenPBR_DielectricF0(eta);
 
@@ -322,7 +326,7 @@ void OpenPBR_DirectLight(float3 N, float3 V, float3 L, float3 light, float rough
     float3 F = lerp(Fdielectric.xxx, Fmetal, metalness);
     float3 f0 = lerp(dielectricF0.xxx, specularWeight * metalF0, metalness);
 
-    specular = DV * F * OpenPBR_EnergyCompensation(f0, envBRDF) * (PI * NdotL) * light;
+    specular = DV * F * OpenPBR_EnergyCompensation(f0, envBRDF) * (PI * NdotLs) * light;
 
     float Edielectric = dielectricF0 * envBRDF.x + envBRDF.y;
     diffuse = albedo * ((1.0f - metalness) * (1.0f - Edielectric) * NdotL) * light;
@@ -339,65 +343,4 @@ void OpenPBR_EnvironmentWeights(float NdotV, float roughness, float metalness, f
     float3 f0 = lerp(dielectricF0.xxx, specularWeight * metalF0, metalness);
     specularWeightOut = lerp(Edielectric.xxx, Emetal, metalness) * OpenPBR_EnergyCompensation(f0, envBRDF);
     diffuseShare = (1.0f - metalness) * (1.0f - Edielectric);
-}
-
-// --- S.T.A.L.K.E.R. Anomaly ---------------------------------------------------------------------
-// Anomaly's lighting model (gamedata/shaders/r3/pbr_brdf.h, Anomaly Team 2020, GGX by LVutner, as
-// GAMMA's shader pack ships it), for materials with authored _rmaos maps when
-// [Shaders.PBR.Main] LightingModel is 1. The maps keep their meaning (R roughness, G metalness,
-// B occlusion, A specular level); the lighting is Anomaly's:
-//   rough     the map's roughness R. Anomaly's GGX takes rough x 1.15 and squares it twice
-//             (alpha = (rough x 1.15)^2, the NDF squares alpha again), tuned for its own material
-//             table, which never goes below about 0.16. Fed R / 1.15 the lobe is the GGX of R: fed
-//             R^2 (Anomaly's calc_rough convention) a glossy map gave a lobe so narrow its peak ran
-//             to thousands of times the light, and weapons turned white
-//   diffuse   pow(N.L, lerp(1.125, 0.75, rough) x 2) x albedo: Anomaly's "aesthetic" falloff,
-//             darker toward the terminator than Lambert, without 1 / PI (a white surface lit
-//             head-on returns the light, as NVR's units)
-//   specular  NDF x G2 x F / (4 N.V): GGX, height-correlated Smith, Schlick to white; no PI on
-//             top, so the highlight sits lower against the diffuse than a physical BRDF
-//   ambient   environment diffuse x albedo, environment reflection x the UE4 mobile split-sum
-// Metals: Anomaly has none (its F0 comes from the material ID); here a metal's diffuse goes and
-// its F0 is the base colour, as the map says.
-
-float Anomaly_NDF_GGX(float NdotH, float alpha) {
-    alpha *= alpha;
-    float d = (NdotH * alpha - NdotH) * NdotH + 1.0f;
-    return alpha / (3.14f * d * d);
-}
-
-float Anomaly_LambdaSmith(float NdotX, float alpha) {
-    float a2 = alpha * alpha;
-    float n2 = max(NdotX * NdotX, 1e-6f);
-    return (-1.0f + sqrt(a2 * (1.0f - n2) / n2 + 1.0f)) * 0.5f;
-}
-
-float Anomaly_G2Smith(float NdotL, float NdotV, float alpha) {
-    return 1.0f / (1.0f + Anomaly_LambdaSmith(NdotV, alpha) + Anomaly_LambdaSmith(NdotL, alpha));
-}
-
-float3 Anomaly_GGX(float NdotL, float NdotH, float NdotV, float VdotH, float3 f0, float roughness) {
-    float alpha = clamp(roughness * roughness, 1.0f / 255.0f, 1.0f);
-    float3 F = lerp(f0, 1.0f, pow(1.0f - VdotH, 5.0f));
-    return Anomaly_NDF_GGX(NdotH, alpha) * Anomaly_G2Smith(NdotL, NdotV, alpha) * F / max(4.0f * NdotV, 4e-4f);
-}
-
-// One light. rough is the map's roughness R; diffuseAlbedo the base colour x (1 - metalness).
-void Anomaly_DirectLight(float3 N, float3 V, float3 L, float3 light, float rough, float3 f0, float3 diffuseAlbedo, out float3 diffuse, out float3 specular) {
-    float3 H = normalize(V + L);
-    float NdotL = max(0.0f, dot(N, L));
-    float NdotH = max(0.0f, dot(N, H));
-    // At least 1e-4, as Anomaly's later pbr_brdf.h has it: a normal map tilted away from the eye
-    // gives N.V 0, and the specular's 1 / (4 N.V) then ran to infinity on edges, which bloom spread
-    // into white glows.
-    float NdotV = max(1e-4f, dot(N, V));
-    float LdotH = max(0.0f, dot(L, H));
-    diffuse = pow(NdotL, lerp(1.125f, 0.75f, rough) * 2.0f) * diffuseAlbedo * light;
-    specular = NdotL > 0.0f ? Anomaly_GGX(NdotL, NdotH, NdotV, LdotH, f0, rough) * light : 0.0f;   // Anomaly's rough x 1.15 with rough = R / 1.15
-}
-
-// Anomaly's environment reflection weight (UE4 mobile EnvBRDFApprox, at Anomaly's rough).
-float3 Anomaly_EnvSpecular(float3 f0, float rough, float NdotV) {
-    float2 ab = CS_EnvBRDF(rough, NdotV);
-    return f0 * ab.x + ab.y;
 }
