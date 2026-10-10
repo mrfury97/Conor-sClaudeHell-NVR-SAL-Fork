@@ -112,6 +112,7 @@ public:
 		LUTEffect*				LUT;
 		CinemaEffect*			Cinema;
 		ExposureEffect*			Exposure;
+		AutoExposureEffect*		AutoExposure;
 		FlashlightEffect*		Flashlight;
 		FlashlightBeamEffect*	FlashlightBeam;
 		CombineDepthEffect*		CombineDepth;

@@ -97,6 +97,9 @@
     <ClInclude Include="..\src\effects\InverseSquareLighting.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\AutoExposure.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\ImageAdjust.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -559,6 +562,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\InverseSquareLighting.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\AutoExposure.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Underwater.cpp">

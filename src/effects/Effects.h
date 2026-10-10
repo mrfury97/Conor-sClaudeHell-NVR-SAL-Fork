@@ -50,3 +50,4 @@
 #include "Terrain.h"
 #include "Grass.h"
 #include "InverseSquareLighting.h"
+#include "AutoExposure.h"

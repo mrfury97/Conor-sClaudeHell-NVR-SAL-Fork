@@ -168,6 +168,31 @@ Time = 900.0
 [_Shaders.BloodLens.Status]
 Enabled = false
 
+[_Shaders.AutoExposure.Main]
+AdaptBright = 1.0                    # Seconds to adapt when the scene gets brighter (walking out into daylight).
+AdaptDark = 3.0                      # Seconds to adapt when it gets darker (eyes adjust to the dark more slowly).
+CenterWeight = 1.0                   # [0-8] How much more the middle of the screen counts when measuring the scene: 0 evenly, higher meters what you look at.
+MaxScale = 4.0                       # [1-64] The most a dark scene is brightened (times). Keeps a pitch-black room from being lifted to grey.
+MinScale = 0.25                      # [0.01-1] The most a bright scene is darkened (times).
+Target = 0.18                        # [0.01-2] The brightness the scene's average is brought to (linear; 0.18 is middle grey). Higher is a brighter picture. Tonemapping's Exposure still applies on top: set it near 1 when this is on.
+
+[_Shaders.AutoExposure.Night]
+AdaptBright = 1.0                    # Seconds to adapt when the scene gets brighter (walking out into daylight).
+AdaptDark = 3.0                      # Seconds to adapt when it gets darker (eyes adjust to the dark more slowly).
+MaxScale = 6.0                       # [1-64] The most a dark scene is brightened (times). Keeps a pitch-black room from being lifted to grey.
+MinScale = 0.25                      # [0.01-1] The most a bright scene is darkened (times).
+Target = 0.12                        # [0.01-2] The brightness the scene's average is brought to (linear; 0.18 is middle grey). Higher is a brighter picture. Tonemapping's Exposure still applies on top: set it near 1 when this is on.
+
+[_Shaders.AutoExposure.Interiors]
+AdaptBright = 1.0                    # Seconds to adapt when the scene gets brighter (walking out into daylight).
+AdaptDark = 3.0                      # Seconds to adapt when it gets darker (eyes adjust to the dark more slowly).
+MaxScale = 8.0                       # [1-64] The most a dark scene is brightened (times). Keeps a pitch-black room from being lifted to grey.
+MinScale = 0.25                      # [0.01-1] The most a bright scene is darkened (times).
+Target = 0.16                        # [0.01-2] The brightness the scene's average is brought to (linear; 0.18 is middle grey). Higher is a brighter picture. Tonemapping's Exposure still applies on top: set it near 1 when this is on.
+
+[_Shaders.AutoExposure.Status]
+Enabled = false                      # Auto exposure (eye adaptation) before tonemapping, as modern games do: measures how bright the scene is and brings it to Target over a moment -- a dark bunker opens up after a second, daylight blinds briefly when you step out. Replaces a fixed interior Exposure boost. (The older Exposure effect works after the tone curve, on colours already compressed; leave it off with this.)
+
 [_Shaders.Bloom]
 
 [_Shaders.Bloom.Main]
@@ -409,7 +434,7 @@ Enabled = true                        # Screenspace godrays/volumetric rays.
 
 
 [_Shaders.Tonemapping.Main]
-TonemappingMode = 10                  # Tonemapping Algorithm -  0:None (vanilla - DXVK HDR), 1:VTLottes, 2:NVRLottes, 3:Reinhard, 4:Reinhard Jodie, 5:ACES Filmic, 6:ACES Fitted, 7:Uncharted 2, 8:Uchimura (GT), 9:AGX, 10:DICE (default, most neutral/accurate)
+TonemappingMode = 10                  # Tonemapping Algorithm -  0:None (vanilla - DXVK HDR), 1:VTLottes, 2:NVRLottes, 3:Reinhard, 4:Reinhard Jodie, 5:ACES Filmic, 6:ACES Fitted, 7:Uncharted 2, 8:Uchimura (GT), 9:AGX (TonemapContrast and HighlightSaturation set its look: about 1.35 and 1.4 for its punchy look), 10:DICE (default, most neutral/accurate), 11:Khronos PBR Neutral (keeps material colours as authored, compresses only the highlights)
 Exposure = 1.5                        # Scales the engine lighting strength/brightness range before tonemap, useful for HDR rendering
 Gamma = 2.2                           # Gamma modifier to be applied after tonemapping, delinearises output. If placed at 1.0, outputs at linear space for HDR (UI unaffected)
 Linearization = 2.2                   # Converts image to corrected linear space before tonemapping. 1.0 is non-linear, if so place Gamma at 1.0 as well
@@ -428,7 +453,7 @@ PointLightMultiplier = 1.0            # Experimental - modifies the strength of 
 
 
 [_Shaders.Tonemapping.Interiors]
-TonemappingMode = 10                  # Tonemapping Algorithm -  0:None (vanilla - DXVK HDR), 1:VTLottes, 2:NVRLottes, 3:Reinhard, 4:Reinhard Jodie, 5:ACES Filmic, 6:ACES Fitted, 7:Uncharted 2, 8:Uchimura (GT), 9:AGX, 10:DICE (default, most neutral/accurate)
+TonemappingMode = 10                  # Tonemapping Algorithm -  0:None (vanilla - DXVK HDR), 1:VTLottes, 2:NVRLottes, 3:Reinhard, 4:Reinhard Jodie, 5:ACES Filmic, 6:ACES Fitted, 7:Uncharted 2, 8:Uchimura (GT), 9:AGX (TonemapContrast and HighlightSaturation set its look: about 1.35 and 1.4 for its punchy look), 10:DICE (default, most neutral/accurate), 11:Khronos PBR Neutral (keeps material colours as authored, compresses only the highlights)
 Exposure = 1.3                        # Scales the engine lighting strength/brightness range before tonemap, useful for HDR rendering
 Gamma = 2.2                           # Gamma modifier to be applied after tonemapping, delinearises output. If placed at 1.0, outputs at linear space for HDR (UI unaffected)
 Linearization = 2.2                   # Converts image to corrected linear space before tonemapping. 1.0 is non-linear, if so place Gamma at 1.0 as well

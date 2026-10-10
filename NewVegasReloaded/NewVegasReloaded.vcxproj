@@ -154,6 +154,7 @@
     <ClCompile Include="..\src\effects\GodRays.cpp" />
     <ClCompile Include="..\src\effects\Grass.cpp" />
     <ClCompile Include="..\src\effects\InverseSquareLighting.cpp" />
+    <ClCompile Include="..\src\effects\AutoExposure.cpp" />
     <ClCompile Include="..\src\effects\ImageAdjust.cpp" />
     <ClCompile Include="..\src\effects\Lens.cpp" />
     <ClCompile Include="..\src\effects\LowHF.cpp" />
@@ -264,6 +265,7 @@
     <ClInclude Include="..\src\effects\GodRays.h" />
     <ClInclude Include="..\src\effects\Grass.h" />
     <ClInclude Include="..\src\effects\InverseSquareLighting.h" />
+    <ClInclude Include="..\src\effects\AutoExposure.h" />
     <ClInclude Include="..\src\effects\ImageAdjust.h" />
     <ClInclude Include="..\src\effects\Lens.h" />
     <ClInclude Include="..\src\effects\LowHF.h" />

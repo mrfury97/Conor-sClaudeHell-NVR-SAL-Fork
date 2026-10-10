@@ -140,7 +140,8 @@ VS_OUTPUT main(VS_INPUT IN) {
     }
     
     final.rgb = lerp(final.rgb, final.rgb * Cinematic.w, cinematicScalar); // apply brightness from Cinematic
-    final.rgb = tonemap(final.rgb * TESR_HDRData.y); // exposure & tonemap using provided tonemapper
+    // Exposure (the setting, then auto exposure's scale: Includes/Tonemapping.hlsl), then the curve.
+    final.rgb = tonemap(final.rgb * (TESR_HDRData.y * AutoExposureScale()));
     
     if (gammaSpacePostProcess){
         final.rgb = delinearize(final.rgb);

@@ -1,3 +1,37 @@
+// Auto exposure (Effects/AutoExposure.fx, AutoExposureEffect): the scene's adapted average
+// brightness, and the scale that brings it to the target, before the curve. Registers free in both
+// ISHDRBLENDINSHADERCIN and ISHDRBLENDINSHADERCINAM.
+float4 TESR_AutoExposureData : register(c32);   // x 1 on, y target, z min scale, w max scale
+sampler2D TESR_AutoExposureBuffer : register(s9) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+// The scale itself is worked out once, by the effect (g; r is the adapted brightness it came from).
+float AutoExposureScale() {
+    float scale = 1.0f;
+    [branch] if (TESR_AutoExposureData.x > 0.0f) {
+        float measured = tex2Dlod(TESR_AutoExposureBuffer, float4(0.5f, 0.5f, 0.0f, 0.0f)).g;
+        if (measured > 0.0f) scale = measured;
+    }
+    return scale;
+}
+
+// Khronos PBR Neutral (https://github.com/KhronosGroup/ToneMapping): keeps colours as they are up to
+// near white and only compresses the highlights, desaturating them a little as film does -- for
+// materials that should look as authored. Linear in, linear (display) out.
+float3 PBRNeutral(float3 color) {
+    const float startCompression = 0.8f - 0.04f;
+    const float desaturation = 0.15f;
+    float x = min(color.r, min(color.g, color.b));
+    float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
+    color -= offset;
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak < startCompression) return color;
+    const float d = 1.0f - startCompression;
+    float newPeak = 1.0f - d * d / (peak + d - startCompression);
+    color *= newPeak / peak;
+    float g = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
+    return lerp(color, newPeak.xxx, g);
+}
+
 // ACES tonemapping https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/
 float3 ACESFilm(float3 x)
 {
@@ -165,17 +199,21 @@ float3 agxEotf(float3 val)
     return val;
 }
 
-// 0: Default, 1: Golden, 2: Punchy
-//#define AGX_LOOK 0
+// AgX's look (ASC CDL), from the settings: power from TonemapContrast (TESR_LotteData.x, raw for
+// AgX) -- 1 is AgX's default, about 1.35 its "Punchy" -- and saturation from HighlightSaturation
+// (TESR_ToneMapping.x) -- 1 default, about 1.4 "Punchy". AgX's default alone reads flat and grey.
+// (Its "Golden" look, slope 1 / 0.9 / 0.5 with power 0.8 and saturation 0.8, below for reference.)
 float3 agxLook(float3 val)
 {
     float3 luma_val = luma(val);
-  
-  // Default
+
     float3 offset = 0.0;
     float3 slope = 1.0;
-    float power = 1.0;
-    float sat = 1.0;
+    float power = clamp(TESR_LotteData.x, 0.5f, 2.0f);
+    float sat = clamp(TESR_ToneMapping.x, 0.0f, 2.0f);
+    // At AgX's default look the grade does nothing: skipped (three pows and a blend a pixel). With
+    // these as literals, as they were, the compiler removed it; from settings it cannot.
+    [branch] if (power == 1.0f && sat == 1.0f) return val;
  
 //#if AGX_LOOK == 1
 //  // Golden
@@ -418,6 +456,10 @@ float3 tonemap(float3 color)
     else if (TESR_HDRData.x == 10)
     {
         return DICE(min(CMAX, color), TESR_LotteData.x, TESR_LotteData.y, TESR_HDRBloomData.w, TESR_LotteData.w);
+    }
+    else if (TESR_HDRData.x == 11)
+    {
+        return PBRNeutral(max(0.0f, color));
     }
     else
     {

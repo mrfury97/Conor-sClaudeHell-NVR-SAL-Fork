@@ -57,6 +57,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<DepthOfFieldEffect>(&TheShaderManager->Effects.DepthOfField);
 	TheShaderManager->RegisterEffect<DebugEffect>(&TheShaderManager->Effects.Debug);
 	TheShaderManager->RegisterEffect<ExposureEffect>(&TheShaderManager->Effects.Exposure);
+	TheShaderManager->RegisterEffect<AutoExposureEffect>(&TheShaderManager->Effects.AutoExposure);
 	TheShaderManager->RegisterEffect<FlashlightEffect>(&TheShaderManager->Effects.Flashlight);
 	TheShaderManager->RegisterEffect<FlashlightBeamEffect>(&TheShaderManager->Effects.FlashlightBeam);
 	TheShaderManager->RegisterEffect<GodRaysEffect>(&TheShaderManager->Effects.GodRays);
@@ -499,6 +500,8 @@ void ShaderManager::UpdateConstants() {
 	// TESR_PBRData (see Shaders/Includes/PBRScale.hlsl) and render black at a zero scale, so
 	// these constants stay current whether or not the PBR collection is enabled.
 	if (!Shaders.PBR->Enabled) Shaders.PBR->UpdateConstants();
+	// Off, the tonemapping shaders ignore auto exposure: its constant says so.
+	if (!Effects.AutoExposure->Enabled) Effects.AutoExposure->UpdateConstants();
 	// Off, the lamps' falloff goes back to vanilla: its constant says so (Shaders/Includes/InverseSquare.hlsl).
 	if (!Shaders.InverseSquareLighting->Enabled) Shaders.InverseSquareLighting->UpdateConstants();
 
@@ -1212,6 +1215,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	}
 
 	Effects.Exposure->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	// The scene's brightness for the tonemapping's auto exposure (AutoExposureEffect).
+	Effects.AutoExposure->Measure();
+	Device->SetRenderTarget(0, RenderTarget);
 	Effects.Bloom->RenderBloomBuffer(RenderTarget);
 
 	Effects.Lens->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
