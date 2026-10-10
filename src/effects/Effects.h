@@ -49,3 +49,4 @@
 #include "PBR.h"
 #include "Terrain.h"
 #include "Grass.h"
+#include "InverseSquareLighting.h"

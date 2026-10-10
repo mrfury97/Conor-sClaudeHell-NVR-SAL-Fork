@@ -324,6 +324,8 @@ namespace ForwardPointShadows {
     static const UINT MergedRegister = 198;     // TESR_PointShadowMerged[16]
     static const UINT BaseLights = 6;
     static bool sUploaded = false;
+    static const UINT FillRegister = 216;       // TESR_InverseSquareFill[2] (Shaders/Includes/InverseSquare.hlsl)
+    static bool sFillUploaded = false;
 
     bool Active() {
         ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
@@ -332,6 +334,13 @@ namespace ForwardPointShadows {
 
     // A lamp's shadow info (slot * 2 + fade, or -1), and its slot's anchor (camera-relative, as the
     // merged lamps' positions) and radius into Anchor.
+    // The anchor in the shaders' frame. World draws: less the camera's position, the frame both the
+    // cube was drawn in (ShadowManager::RenderShadowCubeMap's Eye) and the shaders rebuild positions
+    // in (GetShadowWorldPos: the view has no translation, CameraLocation being zero) -- kPosAdjust
+    // plus the lighting offset only matched that while the game had not moved either, and the
+    // shadows slid with the view when it had. First-person draws keep that conversion: the game
+    // moves the lighting offset for the viewmodel on purpose.
+    bool sFirstPersonDraw = false;
     float LampInfo(const ShadowSceneLight* Light, float* Anchor) {
         if (!Light || !Active()) return -1.0f;
         const auto Found = TheShadowManager->LampSlot.find(Light);
@@ -343,10 +352,25 @@ namespace ForwardPointShadows {
         const NiPoint3& PosAdjust = *(NiPoint3*)0x011F474C;                   // NiRenderer::kPosAdjust
         void* SceneNode = *(void**)0x011F91C8;                                // BSShaderManager::pShadowSceneNode[0]
         const NiPoint3 Offset = SceneNode ? *(NiPoint3*)((UInt8*)SceneNode + 0x1E4) : NiPoint3(0.0f, 0.0f, 0.0f);   // kLightingOffset
-        Anchor[0] = Position.x + Offset.x - PosAdjust.x;
-        Anchor[1] = Position.y + Offset.y - PosAdjust.y;
-        Anchor[2] = Position.z + Offset.z - PosAdjust.z;
+        const D3DXVECTOR4& Camera = TheRenderManager->CameraPosition;
+        if (sFirstPersonDraw) {
+            Anchor[0] = Position.x + Offset.x - PosAdjust.x;
+            Anchor[1] = Position.y + Offset.y - PosAdjust.y;
+            Anchor[2] = Position.z + Offset.z - PosAdjust.z;
+        }
+        else {
+            Anchor[0] = Position.x - Camera.x;
+            Anchor[1] = Position.y - Camera.y;
+            Anchor[2] = Position.z - Camera.z;
+        }
         Anchor[3] = Position.w;
+        // Develop.DebugMode: how far kPosAdjust and the lighting offset are from what the cube used.
+        static UInt32 LogCalls = 0;
+        if (TheSettingManager->SettingsMain.Develop.DebugMode && !sFirstPersonDraw && ++LogCalls >= 20000) {
+            LogCalls = 0;
+            Logger::Log("ForwardPointShadows: world draw: kPosAdjust - camera = %.2f %.2f %.2f, lighting offset = %.2f %.2f %.2f",
+                PosAdjust.x - Camera.x, PosAdjust.y - Camera.y, PosAdjust.z - Camera.z, Offset.x, Offset.y, Offset.z);
+        }
         const float Fade = std::clamp(TheShadowManager->SlotFadeValue[Slot], 0.0f, 1.0f);
         return (float)Slot * 2.0f + Fade;
     }
@@ -633,6 +657,7 @@ namespace MergedLights {
         if (!PixelShader || PixelShader->ShaderHandle == PixelShader->ShaderHandleBackup) return false;   // vanilla shader
         BSShaderPPLightingProperty* Property = Geometry ? static_cast<BSShaderPPLightingProperty*>(Geometry->GetProperty(NiProperty::kType_Shade)) : nullptr;
         if (Property && (Property->ulFlags[1] & 0x40)) OverrideViewForFirstPerson();   // BSS2_1st_person: every pass, merged or not
+        ForwardPointShadows::sFirstPersonDraw = Property && (Property->ulFlags[1] & 0x40);   // the merged lamps' anchors (LampInfo)
         int n = ShaderNumber(PixelShader, "SLS");
         if (n >= 2037 && n <= 2044) { SetupBasePass(Geometry, false, true); return false; }
         if (n >= 2045 && n <= 2056) return MuteAddPass(Geometry);
@@ -649,16 +674,44 @@ namespace MergedLights {
 namespace ForwardPointShadows {
 
     void OnDraw(NiGeometry* Geometry, const NiD3DPixelShaderEx* PixelShader) {
-        if (sUploaded) EndDraw();
-        if (!Geometry || !PixelShader || PixelShader->ShaderHandle == PixelShader->ShaderHandleBackup || !Active()) return;   // vanilla shader
+        if (sUploaded || sFillUploaded) EndDraw();
+        if (!Geometry || !PixelShader || PixelShader->ShaderHandle == PixelShader->ShaderHandleBackup) return;   // vanilla shader
         const MergedLights::RenderPassData* Current = *(MergedLights::RenderPassData**)0x011F91E0;   // BSShaderManager::pCurrentRenderPass
         if (!Current || Current->Geometry != Geometry || !Current->SceneLights) return;
+        const UInt32 FillFirst = (Current->PassEnum == 0xCA || Current->PassEnum == 0xD1) ? 1 : 0;   // as First below
+        // Inverse square lighting: the pass's fill lights keep vanilla's falloff, and the skin
+        // shaders cannot tell them by radius (Includes/InverseSquare.hlsl).
+        const InverseSquareLightingShaders* InverseSquare = TheShaderManager->Shaders.InverseSquareLighting;
+        if (InverseSquare && InverseSquare->Enabled && InverseSquare->Settings.FillLightRadius > 0.0f) {
+            float Fill[8] = {};
+            bool AnyFill = false;
+            for (UInt32 k = 0; k < 8 && FillFirst + k < Current->NumLights; k++) {
+                const ShadowSceneLight* Light = Current->SceneLights[FillFirst + k];
+                if (Light && Light->sourceLight && Light->sourceLight->Spec.r > InverseSquare->Settings.FillLightRadius) {
+                    Fill[k] = 1.0f;
+                    AnyFill = true;
+                }
+            }
+            if (AnyFill) {
+                TheRenderManager->device->SetPixelShaderConstantF(FillRegister, Fill, 2);
+                sFillUploaded = true;
+            }
+        }
+        if (!Active()) return;
+        const BSShaderPPLightingProperty* Property = static_cast<BSShaderPPLightingProperty*>(Geometry->GetProperty(NiProperty::kType_Shade));
+        sFirstPersonDraw = Property && (Property->ulFlags[1] & 0x40);   // BSS2_1st_person (LampInfo)
+        // The pixel shader's light k is the pass's light k, but in BSSM_ADT4_Opt (0xCA) and
+        // BSSM_ADTS10_Opt (0xD1): their setups (ShadowLightShader::SetupGeometryOpt_Lights /
+        // _LightsSpecular) write pass light k to kShaderLightConstants[k], and "LightColors"
+        // (PSLightColor, c3) starts at kShaderLightConstants[1] -- so PSLightColor[k] is light k + 1.
+        // (The other passes' SetupGeometryConstants_Lights put light k at kShaderLightConstants[k + 1].)
+        const UInt32 First = (Current->PassEnum == 0xCA || Current->PassEnum == 0xD1) ? 1 : 0;
         float Anchors[4 * BaseLights] = {};
         float Info[8] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
         bool Any = false;
-        for (UInt32 j = 0; j < Current->NumLights && j < BaseLights; j++) {
-            Info[j] = LampInfo(Current->SceneLights[j], &Anchors[4 * j]);
-            Any |= Info[j] >= 0.0f;
+        for (UInt32 k = 0; k < BaseLights && First + k < Current->NumLights; k++) {
+            Info[k] = LampInfo(Current->SceneLights[First + k], &Anchors[4 * k]);
+            Any |= Info[k] >= 0.0f;
         }
         if (!Any) return;
         TheRenderManager->device->SetPixelShaderConstantF(BaseRegister, Anchors, BaseLights);
@@ -667,10 +720,16 @@ namespace ForwardPointShadows {
     }
 
     void EndDraw() {
-        if (!sUploaded) return;
         const float None[8] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
-        TheRenderManager->device->SetPixelShaderConstantF(BaseInfoRegister, None, 2);
-        sUploaded = false;
+        if (sUploaded) {
+            TheRenderManager->device->SetPixelShaderConstantF(BaseInfoRegister, None, 2);
+            sUploaded = false;
+        }
+        if (sFillUploaded) {
+            const float NoFill[8] = {};
+            TheRenderManager->device->SetPixelShaderConstantF(FillRegister, NoFill, 2);
+            sFillUploaded = false;
+        }
     }
 }
 
@@ -801,6 +860,24 @@ void __fastcall HairShader__PostGeometry(void* apThis, void*, void* apProperties
     MergedLights::EndDraw();
 }
 
+// Lighting30Shader's (vtable 0x10BA0F8): the 3X lighting passes, hair among them (SM3002/SM3003),
+// which take the lamps' shadows too. Slot 27 is NiD3DShader::PrepareGeometryForRendering as in the
+// others; slot 35 is its own post-geometry function (0xBBEEF0, stencil and z-write reset).
+VirtFuncDetour kLighting30PrepareGeometryDetour;
+VirtFuncDetour kLighting30PostGeometryDetour;
+
+void* __fastcall Lighting30Shader__PrepareGeometryForRendering(void* apThis, void*, void* apGeometry, void* apPartition, void* apRendererData, void* apState) {
+    void* Result = (void*)ThisCall(kLighting30PrepareGeometryDetour.GetOverwrittenAddr(), apThis, apGeometry, apPartition, apRendererData, apState);
+    NiD3DPass* Pass = *(NiD3DPass**)0x0126F74C;   // NiD3DShader::m_pCurrentPass
+    ForwardPointShadows::OnDraw((NiGeometry*)apGeometry, Pass ? (NiD3DPixelShaderEx*)Pass->PixelShader : nullptr);
+    return Result;
+}
+
+void __fastcall Lighting30Shader__PostGeometry(void* apThis, void*, void* apProperties) {
+    ThisCall(kLighting30PostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
+    ForwardPointShadows::EndDraw();
+}
+
 // SkinShader's per-geometry virtuals (vtable 0x10BB980), bracketing every skin draw on both of
 // the batch renderer's paths (BSBatchRenderer::RenderPassImmediately_Standard and _Skinned):
 // slot 27 PrepareGeometryForRendering (NiD3DShader, 0xE812F0) runs just before the draw, slot 35
@@ -869,6 +946,8 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
     // those passes are muted (MergedLights above). A muted pass writes nothing, the scattering
     // target included.
     const bool MergedMuted = SkinPixelShader && MergedLights::OnDraw((NiGeometry*)apGeometry, PixelShader);
+    // The pass's lamps' shadows (Includes/PointShadow.hlsl, ForwardPointShadows above).
+    if (SkinPixelShader && !MergedMuted) ForwardPointShadows::OnDraw((NiGeometry*)apGeometry, PixelShader);
 
     SkinScatteringEffect* Scattering = TheShaderManager->Effects.SkinScattering;
     if (Scattering && SkinPixelShader && !MergedMuted)
@@ -898,6 +977,7 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
 void __fastcall SkinShader__PostGeometry(void* apThis, void*, void* apProperties) {
     ThisCall(kSkinPostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
     if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();
+    ForwardPointShadows::EndDraw();
     MergedLights::EndDraw();
     if (sFaceGenStage2) {
         *(void**)((UInt8*)sFaceGenStage2 + 0x08) = nullptr;   // NiD3DTextureStage::m_pkTexture

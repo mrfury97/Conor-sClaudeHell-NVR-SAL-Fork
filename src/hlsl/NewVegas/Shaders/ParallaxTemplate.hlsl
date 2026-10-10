@@ -148,6 +148,11 @@
     #include "includes/MergedLights.hlsl"
 #endif
 #ifdef PS
+    // The merged lamps' shadows are looked up first and packed (Includes/PointShadow.hlsl,
+    // PointShadowPackMerged below): their loop has no room for the full filter.
+    #ifdef MERGED_LIGHTS
+        #define POINT_SHADOW_PACKED
+    #endif
     #include "includes/PointShadow.hlsl"
 #endif
 
@@ -350,6 +355,7 @@ VS_OUTPUT main(VS_INPUT IN)
 
 struct PS_INPUT
 {
+    float2 vpos : VPOS;   // the pixel's screen position (Includes/PointShadow.hlsl, POINT_SHADOW_PIXEL)
 #ifndef NO_VERTEX_COLOR
     float3 vertexColor : COLOR0;
 #endif
@@ -468,6 +474,23 @@ float4 EmittanceColor : register(c2);
 // world space: the normal map's normal (at the parallax offset) through the world frame the vertex
 // shader sent. The vanilla fallback (TESR_ParallaxData.y off) lights them the vanilla way, as the
 // passes it replaces did.
+// The merged lamps' shadows, value i for lamp i, first thing in main (POINT_SHADOW_PACKED above).
+// normal: the smooth world normal the loop below lights with. Only with PBR, the only lighting
+// that applies them.
+void PointShadowPackMerged(float3 worldPos, float3 normal, float valid) {
+    pointShadowPackA = 0.0f;
+    pointShadowPackB = 0.0f;
+    [branch] if (TESR_ParallaxData.y && TESR_PointShadowData.x > 0.0f && valid > 0.0f) {
+        [loop] for (int i = 0; i < MERGED_MAX_LIGHTS; i++) {
+            if (i >= TESR_MergedLightCount.x) break;
+            // A lamp whose light does not reach the pixel (getMergedPointLights' own test) needs no shadow.
+            float3 L = TESR_MergedLightPosition[i].xyz - worldPos;
+            [branch] if (vanillaAttSq(dot(L, L), TESR_MergedLightPosition[i].w) > 0.0f)
+                PointShadowPackValue(i, PointShadowVisibilitySoft(TESR_MergedLightColor[i].w, TESR_PointShadowMerged[i], worldPos, normal, valid));
+        }
+    }
+}
+
 float3 getMergedPointLights(float3 worldNormal, float3 worldTangent, float handedness, float4 normalTS, float3 worldPos, float worldPosValid, float3 albedo, float roughness) {
     float3 total = 0.0f;
     [branch] if (TESR_MergedLightCount.x > 0.0f) {
@@ -484,7 +507,7 @@ float3 getMergedPointLights(float3 worldNormal, float3 worldTangent, float hande
             [branch] if (att > 0.0f) {
                 if (TESR_ParallaxData.y)
                     total += getPointLightLightingAtt(L, att, TESR_MergedLightColor[i].rgb, V, n, albedo, roughness, length(L),
-                        PointShadowVisibility(TESR_MergedLightColor[i].w, TESR_PointShadowMerged[i], worldPos, worldPosValid));
+                        PointShadowPackedVisibility(i));   // looked up at the top of main (PointShadowPackMerged)
                 else
                     total += getVanillaLightingAtt(L, att, TESR_MergedLightColor[i].rgb, V, n, albedo, normalTS.a, glossPower);
             }
@@ -497,6 +520,12 @@ float3 getMergedPointLights(float3 worldNormal, float3 worldTangent, float hande
 PS_OUTPUT main(PS_INPUT IN)
 {
     PS_OUTPUT OUT;
+    POINT_SHADOW_PIXEL(IN.vpos);
+
+    #ifdef POINT_SHADOW_PACKED
+        // First, while nothing else is held: the merged lamps' shadows, with the normal they light with.
+        PointShadowPackMerged(IN.shadowWorldPos.xyz, normalize(IN.worldNormal.xyz * 2.0f - 1.0f), SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
+    #endif
 
     #if !defined(ONLY_LIGHT) && !defined(ONLY_SPECULAR) && !defined(NO_LIGHT)
         float alpha = tex2D(BaseMap, IN.uv.xy).a;
@@ -640,15 +669,15 @@ PS_OUTPUT main(PS_INPUT IN)
             // Pointlight vanilla att.
             if (TESR_ParallaxData.y)
                 lighting = getPointLightLighting(IN.lightDir.xyz, IN.lightDir.w, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness,
-                    PointShadowBase(0, IN.shadowWorldPos.xyz, shadowWorldPosValid));
+                    PointShadowBase(0, IN.shadowWorldPos.xyz, sunShadowNormal, shadowWorldPosValid));
             else {
-                finalAtt = saturate(1 - tex2D(AttenuationMap, IN.lightAtt.xy).x - tex2D(AttenuationMap, IN.lightAtt.zw).x);
+                finalAtt = lampFalloff(tex2D(AttenuationMap, IN.lightAtt.xy).x + tex2D(AttenuationMap, IN.lightAtt.zw).x, IN.lightDir.w);   // the maps give (d / r)^2
                 lighting = getVanillaLightingAtt(IN.lightDir.xyz, finalAtt, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
             }
         #else
             if (TESR_ParallaxData.y)
                 lighting = getPointLightLighting(IN.lightDir.xyz, IN.lightDir.w, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness,
-                    PointShadowBase(0, IN.shadowWorldPos.xyz, shadowWorldPosValid));
+                    PointShadowBase(0, IN.shadowWorldPos.xyz, sunShadowNormal, shadowWorldPosValid));
             else
                 lighting = getVanillaLighting(IN.lightDir.xyz, IN.lightDir.w, PSLightColor[0].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
@@ -671,21 +700,21 @@ PS_OUTPUT main(PS_INPUT IN)
 
         // Other light sources.
         #if LIGHTS > 1
-            finalAtt = saturate(1 - tex2D(AttenuationMap, IN.light2Att.xy).x - tex2D(AttenuationMap, ATTENUATION_UV2(IN.light2Att)).x);
+            finalAtt = lampFalloff(tex2D(AttenuationMap, IN.light2Att.xy).x + tex2D(AttenuationMap, ATTENUATION_UV2(IN.light2Att)).x, IN.light2Dir.w);
 
             if (TESR_ParallaxData.y)
                 lighting += getPointLightLightingAtt(IN.light2Dir.xyz, finalAtt, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness, 0.0f,
-                    PointShadowBase(1, IN.shadowWorldPos.xyz, shadowWorldPosValid));
+                    PointShadowBase(1, IN.shadowWorldPos.xyz, sunShadowNormal, shadowWorldPosValid));
             else
                 lighting += getVanillaLightingAtt(IN.light2Dir.xyz, finalAtt, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
 
         #if LIGHTS > 2
-            finalAtt = saturate(1 - tex2D(AttenuationMap, IN.light3Att.xy).x - tex2D(AttenuationMap, ATTENUATION_UV2(IN.light3Att)).x);
+            finalAtt = lampFalloff(tex2D(AttenuationMap, IN.light3Att.xy).x + tex2D(AttenuationMap, ATTENUATION_UV2(IN.light3Att)).x, IN.light3Dir.w);
 
             if (TESR_ParallaxData.y)
                 lighting += getPointLightLightingAtt(IN.light3Dir.xyz, finalAtt, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness, 0.0f,
-                    PointShadowBase(2, IN.shadowWorldPos.xyz, shadowWorldPosValid));
+                    PointShadowBase(2, IN.shadowWorldPos.xyz, sunShadowNormal, shadowWorldPosValid));
             else
                 lighting += getVanillaLightingAtt(IN.light3Dir.xyz, finalAtt, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
@@ -693,7 +722,7 @@ PS_OUTPUT main(PS_INPUT IN)
         #if NUM_PT_LIGHTS > 1
             if (TESR_ParallaxData.y)
                 lighting += getPointLightLighting(IN.light2Dir.xyz, IN.light2Dir.w, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness,
-                    PointShadowBase(1, IN.shadowWorldPos.xyz, shadowWorldPosValid));
+                    PointShadowBase(1, IN.shadowWorldPos.xyz, sunShadowNormal, shadowWorldPosValid));
             else
                 lighting += getVanillaLighting(IN.light2Dir.xyz, IN.light2Dir.w, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif
@@ -701,7 +730,7 @@ PS_OUTPUT main(PS_INPUT IN)
         #if NUM_PT_LIGHTS > 2
             if (TESR_ParallaxData.y)
                 lighting += getPointLightLighting(IN.light3Dir.xyz, IN.light3Dir.w, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness,
-                    PointShadowBase(2, IN.shadowWorldPos.xyz, shadowWorldPosValid));
+                    PointShadowBase(2, IN.shadowWorldPos.xyz, sunShadowNormal, shadowWorldPosValid));
             else
                 lighting += getVanillaLighting(IN.light3Dir.xyz, IN.light3Dir.w, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, normal.a, glossPower);
         #endif

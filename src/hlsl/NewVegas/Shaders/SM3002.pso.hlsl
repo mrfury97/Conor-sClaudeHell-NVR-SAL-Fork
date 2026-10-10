@@ -17,6 +17,8 @@
 #include "includes/Helpers.hlsl"
 #include "includes/PBR.hlsl"
 #include "includes/PBRScale.hlsl"
+#include "includes/PointShadow.hlsl"
+#include "includes/InverseSquare.hlsl"
 
 float4 AmbientColor    : register(c0);
 float4 HairTint        : register(c2);
@@ -34,6 +36,7 @@ sampler2D LayerMap  : register(s5);
 #endif
 
 struct VS_INPUT {
+    float2 vpos           : VPOS;   // the pixel's screen position (Includes/PointShadow.hlsl, POINT_SHADOW_PIXEL)
     float2 uv             : TEXCOORD0;
     float4 shadowWorldPos : TEXCOORD1;
     float4 color          : COLOR0;
@@ -50,6 +53,7 @@ struct VS_OUTPUT {
 
 VS_OUTPUT main(VS_INPUT IN) {
     VS_OUTPUT OUT;
+    POINT_SHADOW_PIXEL(IN.vpos);
 
     float3 T = normalize(IN.tangent);
     float3 B = normalize(IN.binormal);
@@ -100,10 +104,11 @@ VS_OUTPUT main(VS_INPUT IN) {
 
         float3 toLight = isDirectional ? lightVec.xyz : (lightVec.xyz - IN.objPos);
 
-        // 1 - (dist/radius)^2. None for directional.
+        // 1 - (dist/radius)^2, or inverse square (Includes/InverseSquare.hlsl; this light is linear
+        // already). None for directional.
         float dist = length(toLight);
         float d = saturate(dist / max(lightVec.w, 0.0001f));
-        float atten = isDirectional ? 1.0f : saturate(1.0f - d * d);
+        float atten = isDirectional ? 1.0f : lampFalloffLinear(d * d, lightVec.w);
 
         float3 L = normalize(mul(tbn, toLight));
 
@@ -112,8 +117,10 @@ VS_OUTPUT main(VS_INPUT IN) {
         // vector nor roughness, which is why this permutation needs no EyePosition.
         float3 lightDiffuse = PBRDiffuse(0.0f, HAIR_ROUGHNESS, 1.0f, N, N, L, lightColor) * atten;
 
-        // Sun only.
+        // The sun's shadow; each lamp's own (Includes/PointShadow.hlsl): LightData pair i is the
+        // pass's light i (Lighting30Shader::SetupGeometryConstants_Lights, 0xBBC050).
         if (isDirectional) lightDiffuse *= sunShadow;
+        else lightDiffuse *= PointShadowBaseFacingLamp(i, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
 
         // Mask inactive lights.
         diffuse += lightDiffuse * ((i < numLights) ? 1.0f : 0.0f);

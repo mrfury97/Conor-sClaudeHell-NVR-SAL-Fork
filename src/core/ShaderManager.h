@@ -77,8 +77,11 @@ public:
 		int					Rank;       // >= 0 when one of its lamps is active, -1 when none is
 		float				Score;      // its best active lamp's distance from the player over the lamp's reach: lower ranks first
 		bool				Fill;       // its key lamp reaches past FillLightRadius: a fill light
+		bool				Mobile;     // a lamp that moves, alone in its cluster
 		UInt32				First, Count;   // its lamps in ClusterLampsScratch
 	};
+	std::vector<char>				ClusterMobileScratch;
+	std::unordered_map<NiPointLight*, D3DXVECTOR3>	LampFirstSeen;   // where each lamp was first seen (mobile lamps)
 	std::vector<ShadowSceneLight*>	EligibleLightsScratch;
 	std::vector<ShadowSceneLight*>	ClusterLampsScratch;
 	std::vector<ShadowLampCluster>	ClustersScratch;
@@ -150,6 +153,7 @@ public:
 		SkinShaders*			Skin;
 		GrassShaders*			Grass;
 		TerrainShaders*			Terrain;
+		InverseSquareLightingShaders*	InverseSquareLighting;
 	};
 
 	struct GameStateStruct {
@@ -194,5 +198,12 @@ public:
 	D3DXVECTOR4				LightPosition[TrackedLightsMax];
 	D3DXVECTOR4				LightColor[TrackedLightsMax + ShadowCubeMapsMax];
 	D3DXVECTOR4				LightAttenuation[TrackedLightsMax];
+	// The nearest active point lights, shadow casters or not, for their contact shadows indoors
+	// (Effects/SunShadows.fx, technique 1): xyz world position, w radius; rgb colour x dimmer, w the
+	// lamp's shadow info (slot * 2 + fade, -1 none, as Shaders/Includes/PointShadow.hlsl); its slot's
+	// anchor, w the slot's radius (0 none).
+	D3DXVECTOR4				ContactLampPosition[ContactLampsMax];
+	D3DXVECTOR4				ContactLampColor[ContactLampsMax];
+	D3DXVECTOR4				ContactLampAnchor[ContactLampsMax];
 };
 

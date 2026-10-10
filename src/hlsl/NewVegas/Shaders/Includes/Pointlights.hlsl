@@ -2,12 +2,16 @@
 
 #if defined(__INTELLISENSE__)
     #include "Helpers.hlsl"
+    #include "InverseSquare.hlsl"
+#else
+    #include "includes/InverseSquare.hlsl"
 #endif
 
-// Vanilla attenuation, lightVector not normalized.
+// Vanilla attenuation, lightVector not normalized. Or, with InverseSquare on, its inverse square
+// counterpart (Includes/InverseSquare.hlsl): every caller scales the gamma-space light colour by it.
 float vanillaAtt(float3 lightVector, float radius) {
     const float3 att = lightVector / radius;
-    return 1 - shades(att, att);
+    return lampFalloff(dot(att, att), radius);
 }
 
 // Same formula as vanillaAtt, but from a precomputed object-space squared distance rather than
@@ -16,7 +20,7 @@ float vanillaAtt(float3 lightVector, float radius) {
 // dot(light, light) computed in object space instead of a vector that may have been carried
 // through a (possibly non-orthonormal) TBN transform, where length is not preserved.
 float vanillaAttSq(float distSq, float radius) {
-    return 1 - saturate(distSq / (radius * radius));
+    return lampFalloff(distSq / (radius * radius), radius);
 }
 
 // https://lisyarus.github.io/blog/posts/point-light-attenuation.html

@@ -54,7 +54,11 @@ public:
 		D3DXVECTOR4		ShadowLightPosition[ShadowCubeMapsMax];
 		D3DXVECTOR4		ShadowLightFade[ShadowCubeMapsMax / 4];   // slot i's shadow strength in component i % 4 of [i / 4]: 0 none, 1 full (fading as clusters trade slots)
 		D3DXVECTOR4		PointShadowData;   // Shaders/Includes/PointShadow.hlsl: x 1 when lamps are shadowed in the object shaders, y 1 / atlas width, z 1 / atlas height, w a face's size
-		D3DXVECTOR4		PointShadowParams; // Shaders/Includes/PointShadow.hlsl: x NearFade, y the atlas's tiles per row
+		D3DXVECTOR4		PointShadowParams; // Shaders/Includes/PointShadow.hlsl: x NearFade, y the atlas's tiles per row, z ShadowNormalOffset x 2 / face size, w ShadowSoftness
+		D3DXVECTOR4		LampContactData;   // lamps' contact shadows indoors (Effects/SunShadows.fx, technique 1): x strength (0 off), y ray length, z thickness, w max distance
+		D3DXVECTOR4		LampContactExtra;  // x samples per ray, y lamps marched per pixel, z the longest ray on screen
+		D3DXVECTOR4		LampContactShape;  // x the rays' start off the surface, y the lamps' radius for their softening
+		D3DXVECTOR4		PointShadowPCSS;   // Shaders/Includes/PointShadow.hlsl: x 1 PCSS, y PCSSLightSize, z PCSSMaxSpread (texels), w this frame's turn of the sample pattern
 		D3DXVECTOR4		ShadowMapRadius;
 		D3DXVECTOR4		ShadowBlur;
 		// Forward sun shadows, runtime side. x: 1 when the forward path is SUPPRESSED.
@@ -147,7 +151,23 @@ public:
 		float				FillLightShadowStrength;
 		float				NearFade;             // occluders this close to a lamp cast less of its shadow (Shaders/Includes/PointShadow.hlsl)
 		bool				PlayerInsideLamp;     // a lamp inside the player leaves the player out of its cube (ShadowManager::RenderShadowCubeMap)
-		float				ShadowSoftness;       // lamp shadow blur, in cube texels (ShadowManager::ConvertCubeFaces)
+		float				ShadowSoftness;       // lamp shadow filter spread, in texels (Shaders/Includes/PointShadow.hlsl)
+		float				ShadowNormalOffset;   // lamp shadow lookups pushed off the surface, in cube texels (Shaders/Includes/PointShadow.hlsl)
+		bool				PCSS;                 // lamp shadows' edges widen with distance from what casts them (Shaders/Includes/PointShadow.hlsl)
+		bool				RedrawActorsOnly;     // lamp shadow faces with something moving in them keep their still part and redraw only what moves (ShadowManager)
+		float				PCSSLightSize;        // the lamps' radius for it, in units
+		float				PCSSMaxSpread;        // the widest edge, in shadow map texels
+		int					PCSSFilter;           // 0 auto (smooth without TAA, dithered with it), 1 smooth, 2 dithered
+		float				ContactStrength;      // lamps' screen-space contact shadows (with ForwardPointShadows), 0 off
+		float				ContactLength;
+		float				ContactThickness;
+		float				ContactDistance;
+		int					ContactSamples;       // samples per lamp's contact ray
+		int					ContactLamps;         // lamps marched per pixel, the strongest first
+		float				ContactScreenLength;  // the longest contact ray on screen, pixels at 1080 lines
+		float				ContactNormalOffset;  // the rays' start off the surface, units (at the camera)
+		float				ContactSoftness;      // their softening away from contact, x PCSSLightSize
+		bool				ContactBlur;          // blur them as well (softer, the old look)
 		bool				UseCastShadowFlag;
 		bool				PlayerShadowThirdPerson;
 		bool				PlayerShadowFirstPerson;
@@ -196,6 +216,8 @@ public:
 		UInt32 PointShadowAtlasColumns;   // tiles per row (tile slot * 6 + face)
 		UInt32 PointShadowAtlasRows;
 		UInt32 PointShadowAtlasSlots;     // the slots it has room for: LightPoints at startup, at least 12
+		UInt32 PointShadowAtlasWidth;     // in texels
+		UInt32 PointShadowAtlasHeight;
 	};
 	bool EnsureShadowCube(UInt32 Slot);
 	ShadowTextures	Textures;

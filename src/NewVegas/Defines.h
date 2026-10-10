@@ -16,6 +16,7 @@
                               // have ~25 such lamps, and the ones at the cut-off dropped in and out as the player moved, so
                               // PointShadows saw their light come and go and the areas they lit flickered dark. Only
                               // PointShadows reads past the first 12.
+#define ContactLampsMax 24    // the nearest point lights, for their screen-space contact shadows indoors (Effects/SunShadows.fx, technique 1)
 #define SpotLightsMax 1
 
 #define WordWaterHeightMapBuffer "TESR_WaterHeightMapBuffer"

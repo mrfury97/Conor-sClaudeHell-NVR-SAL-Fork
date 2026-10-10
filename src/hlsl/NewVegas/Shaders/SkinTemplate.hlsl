@@ -68,6 +68,7 @@
     #define SHADOW_INVVIEW_REG c244
 #endif
 #include "Includes/Shadow.hlsl"
+#include "Includes/InverseSquare.hlsl"   // the lamps' falloff (pixel shaders)
 
 #if defined(VS)
 
@@ -224,8 +225,22 @@ VS_OUTPUT main(VS_INPUT IN) {
 #if defined(PS)
 
 #include "Includes/SkinLighting.hlsl"
+// Every pass with lamps (but the diffuse-only ones) packs their shadows first (SkinPackShadows below):
+// the lookups do not fit among the lighting's values.
+#if POINTS > 3
+    // Four lamps (SKIN2010) leave no register for the packed values nor for PCSS: the lamps keep the
+    // plain soft filter, looked up where they are lit.
+    #define POINT_SHADOW_NO_PCSS
+#elif POINTS > 0 && !defined(DIFFUSE)
+    #define POINT_SHADOW_PACKED
+    #if !defined(ONLY_LIGHT)
+        #define POINT_SHADOW_PACK_ONE   // the pass's own lamps alone (values 0-3): one float4
+    #endif
+#endif
+#include "Includes/PointShadow.hlsl"
 
 struct PS_INPUT {
+    float2 vpos : VPOS;   // the pixel's screen position (Includes/PointShadow.hlsl, POINT_SHADOW_PIXEL)
     float4 uv : TEXCOORD0;
     float4 tangent : TEXCOORD1;
     float4 binormal : TEXCOORD2;
@@ -284,20 +299,70 @@ float4 PSLightColor[10] : register(c3);
     #define FIRST_POINT 1
 #endif
 
-// Point light i: d is its light vector / radius.
-float3 PointLight(int i, float3 d, float3 albedo, float3 N, float3 Nsoft, float3 geometricNormal, float3 V, out float3 specular) {
-    float3 lightColor = PSLightColor[FIRST_POINT + i].rgb * (1.0f - saturate(dot(d, d)));
+// The lamps' shadows are looked up first and packed (Includes/PointShadow.hlsl, POINT_SHADOW_PACKED):
+// in the light-only passes (SKIN2004-SKIN2007) the merged lamps' loop runs at ps_3_0's 32
+// temporaries, and in the others the lookups do not fit among the lighting's values either. Value v:
+// the pass's own lamps 0-3, then (light-only passes) merged lamp i at 4 + i.
+#ifdef POINT_SHADOW_PACKED
+    #define SKIN_PACKED_SHADOWS
+    #define SkinPackValue PointShadowPackValue
+    #define SkinPackedVisibility PointShadowPackedVisibility
+
+    void SkinPackShadows(float3 worldPos, float3 worldNormal) {
+        pointShadowPackA = 0.0f;
+        pointShadowPackB = 0.0f;
+        [branch] if (TESR_PointShadowData.x > 0.0f) {
+            #if POINTS > 0
+                SkinPackValue(0.0f, PointShadowBase(FIRST_POINT + 0, worldPos, worldNormal, 1.0f));
+            #endif
+            #if POINTS > 1
+                SkinPackValue(1.0f, PointShadowBase(FIRST_POINT + 1, worldPos, worldNormal, 1.0f));
+            #endif
+            #if POINTS > 2
+                SkinPackValue(2.0f, PointShadowBase(FIRST_POINT + 2, worldPos, worldNormal, 1.0f));
+            #endif
+            #if POINTS > 3
+                SkinPackValue(3.0f, PointShadowBase(FIRST_POINT + 3, worldPos, worldNormal, 1.0f));
+            #endif
+            #if defined(ONLY_LIGHT)
+                [loop] for (int i = 0; i < MERGED_MAX_LIGHTS; i++) {
+                    if (i >= TESR_MergedLightCount.x) break;
+                    // A lamp whose light does not reach the pixel (the merged loop's own falloff) needs no shadow.
+                    float3 toLamp = TESR_MergedLightPosition[i].xyz - worldPos;
+                    [branch] if (dot(toLamp, toLamp) < TESR_MergedLightPosition[i].w * TESR_MergedLightPosition[i].w)
+                        SkinPackValue(4.0f + i, PointShadowVisibilitySoft(TESR_MergedLightColor[i].w, TESR_PointShadowMerged[i], worldPos, worldNormal, 1.0f));
+                }
+            #endif
+        }
+    }
+#endif
+
+// Point light i: d is its light vector / radius. Shadowed as the pass's light FIRST_POINT + i
+// (Includes/PointShadow.hlsl; packed beforehand in the light-only passes), applied to its linear
+// diffuse and highlight.
+float3 PointLight(int i, float3 d, float3 albedo, float3 N, float3 Nsoft, float3 geometricNormal, float3 V, float3 worldPos, float3 worldNormal, out float3 specular) {
+    // Vanilla's 1 - |d|^2, or inverse square (not for a fill light: its radius is not here, the draw
+    // says which, Includes/InverseSquare.hlsl).
+    float3 lightColor = PSLightColor[FIRST_POINT + i].rgb * lampFalloffAs(dot(d, d), TESR_InverseSquareFill[(FIRST_POINT + i) / 4][(FIRST_POINT + i) % 4] > 0.5f);
+    #ifdef SKIN_PACKED_SHADOWS
+        float visibility = SkinPackedVisibility(i);
+    #else
+        float visibility = PointShadowBase(FIRST_POINT + i, worldPos, worldNormal, 1.0f);   // this template always sends the world position
+    #endif
     #ifdef MANY
         // Unused slots (EmittanceColor.a lights are live) can hold anything, NaN included, so
         // they are branched around, not multiplied by 0. The branch also keeps the compiler
         // from interleaving all four lights, which overflows ps_3_0's 32 temporaries.
         float3 diffuse = 0.0f;
         specular = 0.0f;
-        [branch] if ((FIRST_POINT + i) < EmittanceColor.a)
+        [branch] if ((FIRST_POINT + i) < EmittanceColor.a && visibility > 0.0f)
             diffuse = SkinLight(albedo, N, Nsoft, geometricNormal, V, d, lightColor, 1.0f, 1.0f, false, specular);
-        return diffuse;
+        specular *= visibility;
+        return diffuse * visibility;
     #else
-        return SkinLight(albedo, N, Nsoft, geometricNormal, V, d, lightColor, 1.0f, 1.0f, false, specular);
+        float3 diffuse = SkinLight(albedo, N, Nsoft, geometricNormal, V, d, lightColor, 1.0f, 1.0f, false, specular);
+        specular *= visibility;
+        return diffuse * visibility;
     #endif
 }
 
@@ -370,6 +435,11 @@ struct PS_OUTPUT {
 };
 
 PS_OUTPUT main(PS_INPUT IN) {
+    POINT_SHADOW_PIXEL(IN.vpos);
+    #ifdef SKIN_PACKED_SHADOWS
+        SkinPackShadows(IN.shadowWorldPos.xyz, normalize(IN.normal.xyz));   // first, while nothing else is held (IN.normal: the world normal)
+    #endif
+
     // --- material
     #if defined(DIFFUSE)
         float4 baseColor = 1.0f;
@@ -437,19 +507,19 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     #if POINTS > 0
-        diffuseLight += PointLight(0, IN.light1.xyz, albedo, N, Nsoft, geometricNormal, V, specular);
+        diffuseLight += PointLight(0, IN.light1.xyz, albedo, N, Nsoft, geometricNormal, V, worldPos, normalize(IN.normal.xyz), specular);
         specularLight += specular;
     #endif
     #if POINTS > 1
-        diffuseLight += PointLight(1, IN.light2.xyz, albedo, N, Nsoft, geometricNormal, V, specular);
+        diffuseLight += PointLight(1, IN.light2.xyz, albedo, N, Nsoft, geometricNormal, V, worldPos, normalize(IN.normal.xyz), specular);
         specularLight += specular;
     #endif
     #if POINTS > 2
-        diffuseLight += PointLight(2, IN.light3.xyz, albedo, N, Nsoft, geometricNormal, V, specular);
+        diffuseLight += PointLight(2, IN.light3.xyz, albedo, N, Nsoft, geometricNormal, V, worldPos, normalize(IN.normal.xyz), specular);
         specularLight += specular;
     #endif
     #if POINTS > 3
-        diffuseLight += PointLight(3, float3(IN.light1.w, IN.light2.w, IN.light3.w), albedo, N, Nsoft, geometricNormal, V, specular);
+        diffuseLight += PointLight(3, float3(IN.light1.w, IN.light2.w, IN.light3.w), albedo, N, Nsoft, geometricNormal, V, worldPos, normalize(IN.normal.xyz), specular);
         specularLight += specular;
     #endif
 
@@ -462,11 +532,21 @@ PS_OUTPUT main(PS_INPUT IN) {
         [branch] if (TESR_MergedLightCount.x > 0.0f) {
             [loop] for (int i = 0; i < MERGED_MAX_LIGHTS; i++) {
                 if (i >= TESR_MergedLightCount.x) break;
+                // Its shadow, packed at the top (SkinPackShadows).
+                float visibility = SkinPackedVisibility(4.0f + i);
                 float3 toLamp = TESR_MergedLightPosition[i].xyz - IN.shadowWorldPos.xyz;
-                float3 d = float3(dot(normalize(IN.tangent.xyz), toLamp), dot(normalize(IN.binormal.xyz), toLamp), dot(normalize(IN.normal.xyz), toLamp)) / TESR_MergedLightPosition[i].w;
-                float3 lampColor = TESR_MergedLightColor[i].rgb * (1.0f - saturate(dot(d, d)));
-                diffuseLight += SkinLampLight(albedo, N, Nsoft, V, d, lampColor, specular);
-                specularLight += specular;
+                // Its direction in tangent space for the lighting (normalised there, so the interpolated
+                // frame's own slight shortening does not matter), and its falloff from the world-space
+                // distance, exact. Applied to the light it gives (the decode is a power: decode(c f) =
+                // decode(c) decode(f)), once SkinLampLight's values are done with. Normalising the frame
+                // here and computing the falloff inside, with its radius test (Includes/InverseSquare.hlsl),
+                // overflowed ps_3_0's 32 temporaries.
+                float3 L = float3(dot(IN.tangent.xyz, toLamp), dot(IN.binormal.xyz, toLamp), dot(IN.normal.xyz, toLamp));
+                float x = dot(toLamp, toLamp) / (TESR_MergedLightPosition[i].w * TESR_MergedLightPosition[i].w);
+                float3 lampLight = SkinLampLight(albedo, N, Nsoft, V, L, TESR_MergedLightColor[i].rgb, specular);
+                float scale = decodeColor(lampFalloff(x, TESR_MergedLightPosition[i].w).xxx).x * visibility;
+                diffuseLight += lampLight * scale;
+                specularLight += specular * scale;
             }
         }
     #endif

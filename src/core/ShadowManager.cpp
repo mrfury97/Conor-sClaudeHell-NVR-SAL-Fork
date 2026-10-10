@@ -54,7 +54,7 @@ void ShadowManager::Initialize() {
 
 // Forget every cached point light cubemap: their textures were recreated, or their content lost.
 void ShadowManager::InvalidateCubeCache() {
-	memset(CubeCache, 0, sizeof(CubeCache));
+	memset(CubeCache, 0, sizeof(CubeCache));   // the static layers' state too
 }
 
 // Drop what the passes accumulated without drawing it.
@@ -495,10 +495,16 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	IDirect3DCubeTexture9* CubeTexture = Shadows->Textures.ShadowCubeMapTexture[LightIndex];
 	const D3DXVECTOR3 Position(SlotPosition->x, SlotPosition->y, SlotPosition->z);
 	const D3DXVECTOR3 Drift = Position - Cache->Position;
-	if (Cache->Light != pNiLight || Cache->Texture != CubeTexture || D3DXVec3LengthSq(&Drift) > 36.0f || fabsf(Cache->Radius - Radius) > 0.5f) {
+	// A lamp that moves (carried, on the player, walking about: ShaderManager::GetNearbyLights) is
+	// followed within half a unit, not six: its shadows would lag behind it in steps.
+	const float DriftLimit = SlotMobile[LightIndex] ? 0.25f : 36.0f;
+	if (Cache->Light != pNiLight || Cache->Texture != CubeTexture || D3DXVec3LengthSq(&Drift) > DriftLimit || fabsf(Cache->Radius - Radius) > 0.5f) {
 		if (Cache->Light != pNiLight) CubeResetLight++;
 		else if (Cache->Texture != CubeTexture) CubeResetTexture++;
-		else if (D3DXVec3LengthSq(&Drift) > 36.0f) { CubeResetMoved++; CubeMaxDrift = max(CubeMaxDrift, D3DXVec3Length(&Drift)); }
+		else if (D3DXVec3LengthSq(&Drift) > DriftLimit) {
+			if (SlotMobile[LightIndex]) CubeResetMobile++;
+			else { CubeResetMoved++; CubeMaxDrift = max(CubeMaxDrift, D3DXVec3Length(&Drift)); }
+		}
 		else { CubeResetRadius++; CubeMaxRadiusChange = max(CubeMaxRadiusChange, fabsf(Cache->Radius - Radius)); }
 		memset(Cache->Valid, 0, sizeof(Cache->Valid));
 		Cache->Light = pNiLight;
@@ -631,6 +637,18 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 			Caster.Bound = *geo->m_kWorldBound;
 			Caster.HasBound = true;
 		}
+		// Moving: its transform or pose changed within the last 30 frames (RedrawActorsOnly). Updated
+		// once a frame, however many lamps it is near.
+		CasterMotion& Mo = Motion[geo];
+		if (Mo.Frame != MotionFrame) {
+			UInt32 Hash = 2166136261u;
+			HashTransform(Hash, geo->m_worldTransform);
+			HashMix(Hash, Caster.PoseHash);
+			if (Hash == Mo.Hash) Mo.StillFrames++;
+			else { Mo.Hash = Hash; Mo.StillFrames = 0; }
+			Mo.Frame = MotionFrame;
+		}
+		Caster.Moving = Caster.AlwaysRedraw || Mo.StillFrames < 30;
 		Casters.push_back(Caster);
 	}
 
@@ -680,6 +698,12 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		bool Dynamic = false;
 		HashMix(Signature, Settings->Forms.AlphaEnabled ? 1u : 0u);
 
+		// The face's casters, still and moving apart (RedrawActorsOnly), and the still ones' own hash.
+		UInt32 StaticSignature = Signature;
+		std::vector<const CubeCaster*>& Still = FaceStaticScratch;
+		std::vector<const CubeCaster*>& Moving = FaceMovingScratch;
+		Still.clear();
+		Moving.clear();
 		if (UseGeometryLists) {
 			for (const CubeCaster& Caster : Casters) {
 				// Only what this face can see. Each face used to draw the light's whole list.
@@ -692,11 +716,12 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 				HashMix(Signature, (UInt32)geo);
 				HashTransform(Signature, geo->m_worldTransform);
 				HashMix(Signature, Caster.PoseHash);
-
-				if (skinnedGeoPass->AccumObject(geo)) {}
-				else if (speedTreePass->AccumObject(geo)) {}
-				else if (Settings->Forms.AlphaEnabled && alphaPass->AccumObject(geo)) {}
-				else geometryPass->AccumObject(geo);
+				if (Caster.Moving) Moving.push_back(&Caster);
+				else {
+					Still.push_back(&Caster);
+					HashMix(StaticSignature, (UInt32)geo);
+					HashTransform(StaticSignature, geo->m_worldTransform);
+				}
 			}
 		}
 		else {
@@ -713,9 +738,11 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 
 
-		// Nothing this face sees changed since it was drawn: keep it.
-		if (!Dynamic && Cache->Valid[Face] && Cache->Signature[Face] == Signature) {
-			ClearAccums();
+		// Nothing this face sees changed since it was drawn: keep it. (A face last drawn only into the
+		// atlas is not, once the post-process shadows read the cube instead.)
+		const bool ForwardShadows = Shadows->Constants.PointShadowData.x > 0.0f && LightIndex < Shadows->Textures.PointShadowAtlasSlots;
+		if (!Dynamic && Cache->Valid[Face] && Cache->Signature[Face] == Signature && (ForwardShadows || !Cache->AtlasOnly[Face])) {
+			ClearAccums();   // the form based fallback accumulates as it goes
 			CubeFacesKept++;
 			continue;
 		}
@@ -729,6 +756,41 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		D3DXMatrixLookAtRH(&View, &Eye, &At, &Up);
 		Shadows->Constants.ShadowViewProj = View * Proj;
 
+		// Something moving in it (RedrawActorsOnly, lamps shadowed in the object shaders): the still
+		// casters from their static layer (drawn again only when they change), copied into the face's
+		// atlas tile, and the moving ones drawn over it, the nearest kept. The live cube face is then
+		// not drawn (the atlas is what is read).
+		const bool Split = UseGeometryLists && !Moving.empty() && Settings->RedrawActorsOnly && ForwardShadows
+			&& ShadowCubeToAtlasPixel && ShadowMapBlurVertex && SplitAvailable() && EnsureStaticCube(LightIndex);
+		Cache->AtlasOnly[Face] = Split;
+		if (Split) {
+			if (!Cache->StaticValid[Face] || Cache->StaticSignature[Face] != StaticSignature) {
+				AccumCasters(Still, Settings->Forms.AlphaEnabled);
+				Device->SetRenderTarget(0, StaticCubeSurface[LightIndex][Face]);
+				Device->SetDepthStencilSurface(Shadows->Textures.ShadowCubeMapDepthSurface);
+				Device->SetViewport(&ShadowCubeMapViewPort);
+				Device->Clear(0L, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DXCOLOR(1.0f, 1.0f, 1.0f, 1.0f), 1.0f, 0L);
+				RenderAccums();
+				Cache->StaticValid[Face] = true;
+				Cache->StaticSignature[Face] = StaticSignature;
+				CubeStaticDrawn++;
+			}
+			ConvertCubeFaces(LightIndex, 1u << Face, Radius, StaticCube[LightIndex]);   // render target: the atlas
+			const UINT Size = ShadowCubeMapViewPort.Width, Columns = Shadows->Textures.PointShadowAtlasColumns, Tile = LightIndex * 6 + Face;
+			const D3DVIEWPORT9 TileViewport = { (Tile % Columns) * Size, (Tile / Columns) * Size, Size, Size, 0.0f, 1.0f };
+			Device->SetViewport(&TileViewport);
+			AccumCasters(Moving, Settings->Forms.AlphaEnabled);
+			BeginMinBlend();
+			RenderAccums();
+			EndMinBlend();
+			CubeFacesSplit++;
+			continue;
+		}
+
+		if (UseGeometryLists) {
+			AccumCasters(Still, Settings->Forms.AlphaEnabled);
+			AccumCasters(Moving, Settings->Forms.AlphaEnabled);
+		}
 		Device->SetRenderTarget(0, Shadows->Textures.ShadowCubeMapSurface[LightIndex][Face]);
 		Device->SetDepthStencilSurface(Shadows->Textures.ShadowCubeMapDepthSurface);
 
@@ -741,10 +803,79 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	ConvertCubeFaces(LightIndex, DrawnFaces, Radius);
 }
 
+// --- RedrawActorsOnly helpers ---------------------------------------------------------------------
+
+// Min blending into the R32F atlas, asked of the device once.
+bool ShadowManager::SplitAvailable() {
+	if (SplitSupport == 0) {
+		SplitSupport = -1;
+		IDirect3DDevice9* Device = TheRenderManager->device;
+		IDirect3D9* D3D = nullptr;
+		D3DDEVICE_CREATION_PARAMETERS Creation = {};
+		D3DDISPLAYMODE Mode = {};
+		if (SUCCEEDED(Device->GetDirect3D(&D3D)) && D3D) {
+			if (SUCCEEDED(Device->GetCreationParameters(&Creation)) && SUCCEEDED(Device->GetDisplayMode(0, &Mode)) &&
+				D3D->CheckDeviceFormat(Creation.AdapterOrdinal, Creation.DeviceType, Mode.Format, D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING, D3DRTYPE_TEXTURE, D3DFMT_R32F) == D3D_OK)
+				SplitSupport = 1;
+			D3D->Release();
+		}
+		Logger::Log(SplitSupport > 0 ? "ShadowManager: RedrawActorsOnly available (min blending into R32F)"
+			: "ShadowManager: RedrawActorsOnly unavailable: this GPU cannot min-blend into R32F; shadows with something moving are redrawn whole");
+	}
+	return SplitSupport > 0;
+}
+
+// A slot's static layer: a cube like its own, made the first time the slot has something moving.
+bool ShadowManager::EnsureStaticCube(UInt32 Slot) {
+	if (Slot >= ShadowSlotsMax) return false;
+	if (StaticCube[Slot]) return true;
+	const UINT Size = ShadowCubeMapViewPort.Width;
+	if (FAILED(TheRenderManager->device->CreateCubeTexture(Size, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R32F, D3DPOOL_DEFAULT, &StaticCube[Slot], NULL))) {
+		StaticCube[Slot] = nullptr;
+		return false;
+	}
+	for (int Face = 0; Face < 6; Face++) StaticCube[Slot]->GetCubeMapSurface((D3DCUBEMAP_FACES)Face, 0, &StaticCubeSurface[Slot][Face]);
+	memset(CubeCache[Slot].StaticValid, 0, sizeof(CubeCache[Slot].StaticValid));
+	return true;
+}
+
+// The passes take the casters as the cube faces always have (skinned, trees, alpha tested, the rest).
+void ShadowManager::AccumCasters(const std::vector<const CubeCaster*>& List, bool Alpha) {
+	for (const CubeCaster* Caster : List) {
+		NiGeometry* geo = Caster->Geo;
+		if (skinnedGeoPass->AccumObject(geo)) {}
+		else if (speedTreePass->AccumObject(geo)) {}
+		else if (Alpha && alphaPass->AccumObject(geo)) {}
+		else geometryPass->AccumObject(geo);
+	}
+}
+
+// Drawing over a copied layer: no depth, each texel keeping the nearest distance (min blending).
+void ShadowManager::BeginMinBlend() {
+	NiDX9RenderState* RenderState = TheRenderManager->renderState;
+	TheRenderManager->device->SetDepthStencilSurface(NULL);
+	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ZWRITEENABLE, FALSE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_MIN, RenderStateArgs);
+}
+
+void ShadowManager::EndMinBlend() {
+	NiDX9RenderState* RenderState = TheRenderManager->renderState;
+	RenderState->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE, RenderStateArgs);
+	RenderState->SetRenderState(D3DRS_ZWRITEENABLE, TRUE, RenderStateArgs);
+}
+
 // The faces just drawn into the atlas the object shaders read (Shaders/Includes/PointShadow.hlsl):
-// tile slot * 6 + face, PointShadowAtlasColumns to a row, as exponential shadow maps blurred by ShadowSoftness texels
-// (Shaders/Shadows/ShadowCubeToAtlas.pso). Only redrawn faces: a kept face keeps its tile.
-void ShadowManager::ConvertCubeFaces(UInt32 LightIndex, UInt32 Faces, float Radius) {
+// tile slot * 6 + face, PointShadowAtlasColumns to a row, the stored distances copied as they are
+// (Shaders/Shadows/ShadowCubeToAtlas.pso; the object shaders filter them). Only redrawn faces: a
+// kept face keeps its tile.
+void ShadowManager::ConvertCubeFaces(UInt32 LightIndex, UInt32 Faces, float Radius, IDirect3DCubeTexture9* Source) {
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
 	if (!Faces || !Shadows->Textures.PointShadowAtlasSurface || !ShadowCubeToAtlasPixel || !ShadowMapBlurVertex) return;
 	if (LightIndex >= Shadows->Textures.PointShadowAtlasSlots) return;   // no room in the atlas (not shadowed by the object shaders)
@@ -772,24 +903,20 @@ void ShadowManager::ConvertCubeFaces(UInt32 LightIndex, UInt32 Faces, float Radi
 	RenderState->SetPixelShader(ShadowCubeToAtlasPixel->ShaderHandle, false);
 	RenderState->SetFVF(FrameFVF, false);
 	Device->SetStreamSource(0, AtlasTileVertexBuffer, 0, sizeof(FrameVS));
-	RenderState->SetTexture(0, Shadows->Textures.ShadowCubeMapTexture[LightIndex]);
+	RenderState->SetTexture(0, Source ? Source : Shadows->Textures.ShadowCubeMapTexture[LightIndex]);   // a static layer (RedrawActorsOnly), or the live cube
 	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP, false);
 	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP, false);
 	RenderState->SetSamplerState(0, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP, false);
-	RenderState->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR, false);
-	RenderState->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR, false);
+	RenderState->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT, false);
+	RenderState->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT, false);
 	RenderState->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE, false);
 
-	// The blur step in the face's -1..1 coordinates, and the exponent (PointShadowExponent in
-	// PointShadow.hlsl: the shaders reading the tile must use the same).
-	const float Step = Shadows->Settings.Interiors.ShadowSoftness * 2.0f / (float)Size;
-	const float Exponent = min(0.15f * Radius, 80.0f);
 	for (UInt32 Face = 0; Face < 6; Face++) {
 		if (!(Faces & (1u << Face))) continue;
 		const UINT Tile = LightIndex * 6 + Face;
 		const D3DVIEWPORT9 Viewport = { (Tile % Columns) * Size, (Tile / Columns) * Size, Size, Size, 0.0f, 1.0f };
 		Device->SetViewport(&Viewport);
-		const float Data[4] = { (float)Face, Step, Exponent, 0.0f };
+		const float Data[4] = { (float)Face, 0.0f, 0.0f, 0.0f };
 		Device->SetPixelShaderConstantF(0, Data, 1);
 		Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 	}
@@ -1072,13 +1199,8 @@ void ShadowManager::RenderShadowMaps() {
 	speedTreePass->PixelShader = ShadowCubeMapPixel;
 
 	auto shadowMapTimer = TimeLogger();
-	// The atlas tiles hold the faces blurred by ShadowSoftness (ConvertCubeFaces): a new value
-	// reaches kept faces only when they are drawn again, so they all are.
-	static float ConvertedSoftness = -1.0f;
-	if (ShadowsInteriors->ShadowSoftness != ConvertedSoftness) {
-		ConvertedSoftness = ShadowsInteriors->ShadowSoftness;
-		InvalidateCubeCache();
-	}
+	MotionFrame++;   // RedrawActorsOnly: casters' motion is updated once a frame
+	if (Motion.size() > 20000) Motion.clear();   // freed geometry left behind
 	if ((isExterior && usePointLights) || (!isExterior && InteriorEnabled)) {
 		// render the cubemaps for each light
 		for (int i = 0; i < SlotCount; i++) {
@@ -1094,15 +1216,18 @@ void ShadowManager::RenderShadowMaps() {
 		// Develop.DebugMode: how much the cubemap cache saves, every 600 frames.
 		static UInt32 LogFrames = 0;
 		if (TheSettingManager->SettingsMain.Develop.DebugMode && ++LogFrames >= 600) {
-			Logger::Log("ShadowManager: point light cubemaps over %u frames: %u faces drawn, %u kept. Whole cubes reset: %u new light, %u moved (max %.2f), %u radius (max %.2f), %u texture. Faces redrawn: %u first draw, %u skinned geometry (e.g. %s), %u content changed",
-				LogFrames, CubeFacesDrawn, CubeFacesKept, CubeResetLight, CubeResetMoved, CubeMaxDrift, CubeResetRadius, CubeMaxRadiusChange, CubeResetTexture,
+			Logger::Log("ShadowManager: point light cubemaps over %u frames: %u faces drawn, %u kept. Whole cubes reset: %u new light, %u moved (max %.2f), %u following a moving lamp, %u radius (max %.2f), %u texture. Faces redrawn: %u first draw, %u skinned geometry (e.g. %s), %u content changed",
+				LogFrames, CubeFacesDrawn, CubeFacesKept, CubeResetLight, CubeResetMoved, CubeMaxDrift, CubeResetMobile, CubeResetRadius, CubeMaxRadiusChange, CubeResetTexture,
 				CubeFacesFirst, CubeFacesDynamic, CubeDynamicExample[0] ? CubeDynamicExample : "-", CubeFacesChanged);
 			Logger::Log("ShadowManager: shadow slots over %u frames: %u clusters given a slot (%u taking a held one), dropped: %u outranked, %u gone, %u inactive past grace; up to %u shadow-casting lamps gathered, in %u clusters",
 				LogFrames, SlotAssigned, SlotEvicted, SlotDropOutranked, SlotDropGone, SlotDropExpired, SlotMaxGathered, SlotMaxClusters);
+			Logger::Log("ShadowManager: RedrawActorsOnly over %u frames: %u cube faces redrawn as their moving casters over a kept static layer (%u static layers drawn)",
+				LogFrames, CubeFacesSplit, CubeStaticDrawn);
+			CubeFacesSplit = CubeStaticDrawn = 0;
 			SlotAssigned = SlotEvicted = SlotDropOutranked = SlotDropGone = SlotDropExpired = SlotMaxGathered = SlotMaxClusters = 0;
 			LogFrames = 0;
 			CubeFacesDrawn = CubeFacesKept = 0;
-			CubeResetLight = CubeResetMoved = CubeResetRadius = CubeResetTexture = 0;
+			CubeResetLight = CubeResetMoved = CubeResetMobile = CubeResetRadius = CubeResetTexture = 0;
 			CubeFacesDynamic = CubeFacesChanged = CubeFacesFirst = 0;
 			CubeMaxDrift = CubeMaxRadiusChange = 0.0f;
 			CubeDynamicExample[0] = 0;

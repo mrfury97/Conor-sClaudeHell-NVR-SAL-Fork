@@ -94,9 +94,29 @@ void ShadowsExteriorEffect::UpdateConstants() {
 	const float FaceSize = (float)Settings.Interiors.ShadowCubeMapSize;
 	const bool ForwardPoint = !TheShaderManager->GameState.isExterior && Settings.Interiors.ForwardPointShadows
 		&& TheShaderManager->Effects.ShadowsInteriors->Enabled && Textures.PointShadowAtlasTexture && TheShadowManager && TheShadowManager->ShadowCubeToAtlasPixel;
-	const float Columns = (float)max(Textures.PointShadowAtlasColumns, 1u), Rows = (float)max(Textures.PointShadowAtlasRows, 1u);
-	Constants.PointShadowData = D3DXVECTOR4(ForwardPoint ? 1.0f : 0.0f, 1.0f / (Columns * FaceSize), 1.0f / (Rows * FaceSize), FaceSize);
-	Constants.PointShadowParams = D3DXVECTOR4(Settings.Interiors.NearFade, Columns, 0.0f, 0.0f);
+	const float Columns = (float)max(Textures.PointShadowAtlasColumns, 1u);
+	const float AtlasWidth = (float)max(Textures.PointShadowAtlasWidth, 1u), AtlasHeight = (float)max(Textures.PointShadowAtlasHeight, 1u);
+	Constants.PointShadowData = D3DXVECTOR4(ForwardPoint ? 1.0f : 0.0f, 1.0f / AtlasWidth, 1.0f / AtlasHeight, FaceSize);
+	// A face's texel spans about 2 / size of the distance (90 degrees over size texels).
+	Constants.PointShadowParams = D3DXVECTOR4(Settings.Interiors.NearFade, Columns, Settings.Interiors.ShadowNormalOffset * 2.0f / FaceSize, Settings.Interiors.ShadowSoftness);
+	// Lamps' contact shadows: only with the lamps' cube shadows in the object shaders, which keep
+	// each lamp's light apart (the contact pass takes away what they left).
+	Constants.LampContactData = D3DXVECTOR4(ForwardPoint ? Settings.Interiors.ContactStrength : 0.0f, Settings.Interiors.ContactLength,
+		Settings.Interiors.ContactThickness, Settings.Interiors.ContactDistance);
+	Constants.LampContactExtra = D3DXVECTOR4((float)Settings.Interiors.ContactSamples, (float)Settings.Interiors.ContactLamps, Settings.Interiors.ContactScreenLength, 0.0f);
+	Constants.LampContactShape = D3DXVECTOR4(Settings.Interiors.ContactNormalOffset, Settings.Interiors.PCSSLightSize * Settings.Interiors.ContactSoftness, 0.0f, 0.0f);
+	// PCSS: its filter dithered (1: cheap, grainy unless TAA averages it) or smooth (2: no grain, no
+	// TAA needed); PCSSFilter 0 picks smooth without TAA, dithered with it. The dithered pattern turns
+	// by the golden ratio each frame while TAA is on, so it averages many patterns; without TAA a
+	// pattern that changed each frame crawled, so it holds still (each pixel's own turn comes from its
+	// screen position either way).
+	static UInt32 PCSSFrame = 0;
+	PCSSFrame++;
+	const bool TAAOn = TheShaderManager->Effects.TAA && TheShaderManager->Effects.TAA->Enabled;
+	const int Filter = Settings.Interiors.PCSSFilter == 0 ? (TAAOn ? 2 : 1) : Settings.Interiors.PCSSFilter;   // setting: 1 smooth, 2 dithered
+	const float Mode = !(Settings.Interiors.PCSS && Settings.Interiors.PCSSLightSize > 0.0f) ? 0.0f : (Filter == 2 ? 1.0f : 2.0f);   // shader: 1 dithered, 2 smooth
+	Constants.PointShadowPCSS = D3DXVECTOR4(Mode, Settings.Interiors.PCSSLightSize, Settings.Interiors.PCSSMaxSpread,
+		TAAOn ? fmodf((float)(PCSSFrame % 4096) * 0.61803399f, 1.0f) : 0.0f);
 
 	// Force-rebind FormatData/ForwardData directly, once per frame, bypassing the
 	// per-shader "bound by name" constant table.
@@ -473,6 +493,22 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.NearFade = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "NearFade"), 0.0f, 256.0f);
 	Settings.Interiors.PlayerInsideLamp = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PlayerInsideLamp");
 	Settings.Interiors.ShadowSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ShadowSoftness"), 0.0f, 4.0f);
+	Settings.Interiors.ShadowNormalOffset = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ShadowNormalOffset"), 0.0f, 8.0f);
+	Settings.Interiors.PCSS = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PCSS");
+	Settings.Interiors.RedrawActorsOnly = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "RedrawActorsOnly");
+	Settings.Interiors.PCSSLightSize = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PCSSLightSize"), 0.0f, 32.0f);
+	Settings.Interiors.PCSSMaxSpread = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PCSSMaxSpread"), 1.0f, 8.0f);
+	Settings.Interiors.PCSSFilter = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PCSSFilter"), 0, 2);
+	Settings.Interiors.ContactStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactStrength"), 0.0f, 1.0f);
+	Settings.Interiors.ContactLength = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactLength"), 1.0f, 100.0f);
+	Settings.Interiors.ContactThickness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactThickness"), 0.5f, 50.0f);
+	Settings.Interiors.ContactDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactDistance"), 100.0f, 10000.0f);
+	Settings.Interiors.ContactSamples = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactSamples"), 8, 64);
+	Settings.Interiors.ContactLamps = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactLamps"), 1, 4);
+	Settings.Interiors.ContactScreenLength = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactScreenLength"), 8.0f, 400.0f);
+	Settings.Interiors.ContactNormalOffset = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactNormalOffset"), 0.0f, 4.0f);
+	Settings.Interiors.ContactSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactSoftness"), 0.0f, 4.0f);
+	Settings.Interiors.ContactBlur = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactBlur");
 	Settings.Interiors.DrawDistance = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "DrawDistance");
 	Settings.Interiors.UseCastShadowFlag = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "UseCastShadowFlag");
 	Settings.Interiors.PlayerShadowFirstPerson = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PlayerShadowFirstPerson");
@@ -529,6 +565,10 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowLightFade", (D3DXVECTOR4*)&Constants.ShadowLightFade);
 	TheShaderManager->RegisterConstant("TESR_PointShadowData", &Constants.PointShadowData);
 	TheShaderManager->RegisterConstant("TESR_PointShadowParams", &Constants.PointShadowParams);
+	TheShaderManager->RegisterConstant("TESR_LampContactData", &Constants.LampContactData);
+	TheShaderManager->RegisterConstant("TESR_LampContactExtra", &Constants.LampContactExtra);
+	TheShaderManager->RegisterConstant("TESR_LampContactShape", &Constants.LampContactShape);
+	TheShaderManager->RegisterConstant("TESR_PointShadowPCSS", &Constants.PointShadowPCSS);
 }
 
 // A shadow slot's cubemap, made the first time a slot past the first ShadowCubeMapsMax is used.
@@ -615,15 +655,19 @@ void ShadowsExteriorEffect::RegisterTextures() {
 		Rows = Columns ? (Tiles + Columns - 1) / Columns : 0;
 		if (Columns && Rows <= MaxRows) break;
 	}
+	const UINT AtlasWidth = Columns * ShadowCubeMapSize;
+	const UINT AtlasHeight = Rows * ShadowCubeMapSize;
 	if (AtlasSlots)
-		TheTextureManager->InitTexture("TESR_PointShadowAtlas", &Textures.PointShadowAtlasTexture, &Textures.PointShadowAtlasSurface, Columns * ShadowCubeMapSize, Rows * ShadowCubeMapSize, D3DFMT_R32F);
+		TheTextureManager->InitTexture("TESR_PointShadowAtlas", &Textures.PointShadowAtlasTexture, &Textures.PointShadowAtlasSurface, AtlasWidth, AtlasHeight, D3DFMT_R32F);
 	Textures.PointShadowAtlasColumns = Columns;
 	Textures.PointShadowAtlasRows = Rows;
+	Textures.PointShadowAtlasWidth = AtlasWidth;
+	Textures.PointShadowAtlasHeight = AtlasHeight;
 	Textures.PointShadowAtlasSlots = Textures.PointShadowAtlasTexture ? AtlasSlots : 0;
 	if (!Textures.PointShadowAtlasTexture)
 		Logger::Log("[ERROR] Point shadow atlas: no room for even one lamp at face size %u on this device (%u x %u); lamps are shadowed in post-process", ShadowCubeMapSize, Caps.MaxTextureWidth, Caps.MaxTextureHeight);
 	else
-		Logger::Log("Point shadow atlas: %u lamp shadow slots, %u x %u", AtlasSlots, Columns * ShadowCubeMapSize, Rows * ShadowCubeMapSize);
+		Logger::Log("Point shadow atlas: %u lamp shadow slots, %u x %u", AtlasSlots, AtlasWidth, AtlasHeight);
 	if (Textures.PointShadowAtlasSurface) {   // nothing drawn yet: lit everywhere
 		IDirect3DSurface9* Target = nullptr;
 		TheRenderManager->device->GetRenderTarget(0, &Target);

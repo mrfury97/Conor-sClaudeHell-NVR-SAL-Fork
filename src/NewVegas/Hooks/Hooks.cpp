@@ -48,6 +48,8 @@ void AttachHooks() {
 	kParallaxPostGeometryDetour.ReplaceVirtualFunc(0x10BB7A8 + 35 * 4, ParallaxShader__PostGeometry);
 	kHairPrepareGeometryDetour.ReplaceVirtualFunc(0x10BBB50 + 27 * 4, HairShader__PrepareGeometryForRendering);
 	kHairPostGeometryDetour.ReplaceVirtualFunc(0x10BBB50 + 35 * 4, HairShader__PostGeometry);
+	kLighting30PrepareGeometryDetour.ReplaceVirtualFunc(0x10BA0F8 + 27 * 4, Lighting30Shader__PrepareGeometryForRendering);
+	kLighting30PostGeometryDetour.ReplaceVirtualFunc(0x10BA0F8 + 35 * 4, Lighting30Shader__PostGeometry);
 
 	WriteRelCall(0xBE0B73, NiD3DVertexShaderEx::Free);
 	WriteRelCall(0xBE0AF3, NiD3DPixelShaderEx::Free);

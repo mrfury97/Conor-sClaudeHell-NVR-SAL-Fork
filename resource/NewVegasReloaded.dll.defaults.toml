@@ -369,6 +369,14 @@ FirstPersonOffsetDown = 4.0            # Downward offset of the same virtual lig
 Enabled = true                         # Volumetric light shaft in the air along the flashlight cone. Requires the Flashlight shader
 
 
+[_Shaders.InverseSquareLighting.Main]
+FillLightRadius = 1000.0             # [0-100000] Lamps reaching farther than this (game units) keep the vanilla falloff: a level's big fill lights, hung high to light a whole area evenly, turned blotchy (hot near the ceiling, dim where you stand). 0: every lamp falls off as the inverse square.
+Size = 0.2                           # [0.02-1.0] The bulb's size, as a fraction of each lamp's radius: smaller is a sharper, brighter pool of light by the lamp and dimmer between lamps; larger is softer and closer to vanilla (0.3-0.4 is gentle).
+Strength = 1.0                       # [0.0-4.0] Brightness: 1 puts as much light round each lamp as the vanilla falloff did.
+
+[_Shaders.InverseSquareLighting.Status]
+Enabled = false                      # Lamps fall off as real light does, the inverse square of the distance (as Community Shaders' Inverse Square Lighting), instead of vanilla's even glow up to a hard edge: pools of light by sconces, desk lamps and lanterns that taper off into the room. Each lamp keeps its radius (what it lights, and what that costs) and puts as much light round it as before.
+
 [_Shaders.Grass.Main]
 ScaleX = 1.0
 ScaleY = 1.0
@@ -833,7 +841,23 @@ FillLightRadius = 1000.0             # [0.0-4000.0] Lamps that reach farther tha
 FillLightShadowStrength = 0.5        # [0.0-1.0] How dark fill lights' shadows are. 0 none, 1 full, like any lamp.
 NearFade = 0.0                       # [0.0-128.0] Things within this many units of a lamp (about 70 to a metre) cast less of its shadow, none at the lamp itself: a lamp's own fixture, or someone standing right at it, otherwise throw a sharp shadow across the room. 0 off. (From NVR Unofficial Optimized.)
 PlayerInsideLamp = true              # A lamp whose light point sits inside your body leaves you out of its shadow: a point inside a model is blocked on every side, so walking through a lamp without a fixture threw your shadow onto every wall. (From NVR Unofficial Optimized.)
-ShadowSoftness = 1.0                 # [0.0-4.0] How soft lamp shadows' edges are (with ForwardPointShadows): the blur, in shadow map texels. 0 sharpest; 1 smooth; 2-4 softer, blurrier.
+ShadowNormalOffset = 1.0             # [0.0-8.0] Lamp shadows are looked up this many shadow map texels off the surface, toward the lamp, on top of a bias for the surface's slope: surfaces stop shadowing themselves (bands, dark eye sockets and creases). Too high and shadows start a little away from what casts them. 0 off.
+RedrawActorsOnly = true              # A lamp's shadow with something moving in it (people, a swinging door) keeps its walls and furniture drawn once and redraws only what moves, on top. Same picture, much less drawing in rooms with people. Needs a GPU that can min-blend into 32-bit float targets (checked at startup).
+PCSS = true                          # Lamp shadows sharp where things touch and softer away from them, as a lamp of some size makes them (percentage-closer soft shadows), instead of one softness everywhere. Smoothest with TAA on. Off: ShadowSoftness everywhere.
+PCSSLightSize = 4.0                  # [0-32] The lamps' radius for PCSS, in game units: bigger is softer away from what casts the shadow. 0 turns PCSS off.
+PCSSFilter = 0                       # [0-2] PCSS's filter. 1 smooth: no grain, works without TAA, a little dearer. 2 dithered: cheaper, grainy unless TAA is on to smooth it. 0 picks for you: smooth with TAA off, dithered with it on.
+PCSSMaxSpread = 4.0                  # [1-8] PCSS's widest shadow edge, in shadow map texels. Higher allows softer shadows far from their casters, and costs a little near the edges of a lamp's shadow map faces.
+ShadowSoftness = 1.0                 # [0.0-4.0] How soft lamp shadows' edges are (with ForwardPointShadows): the filter's spread, in shadow map texels, on top of its own two. 0 sharpest; 1 smooth; 2-4 softer, blurrier. Takes effect at once.
+ContactStrength = 1.0                # [0.0-1.0] Lamps' contact shadows (with ForwardPointShadows): a short, dense screen-space march toward the lamps lighting each pixel most (ContactLamps), for the fine shadows their shadow maps are too coarse for -- fingers, collars, creases, where things meet. Marched as Bend Studio's screen-space shadows are (as in Community Shaders): no noise and no blur, sharp and steady. Each takes away only that lamp's light. 0 off.
+ContactSamples = 24                  # [8-64] Samples along each lamp's contact ray: a pixel apart where things touch, wider toward the ray's end. More is finer on long rays close to the camera, and costs more.
+ContactScreenLength = 40.0           # [8-400] The longest a lamp's contact ray gets on screen, in pixels (at 1080 lines; scaled with the resolution). Close up, a longer ray samples too far apart and hair and lashes cast streaks; what is bigger than this on screen is left to the shadow maps. Higher: longer contact shadows close up, at the risk of those streaks.
+ContactNormalOffset = 0.5            # [0-4] Lamps' contact rays start this far off the surface (game units at the camera, growing a little with distance). Keeps curved and faceted surfaces -- lips, noses, eyelids -- from drawing hard lines on themselves. 0: from the surface.
+ContactSoftness = 1.0                # [0-4] Lamps' contact shadows harden toward contact: sharp where things touch, softer farther from what casts them, by the lamps' size (PCSSLightSize, times this). 0: equally hard all along.
+ContactLamps = 3                     # [1-4] How many lamps each pixel marches toward, the strongest first (lamps lighting it under a tenth as much as the strongest are skipped). Each costs one more ray.
+ContactBlur = false                  # Blur the lamps' contact shadows as well: softer, the old look, two more full-screen passes.
+ContactLength = 12.0                 # [1-100] Length of the lamps' contact rays in game units at the camera (growing a little with distance, up to three times this, and never past the lamp).
+ContactThickness = 6.0               # [0.5-50] How thick things in the depth buffer are assumed to be, for the lamps' contact shadows. Too low and thin things cast nothing; too high and things cast shadows from behind.
+ContactDistance = 2000.0             # [100-10000] The lamps' contact shadows fade out by this distance.
 ForwardPointShadows = true           # Lamps' shadows take away that lamp's own light, in the lighting of each object (its colour, its highlight), instead of darkening the finished frame toward grey. Objects and parallax; the rest keep no lamp shadows indoors for now.
 LightClusterRadius = 64.0            # [0.0-256.0] Lamps closer together than this (game units) share one shadow, cast from their centre: a chandelier's bulbs, a pair of sconces. Rooms with many bulbs then fit in the 12 shadow slots, instead of lamps gaining and losing shadows as you walk. 0 gives every lamp its own.
 MinRadius = 10.0                     # Wether to include objects with a radius of less than x pixels on the screen in the shadowmaps.

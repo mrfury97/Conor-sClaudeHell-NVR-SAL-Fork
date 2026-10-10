@@ -223,6 +223,25 @@ void SkinnedGeoShadowRenderPass::UpdateConstants(NiGeometry* Geo) {
 	Constants->Data.x = 1.0f; // Type of geo (0 normal, 1 actors (skinned), 2 speedtree leaves)
 	Constants->Data.y = 0.0f; // Alpha control
 	TheRenderManager->CreateD3DMatrix(&TheShaderManager->ShaderConst.ShadowWorld, &Geo->m_worldTransform);
+
+	// Alpha tested skins (hair, above all) cut out by their texture's alpha as the alpha pass does:
+	// drawn solid, hair cards cast slabs where strands should cast strands.
+	NiAlphaProperty* AProp = (NiAlphaProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Alpha);
+	BSShaderProperty* ShaderProperty = (BSShaderProperty*)Geo->GetProperty(NiProperty::PropertyType::kType_Shade);
+	if (AProp && (AProp->flags & NiAlphaProperty::AlphaFlags::TEST_ENABLE_MASK) && ShaderProperty && ShaderProperty->IsLightingProperty()) {
+		BSShaderPPLightingProperty* Lighting = (BSShaderPPLightingProperty*)ShaderProperty;
+		NiTexture* Texture = Lighting->ppTextures[0] ? *Lighting->ppTextures[0] : nullptr;
+		if (Texture && Texture->rendererData && Texture->rendererData->dTexture) {
+			Constants->Data.y = 1.0f;
+			NiDX9RenderState* RenderState = TheRenderManager->renderState;
+			RenderState->SetTexture(0, Texture->rendererData->dTexture);
+			RenderState->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP, false);
+			RenderState->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP, false);
+			RenderState->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT, false);
+			RenderState->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT, false);
+			RenderState->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_POINT, false);
+		}
+	}
 }
 
 
@@ -245,6 +264,17 @@ void SkinnedGeoShadowRenderPass::RenderGeometry(NiGeometry* Geo) {
 	}
 
 	NiSkinPartition* SkinPartition = SkinInstance->SkinPartition;
+	// This pass's own bone matrices, relative to kPosAdjust as it is now (the frame the rest of the
+	// shadow pass is drawn in). The game keeps one set per frame (NiDX9Renderer::CalculateBoneMatrices,
+	// 0xE6FE30, by FrameID), so a set from earlier in the frame, made with another kPosAdjust, put the
+	// actor off its place in the shadow maps. The game's set is put back after the draw.
+	static std::vector<UInt8> SavedMatrices;
+	const UInt32 SavedFrame = SkinInstance->FrameID, SavedCount = SkinInstance->Bones, SavedRegisters = SkinInstance->BoneRegisters;
+	void* const SavedBuffer = SkinInstance->BoneMatrixes;
+	const UInt32 SavedBytes = SavedCount * SavedRegisters * 16;
+	const bool CanRestore = SavedBuffer && SavedBytes && SavedBytes <= SkinInstance->BoneSize;
+	if (CanRestore) SavedMatrices.assign((const UInt8*)SavedBuffer, (const UInt8*)SavedBuffer + SavedBytes);
+	SkinInstance->FrameID = ~SavedFrame;   // not this frame: computed afresh
 	TheRenderManager->CalculateBoneMatrixes(SkinInstance, &Geo->m_worldTransform);
 	
 	if (SkinInstance->SkinToWorldWorldToSkin) 
@@ -302,6 +332,17 @@ void SkinnedGeoShadowRenderPass::RenderGeometry(NiGeometry* Geo) {
 
 		}
 	}
+
+	// The game's matrices back, as it made them; or, where they cannot be (none yet, or the buffer
+	// moved), a frame id the game will not take for its own, so it computes them itself.
+	if (CanRestore && SkinInstance->BoneMatrixes == SavedBuffer) {
+		memcpy(SavedBuffer, SavedMatrices.data(), SavedBytes);
+		SkinInstance->Bones = SavedCount;
+		SkinInstance->BoneRegisters = SavedRegisters;
+		SkinInstance->FrameID = SavedFrame;
+	}
+	else
+		SkinInstance->FrameID = ~SkinInstance->FrameID;
 }
 
 

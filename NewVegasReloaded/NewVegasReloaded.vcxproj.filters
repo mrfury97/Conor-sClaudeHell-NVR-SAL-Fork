@@ -94,6 +94,9 @@
     <ClInclude Include="..\src\effects\Grass.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\InverseSquareLighting.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\ImageAdjust.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -553,6 +556,9 @@
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Grass.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\InverseSquareLighting.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Underwater.cpp">

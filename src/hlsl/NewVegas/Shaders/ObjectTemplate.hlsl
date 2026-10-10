@@ -184,6 +184,11 @@
     #include "includes/MergedLights.hlsl"
 #endif
 #ifdef PS
+    // The merged lamps' loop runs at the pixel shader's register limit: their shadows are looked up
+    // first and packed (Includes/PointShadow.hlsl, PointShadowPackMerged below).
+    #ifdef MERGED_LIGHTS
+        #define POINT_SHADOW_PACKED
+    #endif
     #include "includes/PointShadow.hlsl"
 #endif
 
@@ -565,6 +570,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 #if defined(PS) && (!defined(LIGHTS) || LIGHTS < 4)
 
 struct PS_INPUT {
+    float2 vpos : VPOS;   // the pixel's screen position (Includes/PointShadow.hlsl, POINT_SHADOW_PIXEL)
 #ifndef NO_VERTEX_COLOR
     float3 vertexColor : COLOR0;
 #endif
@@ -598,6 +604,22 @@ struct PS_INPUT {
 // The merged lamps, as the additive DIFFUSE passes would have lit them (getPointLightLightingAtt,
 // vanilla's attenuation), in world space: the normal map's normal through the world frame the
 // vertex shader sent.
+// The merged lamps' shadows, value i for lamp i, first thing in main (POINT_SHADOW_PACKED above).
+// normal: the smooth world normal the loop below lights with.
+void PointShadowPackMerged(float3 worldPos, float3 normal, float valid) {
+    pointShadowPackA = 0.0f;
+    pointShadowPackB = 0.0f;
+    [branch] if (TESR_PointShadowData.x > 0.0f && valid > 0.0f) {
+        [loop] for (int i = 0; i < MERGED_MAX_LIGHTS; i++) {
+            if (i >= TESR_MergedLightCount.x) break;
+            // A lamp whose light does not reach the pixel (getMergedPointLights' own test) needs no shadow.
+            float3 L = TESR_MergedLightPosition[i].xyz - worldPos;
+            [branch] if (vanillaAttSq(dot(L, L), TESR_MergedLightPosition[i].w) > 0.0f)
+                PointShadowPackValue(i, PointShadowVisibilitySoft(TESR_MergedLightColor[i].w, TESR_PointShadowMerged[i], worldPos, normal, valid));
+        }
+    }
+}
+
 float3 getMergedPointLights(float4 encodedNormal, float4 encodedTangent, float3 normalTS, float3 worldPos, float worldPosValid, float3 albedo, float roughness) {
     float3 total = 0.0f;
     [branch] if (TESR_MergedLightCount.x > 0.0f) {
@@ -610,9 +632,9 @@ float3 getMergedPointLights(float4 encodedNormal, float4 encodedTangent, float3 
 
         [loop] for (int i = 0; i < MERGED_MAX_LIGHTS; i++) {
             if (i >= TESR_MergedLightCount.x) break;
-            // The shadow first, before the lighting's values are live: this loop runs at the
-            // pixel shader's register limit. A lamp wholly shadowed here is not lit at all.
-            float visibility = PointShadowVisibility(TESR_MergedLightColor[i].w, TESR_PointShadowMerged[i], worldPos, worldPosValid);
+            // Its shadow, looked up at the top of main (PointShadowPackMerged). A lamp wholly
+            // shadowed here is not lit at all.
+            float visibility = PointShadowPackedVisibility(i);
             float3 L = TESR_MergedLightPosition[i].xyz - worldPos;
             float att = vanillaAttSq(dot(L, L), TESR_MergedLightPosition[i].w);
             [branch] if (att > 0.0f && visibility > 0.0f)
@@ -669,6 +691,12 @@ float4 PSLightColor[10] : register(c3);
 
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
+    POINT_SHADOW_PIXEL(IN.vpos);
+
+    #ifdef POINT_SHADOW_PACKED
+        // First, while nothing else is held: the merged lamps' shadows, with the normal they light with.
+        PointShadowPackMerged(IN.shadowWorldPos.xyz, normalize(IN.worldNormal.xyz * 2.0f - 1.0f), SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
+    #endif
 
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
         float4 baseColor = tex2D(BaseMap, IN.uv.xy);
@@ -792,6 +820,14 @@ PS_OUTPUT main(PS_INPUT IN) {
         #endif
     #endif
 
+    // The lamps' shadows' normal offset (Includes/PointShadow.hlsl): the geometric normal, once.
+    // ddx/ddy, so at top level.
+    #if !defined(DIFFUSE) && !defined(POINT)
+        float3 pointShadowNormal = shadowGeometricNormal;
+    #else
+        float3 pointShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+    #endif
+
     #if !defined(DIFFUSE) && !defined(POINT)
         float3 lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness, sunShadow);
     #else
@@ -800,7 +836,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         // length is only correct if the TBN basis is orthonormal.
         float att0 = vanillaAttSq(IN.lightDistSq.x, IN.lightDir.w);
         float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att0, PSLightColor[0].rgb * shadowMultiplier, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness, sqrt(IN.lightDistSq.x),
-            PointShadowBase(0, IN.shadowWorldPos.xyz, pointShadowValid));
+            PointShadowBase(0, IN.shadowWorldPos.xyz, pointShadowNormal, pointShadowValid));
     #endif
 
     // Self emmitance.
@@ -822,13 +858,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     #if LIGHTS > 1 || NUM_PT_LIGHTS > 1
         float att2 = vanillaAttSq(IN.lightDistSq.y, IN.light2Dir.w);
         lighting += getPointLightLightingAtt(IN.light2Dir.xyz, att2, PSLightColor[1].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness, sqrt(IN.lightDistSq.y),
-            PointShadowBase(1, IN.shadowWorldPos.xyz, pointShadowValid));
+            PointShadowBase(1, IN.shadowWorldPos.xyz, pointShadowNormal, pointShadowValid));
     #endif
 
     #if LIGHTS > 2 || NUM_PT_LIGHTS > 2
         float att3 = vanillaAttSq(IN.lightDistSq.z, IN.light3Dir.w);
         lighting += getPointLightLightingAtt(IN.light3Dir.xyz, att3, PSLightColor[2].rgb, IN.viewDir.xyz, normal.xyz, baseColor.rgb, roughness, sqrt(IN.lightDistSq.z),
-            PointShadowBase(2, IN.shadowWorldPos.xyz, pointShadowValid));
+            PointShadowBase(2, IN.shadowWorldPos.xyz, pointShadowNormal, pointShadowValid));
     #endif
 
     // The lamps of this mesh's additive passes (MERGED_LIGHTS above); those passes are muted.
@@ -915,6 +951,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 #endif
 
 struct PS_INPUT {
+    float2 vpos : VPOS;   // the pixel's screen position (Includes/PointShadow.hlsl, POINT_SHADOW_PIXEL)
     float4 vertexColor : COLOR0;
     float4 fogColor : COLOR1;
     float4 sPosition : POSITION;
@@ -968,6 +1005,7 @@ float4 PSLightPosition[8] : register(c19);
 
 PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
+    POINT_SHADOW_PIXEL(IN.vpos);
 
     float4 baseColor = tex2D(BaseMap, IN.uv.xy);
 
@@ -1004,11 +1042,20 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     float att;
 
+    // Each lamp's shadow (Includes/PointShadow.hlsl): PSLightColor[k] is shadowed as light k of the
+    // per-draw lamp list (ForwardPointShadows in Hooks/Shaders.cpp maps the OPT passes, whose
+    // PSLightColor[k] is the game's pass light k + 1).
+    float3 pointShadowPos = SHADOW_WP_LOAD(IN);
+    float pointShadowValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
+    // The geometric normal, once, for the sun's shadow, the lamps' (their normal offset) and the
+    // ambient below. ddx/ddy, so at top level.
+    float3 pointShadowNormal = GetShadowGeometricNormal(pointShadowPos);
+
     // Forward sun shadows -- see the LIGHTS < 4 variant. Only the OPT-off path has a sun
     // term; with OPT the first slot is a point light and must not be shadowed by the sun.
     #ifndef OPT
-        float3 sunShadowWorldPos = SHADOW_WP_LOAD(IN);
-        float3 sunShadowNormal = GetShadowGeometricNormal(sunShadowWorldPos);
+        float3 sunShadowWorldPos = pointShadowPos;
+        float3 sunShadowNormal = pointShadowNormal;
         // Decline to shadow if a vanilla vertex shader ran: the interpolator is undefined.
         float sunShadow = 1.0f;
         #if FORWARD_SHADOWS
@@ -1019,7 +1066,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         float3 lighting = getSunLighting(IN.lightDir.xyz, PSLightColor[0].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, sunShadow);
     #else
         att = vanillaAtt(PSLightPosition[0].xyz - IN.lPosition.xyz, PSLightPosition[0].w);
-        float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att, PSLightColor[0].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[0].xyz - IN.lPosition.xyz));
+        float3 lighting = getPointLightLightingAtt(IN.lightDir.xyz, att, PSLightColor[0].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[0].xyz - IN.lPosition.xyz),
+            PointShadowBase(0, pointShadowPos, pointShadowNormal, pointShadowValid));
     #endif
 
     // Slot k (PSLightColor[k]) holds a light only while k < lightsUsed. The game uploads just the
@@ -1030,26 +1078,31 @@ PS_OUTPUT main(PS_INPUT IN) {
     // jumped as a mesh's lamp count changed. In the OPT variants every position is one slot up
     // (lightOffset), lamps 5 and 6 included.
     att = vanillaAtt(PSLightPosition[lightOffset + 0].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 0].w);
-    [branch] if (1 < lightsUsed) lighting += getPointLightLightingAtt(IN.light2.xyz, att, PSLightColor[1].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 0].xyz - IN.lPosition.xyz));
+    [branch] if (1 < lightsUsed) lighting += getPointLightLightingAtt(IN.light2.xyz, att, PSLightColor[1].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 0].xyz - IN.lPosition.xyz),
+        PointShadowBase(1, pointShadowPos, pointShadowNormal, pointShadowValid));
 
     att = vanillaAtt(PSLightPosition[lightOffset + 1].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 1].w);
-    [branch] if (2 < lightsUsed) lighting += getPointLightLightingAtt(IN.light3.xyz, att, PSLightColor[2].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 1].xyz - IN.lPosition.xyz));
+    [branch] if (2 < lightsUsed) lighting += getPointLightLightingAtt(IN.light3.xyz, att, PSLightColor[2].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 1].xyz - IN.lPosition.xyz),
+        PointShadowBase(2, pointShadowPos, pointShadowNormal, pointShadowValid));
 
     #if MAX_LIGHTS > 3
         att = vanillaAtt(PSLightPosition[lightOffset + 2].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 2].w);
-        [branch] if (3 < lightsUsed) lighting += getPointLightLightingAtt(IN.light4.xyz, att, PSLightColor[3].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 2].xyz - IN.lPosition.xyz));
+        [branch] if (3 < lightsUsed) lighting += getPointLightLightingAtt(IN.light4.xyz, att, PSLightColor[3].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 2].xyz - IN.lPosition.xyz),
+            PointShadowBase(3, pointShadowPos, pointShadowNormal, pointShadowValid));
     #endif
 
     #if MAX_LIGHTS > 4
         att = vanillaAtt(PSLightPosition[lightOffset + 3].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 3].w);
-        [branch] if (4 < lightsUsed) lighting += getPointLightLightingAtt(IN.light5.xyz, att, PSLightColor[4].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 3].xyz - IN.lPosition.xyz));
+        [branch] if (4 < lightsUsed) lighting += getPointLightLightingAtt(IN.light5.xyz, att, PSLightColor[4].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 3].xyz - IN.lPosition.xyz),
+            PointShadowBase(4, pointShadowPos, pointShadowNormal, pointShadowValid));
 
         att = vanillaAtt(PSLightPosition[lightOffset + 4].xyz - IN.lPosition.xyz, PSLightPosition[lightOffset + 4].w);
-        [branch] if (5 < lightsUsed) lighting += getPointLightLightingAtt(IN.light6.xyz, att, PSLightColor[5].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 4].xyz - IN.lPosition.xyz));
+        [branch] if (5 < lightsUsed) lighting += getPointLightLightingAtt(IN.light6.xyz, att, PSLightColor[5].rgb, viewDir.xyz, normal.xyz, baseColor.rgb, roughness, length(PSLightPosition[lightOffset + 4].xyz - IN.lPosition.xyz),
+            PointShadowBase(5, pointShadowPos, pointShadowNormal, pointShadowValid));
     #endif
 
     // ddx/ddy must stay at pixel-shader top level.
-    float3 ambNormal = GetShadowGeometricNormal(SHADOW_WP_LOAD(IN));
+    float3 ambNormal = pointShadowNormal;
     float shadowVSValid = SHADOW_WP_VALID(IN) ? 1.0f : 0.0f;
 
     // Normal-mapped ambient, see the LIGHTS < 4 variant. At MAX_LIGHTS 6 up's z has no channel

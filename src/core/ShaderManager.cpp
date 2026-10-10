@@ -92,6 +92,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterShaderCollection<SkinShaders>(&TheShaderManager->Shaders.Skin);
 	TheShaderManager->RegisterShaderCollection<GrassShaders>(&TheShaderManager->Shaders.Grass);
 	TheShaderManager->RegisterShaderCollection<TerrainShaders>(&TheShaderManager->Shaders.Terrain);
+	TheShaderManager->RegisterShaderCollection<InverseSquareLightingShaders>(&TheShaderManager->Shaders.InverseSquareLighting);
 	
 	//setup map of constant names
 	TheShaderManager->RegisterConstant("TESR_WorldTransform", (D3DXVECTOR4*)&TheRenderManager->worldMatrix);
@@ -105,6 +106,9 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterConstant("TESR_OcclusionWorldViewProjTransform", (D3DXVECTOR4*)&TheShaderManager->ShaderConst.OcclusionMap.OcclusionWorldViewProj);
 	TheShaderManager->RegisterConstant("TESR_LightPosition", (D3DXVECTOR4*) &TheShaderManager->LightPosition);
 	TheShaderManager->RegisterConstant("TESR_LightColor", (D3DXVECTOR4*) &TheShaderManager->LightColor);
+	TheShaderManager->RegisterConstant("TESR_ContactLampPosition", (D3DXVECTOR4*) &TheShaderManager->ContactLampPosition);
+	TheShaderManager->RegisterConstant("TESR_ContactLampColor", (D3DXVECTOR4*) &TheShaderManager->ContactLampColor);
+	TheShaderManager->RegisterConstant("TESR_ContactLampAnchor", (D3DXVECTOR4*) &TheShaderManager->ContactLampAnchor);
 	TheShaderManager->RegisterConstant("TESR_SpotLightPosition", (D3DXVECTOR4*) &TheShaderManager->SpotLightPosition);
 	TheShaderManager->RegisterConstant("TESR_SpotLightColor", (D3DXVECTOR4*) &TheShaderManager->SpotLightColor);
 	TheShaderManager->RegisterConstant("TESR_SpotLightDirection", (D3DXVECTOR4*) &TheShaderManager->SpotLightDirection);
@@ -495,6 +499,8 @@ void ShaderManager::UpdateConstants() {
 	// TESR_PBRData (see Shaders/Includes/PBRScale.hlsl) and render black at a zero scale, so
 	// these constants stay current whether or not the PBR collection is enabled.
 	if (!Shaders.PBR->Enabled) Shaders.PBR->UpdateConstants();
+	// Off, the lamps' falloff goes back to vanilla: its constant says so (Shaders/Includes/InverseSquare.hlsl).
+	if (!Shaders.InverseSquareLighting->Enabled) Shaders.InverseSquareLighting->UpdateConstants();
 
 	// Underwater effect uses constants from the water shader
 	if (Effects.Underwater->Enabled && !Shaders.Water->Enabled) Shaders.Water->UpdateConstants();
@@ -781,6 +787,31 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	std::sort(Casters.begin(), Casters.end());
 	Casters.erase(std::unique(Casters.begin(), Casters.end()), Casters.end());
 
+	// Lamps that move stay out of clusters: carried ones, any hung on the player (the Pip-Boy light),
+	// and any found more than 16 units from where it was first seen (a companion's torch, a lamp on
+	// something moving; flickering lamps wander less). In a cluster, a lamp walking with the player
+	// dragged the cluster's centre along, and with it the shadow of every fixed lamp in it: the cube
+	// was drawn again from the new centre each time it passed 6 units, and the shadows followed the
+	// player in steps.
+	auto UnderNode = [](const NiAVObject* Object, const NiNode* Root) {
+		if (!Root) return false;
+		for (const NiAVObject* Node = Object; Node; Node = Node->m_parent)
+			if (Node == Root) return true;
+		return false;
+	};
+	if (LampFirstSeen.size() > 4096) LampFirstSeen.clear();   // lamps long gone
+	std::vector<char>& Mobile = ClusterMobileScratch;
+	Mobile.assign(Casters.size(), 0);
+	for (size_t i = 0; i < Casters.size(); i++) {
+		NiPointLight* Light = Casters[i]->sourceLight;
+		const D3DXVECTOR3 P = Light->m_worldTransform.pos.toD3DXVEC3();
+		auto Seen = LampFirstSeen.find(Light);
+		if (Seen == LampFirstSeen.end()) Seen = LampFirstSeen.emplace(Light, P).first;
+		const D3DXVECTOR3 Moved = P - Seen->second;
+		Mobile[i] = Light->CanCarry || (Player && (UnderNode(Light, Player->GetNode()) || UnderNode(Light, Player->firstPersonNiNode)))
+			|| D3DXVec3LengthSq(&Moved) > 16.0f * 16.0f;
+	}
+
 	std::vector<ShadowLampCluster>& Clusters = ClustersScratch;
 	std::vector<ShadowSceneLight*>& ClusterLamps = ClusterLampsScratch;
 	std::vector<char>& Taken = ClusterTakenScratch;
@@ -793,8 +824,10 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		Cluster.Colour = D3DXVECTOR3(0.0f, 0.0f, 0.0f);   // D3DXVECTOR3's constructor leaves it unset, = {} or not
 		Cluster.First = (UInt32)ClusterLamps.size();
 		const NiPoint3& Seed = Casters[i]->sourceLight->m_worldTransform.pos;
+		Cluster.Mobile = Mobile[i] != 0;
 		for (size_t j = i; j < Casters.size(); j++) {
 			if (Taken[j]) continue;
+			if (j != i && (Cluster.Mobile || Mobile[j])) continue;   // a moving lamp is a cluster of its own
 			const NiPoint3& P = Casters[j]->sourceLight->m_worldTransform.pos;
 			const float dx = P.x - Seed.x, dy = P.y - Seed.y, dz = P.z - Seed.z;
 			if (j != i && dx * dx + dy * dy + dz * dz > ClusterRadius * ClusterRadius) continue;
@@ -965,6 +998,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			: SlotFade[s] * (Clusters[SlotCluster[s]].Fill ? Settings->FillLightShadowStrength : 1.0f);
 		SlotStats->SlotFadeValue[s] = Fade;
 		if (s < ShadowCubeMapsMax) ((float*)ShadowsConstants->ShadowLightFade)[s] = Fade;
+		SlotStats->SlotMobile[s] = SlotCluster[s] >= 0 && Clusters[SlotCluster[s]].Mobile;
 		if (SlotCluster[s] < 0) {
 			ShadowLightsList[s] = NULL;
 			SlotStats->SlotPosition[s] = Empty;
@@ -1007,6 +1041,40 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		LightsList[LightIndex] = NULL;
 		LightPosition[LightIndex] = Empty;
 		LightColor[ShadowCubeMapsMax + LightIndex] = Empty;
+	}
+
+	// The nearest active point lights, each with its slot's anchor and shadow info, for their
+	// screen-space contact shadows (Effects/SunShadows.fx, technique 1). There each lamp's contact
+	// shadow takes away only what the lamp's cube shadow has not already, so the info and anchor
+	// are the ones the object shaders read (ForwardPointShadows in Hooks/Shaders.cpp), in world space.
+	int ContactIndex = 0;
+	for (auto& Entry : SceneLights) {
+		if (ContactIndex >= ContactLampsMax) break;
+		NiPointLight* Light = Entry.second->sourceLight;
+		if (!Light || Light->EffectType != NiDynamicEffect::EffectTypes::POINT_LIGHT) continue;
+		// The radius the object shaders light it with (its specular red): LightRadiusMult only
+		// widens what its shadow map covers.
+		const float Radius = Light->Spec.r;
+		if (Radius <= 0.0f || Light->Dimmer <= 0.0f) continue;
+		D3DXVECTOR4 Anchor = Empty;
+		float Info = -1.0f;
+		if (ForwardSlots) {
+			const auto Found = SlotStats->LampSlot.find(Entry.second);
+			if (Found != SlotStats->LampSlot.end() && Found->second >= 0 && Found->second < ShadowSlotsMax && SlotStats->SlotPosition[Found->second].w > 0.0f) {
+				Anchor = SlotStats->SlotPosition[Found->second];
+				Info = (float)Found->second * 2.0f + std::clamp(SlotStats->SlotFadeValue[Found->second], 0.0f, 1.0f);
+			}
+		}
+		const NiPoint3& Pos = Light->m_worldTransform.pos;
+		ContactLampPosition[ContactIndex] = D3DXVECTOR4(Pos.x, Pos.y, Pos.z, Radius);
+		ContactLampColor[ContactIndex] = D3DXVECTOR4(Light->Diff.r * Light->Dimmer, Light->Diff.g * Light->Dimmer, Light->Diff.b * Light->Dimmer, Info);
+		ContactLampAnchor[ContactIndex] = Anchor;
+		ContactIndex++;
+	}
+	for (; ContactIndex < ContactLampsMax; ContactIndex++) {
+		ContactLampPosition[ContactIndex] = Empty;
+		ContactLampColor[ContactIndex] = D3DXVECTOR4(0.0f, 0.0f, 0.0f, -1.0f);
+		ContactLampAnchor[ContactIndex] = Empty;
 	}
 
 	timer.LogTime("ShaderManager::GetNearbyLights");
@@ -1072,6 +1140,14 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// neutral "no shadow" value rather than leaving
 		// stale exterior data for them to read.
 		Effects.ShadowsExteriors->clearShadowsBuffer();
+
+		// Lamps' contact shadows (Effects/SunShadows.fx, technique 1): their share of each pixel's
+		// light into the buffer's red channel, composited below (ShadowsInteriors.fx, technique 1).
+		if (ForwardPointShadows && Effects.ShadowsExteriors->Constants.LampContactData.x > 0.0f) {
+			Device->SetRenderTarget(0, Effects.ShadowsExteriors->Textures.ShadowPassSurface);
+			Effects.SunShadows->Render(Device, Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.ShadowsExteriors->Textures.ShadowPassSurface,
+				Effects.ShadowsExteriors->Settings.Interiors.ContactBlur ? 2 : 1, false, nullptr);   // sharp, or blurred too
+		}
 	}
 
 	Device->SetRenderTarget(0, RenderTarget);
@@ -1093,6 +1169,8 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		Effects.ShadowsExteriors->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
 	else if (!ForwardPointShadows)
 		Effects.ShadowsInteriors->Render(Device, RenderTarget, RenderedSurface, 0, true, SourceSurface);
+	else if (Effects.ShadowsExteriors->Constants.LampContactData.x > 0.0f)
+		Effects.ShadowsInteriors->Render(Device, RenderTarget, RenderedSurface, 1, false, SourceSurface);   // the lamps' contact shadows
 
 	Effects.SnowAccumulation->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
 	Effects.AmbientOcclusion->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);

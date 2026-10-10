@@ -64,6 +64,15 @@ float4 CombineShadow( VSOUT IN ) : COLOR0 {
 	return float4(finalColor.rgb, 1);
 }
 
+// The lamps' contact shadows (SunShadows.fx, technique 1), with ForwardPointShadows: the buffer's
+// red holds the fraction of each pixel's light they leave. The frame is lit in linear and stored
+// as its square root (PBR LinearLighting), so the stored colour scales by the square root of it.
+float4 LampContactComposite(VSOUT IN) : COLOR0 {
+	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
+	float left = saturate(tex2D(TESR_PointShadowBuffer, IN.UVCoord).r);
+	return float4(color.rgb * sqrt(left), 1.0f);
+}
+
 technique {
 
 	pass
@@ -83,4 +92,14 @@ technique {
 		PixelShader = compile ps_3_0 CombineShadow();
 	}
 	
+}
+
+// Technique 1: the lamps' contact shadows (ShaderManager, indoors with ForwardPointShadows).
+technique {
+
+	pass {
+		VertexShader = compile vs_3_0 FrameVS();
+		PixelShader = compile ps_3_0 LampContactComposite();
+	}
+
 }
