@@ -13,23 +13,24 @@
 #ifndef BOUNCE_LIGHTING_HLSL
 #define BOUNCE_LIGHTING_HLSL
 
-// grid: xyz the first probe (camera relative). scale: xyz 1 / the spacing on each axis. size: xyz
-// probes per axis, w the atlas's width in texels. Returns the light (rgb) and how far it is to be
-// trusted (a, 0-1).
+// grid: xyz minus the first probe (camera relative) over the spacing, w 1 / the atlas's width.
+// scale: xyz 1 / the spacing on each axis, w 1 / the atlas's height. size: xyz probes per axis, w
+// the atlas's width in texels (all from BounceLightingShaders::UpdateConstants, so the grid is one
+// multiply-add here). Returns the light (rgb) and how far it is to be trusted (a, 0-1).
 float4 ProbeLookup(sampler2D atlasA, sampler2D atlasB, float4 grid, float4 scale, float4 size, float3 pos, float3 n) {
-    float3 g = (pos - grid.xyz) * scale.xyz;
+    float3 g = pos * scale.xyz + grid.xyz;
     float3 c = clamp(g, 0.0f, size.xyz - 1.0f);
     float outside = length(g - c);   // beyond the grid's edge: faded out over one spacing
     float z0 = floor(c.z);
     float fz = c.z - z0;
     float z1 = min(z0 + 1.0f, size.z - 1.0f);
-    float2 inv = 1.0f / float2(size.w, size.y);
+    float2 inv = float2(grid.w, scale.w);
     float4 uv0 = float4((float2(z0 * size.x + c.x, c.y) + 0.5f) * inv, 0.0f, 0.0f);
     float4 uv1 = float4((float2(z1 * size.x + c.x, c.y) + 0.5f) * inv, 0.0f, 0.0f);
     float4 a = lerp(tex2Dlod(atlasA, uv0), tex2Dlod(atlasA, uv1), fz);
     float3 b = lerp(tex2Dlod(atlasB, uv0).xyz, tex2Dlod(atlasB, uv1).xyz, fz);
-    float valid = max(a.w, 1e-4f);
-    float3 light = a.rgb / valid * max(1.0f + dot(b / valid, n), 0.0f);
+    float invValid = 1.0f / max(a.w, 1e-4f);
+    float3 light = a.rgb * (invValid * max(1.0f + dot(b, n) * invValid, 0.0f));
     return float4(light, saturate(a.w * 4.0f) * saturate(1.0f - outside));
 }
 
@@ -48,6 +49,7 @@ static float3 probeWorldPos = 0.0f;
 static float probeWorldPosValid = 0.0f;
 static float3 probeDebugLight = 0.0f;   // the debug view's colour (TESR_ProbeLighting.z)
 static float probeDebugSet = 0.0f;
+static float probeAmbientRan = 0.0f;   // the ambient was worked out at all (debug view 2: magenta where it ran without a world position)
 #endif
 
 #endif

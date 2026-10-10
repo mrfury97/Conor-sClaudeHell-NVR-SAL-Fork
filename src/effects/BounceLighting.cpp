@@ -72,8 +72,11 @@ void BounceLightingShaders::UpdateSettings() {
 void BounceLightingShaders::UpdateConstants() {
 	FrameCounter++;
 	const D3DXVECTOR4& Camera = TheRenderManager->CameraPosition;
-	Constants.Grid = D3DXVECTOR4(GridOrigin.x - Camera.x, GridOrigin.y - Camera.y, GridOrigin.z - Camera.z, 0.0f);
-	Constants.GridScale = D3DXVECTOR4(1.0f / GridSpacing.x, 1.0f / GridSpacing.y, 1.0f / GridSpacing.z, 0.0f);
+	// For ProbeLookup's one multiply-add: g = position * scale + grid, the first probe camera
+	// relative; and the atlas's reciprocal size in the w's.
+	Constants.GridScale = D3DXVECTOR4(1.0f / GridSpacing.x, 1.0f / GridSpacing.y, 1.0f / GridSpacing.z, 1.0f / (float)GridY);
+	Constants.Grid = D3DXVECTOR4(-(GridOrigin.x - Camera.x) * Constants.GridScale.x, -(GridOrigin.y - Camera.y) * Constants.GridScale.y,
+		-(GridOrigin.z - Camera.z) * Constants.GridScale.z, 1.0f / (float)(GridX * GridZ));
 	const bool On = Enabled && Ready && !TheShaderManager->GameState.isExterior && Player && GridCell && Player->parentCell == GridCell && CapturedAny > 0;
 	Constants.Lighting = D3DXVECTOR4(On ? Settings.Strength : 0.0f, Settings.AmbientFloor, (float)(Settings.Debug == 4 ? 1 : Settings.Debug), Settings.Intensity);
 	Constants.CaptureDebug.x = Settings.Debug == 4 ? 1.0f : 0.0f;

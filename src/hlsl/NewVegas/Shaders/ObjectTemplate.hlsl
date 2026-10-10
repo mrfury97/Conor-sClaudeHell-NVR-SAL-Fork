@@ -923,8 +923,17 @@ PS_OUTPUT main(PS_INPUT IN) {
         OUT.color.a = baseColor.a * AmbientColor.a;
     #endif
 
-    // Bounce lighting's debug view: the light the probes give, alone (the other passes add nothing).
-    if (TESR_ProbeLighting.z > 0.5f && TESR_ProbeLighting.x > 0.0f) OUT.color.rgb = probeDebugSet > 0.5f ? encodeColor(probeDebugLight) : 0.0f;
+    // Bounce lighting's debug view: the light the probes give, alone. The additive light passes add
+    // nothing; the others keep what they draw (a multipass mesh's texture pass multiplies the debug
+    // colour by its texture, as single passes show it: written black, it blacked the whole floor).
+    // Magenta (view 2): the ambient worked out without a world position (a vanilla vertex shader).
+    if (TESR_ProbeLighting.z > 0.5f && TESR_ProbeLighting.x > 0.0f) {
+        if (probeDebugSet > 0.5f) OUT.color.rgb = encodeColor(probeDebugLight);
+        else if (probeAmbientRan > 0.5f && TESR_ProbeLighting.z > 1.5f) OUT.color.rgb = float3(1.0f, 0.0f, 1.0f);
+        #if defined(DIFFUSE) || defined(POINT) || defined(ONLY_SPECULAR)
+        else OUT.color.rgb = 0.0f;
+        #endif
+    }
 
     return OUT;
 }
@@ -1147,8 +1156,17 @@ PS_OUTPUT main(PS_INPUT IN) {
     OUT.color.rgb = finalColor.rgb;
     OUT.color.a = baseColor.a * AmbientColor.a;
 
-    // Bounce lighting's debug view: the light the probes give, alone (the other passes add nothing).
-    if (TESR_ProbeLighting.z > 0.5f && TESR_ProbeLighting.x > 0.0f) OUT.color.rgb = probeDebugSet > 0.5f ? encodeColor(probeDebugLight) : 0.0f;
+    // Bounce lighting's debug view: the light the probes give, alone. The additive light passes add
+    // nothing; the others keep what they draw (a multipass mesh's texture pass multiplies the debug
+    // colour by its texture, as single passes show it: written black, it blacked the whole floor).
+    // Magenta (view 2): the ambient worked out without a world position (a vanilla vertex shader).
+    if (TESR_ProbeLighting.z > 0.5f && TESR_ProbeLighting.x > 0.0f) {
+        if (probeDebugSet > 0.5f) OUT.color.rgb = encodeColor(probeDebugLight);
+        else if (probeAmbientRan > 0.5f && TESR_ProbeLighting.z > 1.5f) OUT.color.rgb = float3(1.0f, 0.0f, 1.0f);
+        #if defined(DIFFUSE) || defined(POINT) || defined(ONLY_SPECULAR)
+        else OUT.color.rgb = 0.0f;
+        #endif
+    }
 
     return OUT;
 }

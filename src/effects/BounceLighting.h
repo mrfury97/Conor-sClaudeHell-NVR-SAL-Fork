@@ -34,8 +34,8 @@ public:
 	BounceSettings	Settings;
 
 	struct BounceStruct {
-		D3DXVECTOR4		Grid;       // xyz the first probe (camera relative), w 0
-		D3DXVECTOR4		GridScale;  // xyz 1 / the spacing on each axis
+		D3DXVECTOR4		Grid;       // xyz minus the first probe (camera relative) over the spacing, w 1 / the atlas's width
+		D3DXVECTOR4		GridScale;  // xyz 1 / the spacing on each axis, w 1 / the atlas's height
 		D3DXVECTOR4		GridSize;   // xyz probes per axis, w the atlas's width in texels
 		D3DXVECTOR4		Lighting;   // x strength (0: off), y ambient floor, z debug view (0, 1, 2), w intensity
 		D3DXVECTOR4		Capture;    // x 1 linear lighting, y light scale, z bounces, w 0

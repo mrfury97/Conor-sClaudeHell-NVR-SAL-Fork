@@ -364,6 +364,7 @@ float3 getAmbientLighting(float3 ambient, float3 albedo, float3 worldNormal, flo
     // worldNormalValid is 0 under a vanilla VS, where the carried world position is undefined.
     float3 irradiance = flatAmbient + decodeColor(SkyAmbientRadiance(worldNormal)) * SKY_AMBIENT_STRENGTH * worldNormalValid;
 
+    probeAmbientRan = 1.0f;
     // Bounce lighting (Includes/BounceLighting.hlsl): indoors, the light the probes round the pixel
     // hold, in place of the flat ambient (Strength), some of which is kept under it (AmbientFloor).
     // Scaled as the ambient it replaces is (AmbientScale), then by Intensity.
@@ -375,11 +376,13 @@ float3 getAmbientLighting(float3 ambient, float3 albedo, float3 worldNormal, flo
         // all but black: 1 the bounce light x 32, 2 how far the probes round it are trusted (green:
         // inside the room, red: inside walls or beyond the grid), 3 the bounce against the flat ambient
         // it replaces (black none, mid grey as bright, white far brighter).
-        float bounceLum = dot(bounce * probe.a, float3(0.2126f, 0.7152f, 0.0722f));
-        float flatLum = dot(flatAmbient, float3(0.2126f, 0.7152f, 0.0722f));
-        probeDebugLight = TESR_ProbeLighting.z > 2.5f ? (bounceLum / max(bounceLum + flatLum, 1e-5f)).xxx
-                        : (TESR_ProbeLighting.z > 1.5f ? float3(1.0f - probe.a, probe.a, 0.0f) : bounce * probe.a * 32.0f);
-        probeDebugSet = 1.0f;
+        [branch] if (TESR_ProbeLighting.z > 0.5f) {   // only with a debug view on
+            float bounceLum = dot(bounce * probe.a, float3(0.2126f, 0.7152f, 0.0722f));
+            float flatLum = dot(flatAmbient, float3(0.2126f, 0.7152f, 0.0722f));
+            probeDebugLight = TESR_ProbeLighting.z > 2.5f ? (bounceLum / max(bounceLum + flatLum, 1e-5f)).xxx
+                            : (TESR_ProbeLighting.z > 1.5f ? float3(1.0f - probe.a, probe.a, 0.0f) : bounce * probe.a * 32.0f);
+            probeDebugSet = 1.0f;
+        }
     }
 
 #ifndef NO_AMBIENT
