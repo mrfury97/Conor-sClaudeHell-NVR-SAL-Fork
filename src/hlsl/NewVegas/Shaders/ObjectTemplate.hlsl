@@ -850,6 +850,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         // here: POINT implies ONLY_SPECULAR, so !ONLY_SPECULAR implies !POINT.
         // Reflection first: it sets the share of the ambient it takes (skyReflectedFraction).
         lighting += getObjectSkyReflection(IN.shadowWorldPos.xyz, reflectionGeometricNormal, reflectionNormal, roughness, shadowVSValid);
+        probeWorldPos = IN.shadowWorldPos.xyz;   // for the bounce lighting (Includes/BounceLighting.hlsl)
+        probeWorldPosValid = shadowVSValid;
         lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, ambientNormal, shadowVSValid);
     #endif
 
@@ -920,6 +922,9 @@ PS_OUTPUT main(PS_INPUT IN) {
     #else
         OUT.color.a = baseColor.a * AmbientColor.a;
     #endif
+
+    // Bounce lighting's debug view: the light the probes give, alone (the other passes add nothing).
+    if (TESR_ProbeLighting.z > 0.5f && TESR_ProbeLighting.x > 0.0f) OUT.color.rgb = probeDebugSet > 0.5f ? encodeColor(probeDebugLight) : 0.0f;
 
     return OUT;
 }
@@ -1116,6 +1121,8 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // Reflection first: it sets the share of the ambient it takes (skyReflectedFraction).
     lighting += getObjectSkyReflection(SHADOW_WP_LOAD(IN), ambNormal, ambientNormal, roughness, shadowVSValid);
+    probeWorldPos = SHADOW_WP_LOAD(IN);   // for the bounce lighting (Includes/BounceLighting.hlsl)
+    probeWorldPosValid = shadowVSValid;
     lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, ambientNormal, shadowVSValid);
 
     // Vanilla attenuates the full specular term by LightData[0].w (IN.lPosition.w): the engine's specular
@@ -1139,6 +1146,9 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     OUT.color.rgb = finalColor.rgb;
     OUT.color.a = baseColor.a * AmbientColor.a;
+
+    // Bounce lighting's debug view: the light the probes give, alone (the other passes add nothing).
+    if (TESR_ProbeLighting.z > 0.5f && TESR_ProbeLighting.x > 0.0f) OUT.color.rgb = probeDebugSet > 0.5f ? encodeColor(probeDebugLight) : 0.0f;
 
     return OUT;
 }

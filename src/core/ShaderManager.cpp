@@ -94,6 +94,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterShaderCollection<GrassShaders>(&TheShaderManager->Shaders.Grass);
 	TheShaderManager->RegisterShaderCollection<TerrainShaders>(&TheShaderManager->Shaders.Terrain);
 	TheShaderManager->RegisterShaderCollection<InverseSquareLightingShaders>(&TheShaderManager->Shaders.InverseSquareLighting);
+	TheShaderManager->RegisterShaderCollection<BounceLightingShaders>(&TheShaderManager->Shaders.BounceLighting);
 	
 	//setup map of constant names
 	TheShaderManager->RegisterConstant("TESR_WorldTransform", (D3DXVECTOR4*)&TheRenderManager->worldMatrix);
@@ -500,6 +501,8 @@ void ShaderManager::UpdateConstants() {
 	// TESR_PBRData (see Shaders/Includes/PBRScale.hlsl) and render black at a zero scale, so
 	// these constants stay current whether or not the PBR collection is enabled.
 	if (!Shaders.PBR->Enabled) Shaders.PBR->UpdateConstants();
+	// Off, the object shaders keep the flat ambient: bounce lighting's constant says so.
+	if (!Shaders.BounceLighting->Enabled) Shaders.BounceLighting->UpdateConstants();
 	// Off, the tonemapping shaders ignore auto exposure: its constant says so.
 	if (!Effects.AutoExposure->Enabled) Effects.AutoExposure->UpdateConstants();
 	// Off, the lamps' falloff goes back to vanilla: its constant says so (Shaders/Includes/InverseSquare.hlsl).
@@ -790,29 +793,34 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 	std::sort(Casters.begin(), Casters.end());
 	Casters.erase(std::unique(Casters.begin(), Casters.end()), Casters.end());
 
-	// Lamps that move stay out of clusters: carried ones, any hung on the player (the Pip-Boy light),
-	// and any found more than 16 units from where it was first seen (a companion's torch, a lamp on
-	// something moving; flickering lamps wander less). In a cluster, a lamp walking with the player
-	// dragged the cluster's centre along, and with it the shadow of every fixed lamp in it: the cube
-	// was drawn again from the new centre each time it passed 6 units, and the shadows followed the
-	// player in steps.
+	// Lamps that travel stay out of clusters and their shadows follow them: carried ones, any hung on
+	// the player (the Pip-Boy light), and any gone more than 96 units from where it was first seen (a
+	// companion's torch, a lamp on something moving). In a cluster, a lamp walking with the player
+	// dragged the cluster's centre along, and with it the shadow of every fixed lamp in it.
+	// Lamps that only sway (a hanging bulb swinging, a flickering lamp wandering) cast from where they
+	// rest instead, the middle of their swing (LampRestPosition): followed exactly, their shadows
+	// whipped round with every swing (they were taken for travelling ones past 16 units).
 	auto UnderNode = [](const NiAVObject* Object, const NiNode* Root) {
 		if (!Root) return false;
 		for (const NiAVObject* Node = Object; Node; Node = Node->m_parent)
 			if (Node == Root) return true;
 		return false;
 	};
-	if (LampFirstSeen.size() > 4096) LampFirstSeen.clear();   // lamps long gone
+	if (LampTracks.size() > 4096) LampTracks.clear();   // lamps long gone
 	std::vector<char>& Mobile = ClusterMobileScratch;
 	Mobile.assign(Casters.size(), 0);
 	for (size_t i = 0; i < Casters.size(); i++) {
 		NiPointLight* Light = Casters[i]->sourceLight;
 		const D3DXVECTOR3 P = Light->m_worldTransform.pos.toD3DXVEC3();
-		auto Seen = LampFirstSeen.find(Light);
-		if (Seen == LampFirstSeen.end()) Seen = LampFirstSeen.emplace(Light, P).first;
-		const D3DXVECTOR3 Moved = P - Seen->second;
-		Mobile[i] = Light->CanCarry || (Player && (UnderNode(Light, Player->GetNode()) || UnderNode(Light, Player->firstPersonNiNode)))
-			|| D3DXVec3LengthSq(&Moved) > 16.0f * 16.0f;
+		auto Found = LampTracks.find(Light);
+		if (Found == LampTracks.end()) Found = LampTracks.emplace(Light, LampTrack{ P, P, false }).first;
+		LampTrack& Track = Found->second;
+		Track.Rest += (P - Track.Rest) * 0.02f;   // a swing averaged out over a few seconds
+		const D3DXVECTOR3 Moved = P - Track.First;
+		Track.Travelling = Light->CanCarry || (Player && (UnderNode(Light, Player->GetNode()) || UnderNode(Light, Player->firstPersonNiNode)))
+			|| D3DXVec3LengthSq(&Moved) > 96.0f * 96.0f;
+		if (Track.Travelling) Track.Rest = P;
+		Mobile[i] = Track.Travelling;
 	}
 
 	std::vector<ShadowLampCluster>& Clusters = ClustersScratch;
@@ -842,7 +850,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 		// Centre: the lamps' mean. Radius: reaching every lamp's sphere from there. Key: the widest.
 		D3DXVECTOR3 Sum(0.0f, 0.0f, 0.0f);
 		for (UInt32 k = 0; k < Cluster.Count; k++)
-			Sum += ClusterLamps[Cluster.First + k]->sourceLight->m_worldTransform.pos.toD3DXVEC3();
+			Sum += LampRestPosition(ClusterLamps[Cluster.First + k]->sourceLight);   // a swaying lamp from where it rests
 		Cluster.Centre = Sum / (float)Cluster.Count;
 		Cluster.Rank = -1;
 		Cluster.Score = FLT_MAX;
@@ -851,7 +859,7 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			ShadowSceneLight* Lamp = ClusterLamps[Cluster.First + k];
 			NiPointLight* Light = Lamp->sourceLight;
 			const float LampRadius = Light->Spec.r * Settings->LightRadiusMult;
-			const D3DXVECTOR3 Offset = Light->m_worldTransform.pos.toD3DXVEC3() - Cluster.Centre;
+			const D3DXVECTOR3 Offset = LampRestPosition(Light) - Cluster.Centre;
 			Cluster.Radius = max(Cluster.Radius, LampRadius + D3DXVec3Length(&Offset));
 			if (LampRadius > KeyRadius) {
 				KeyRadius = LampRadius;

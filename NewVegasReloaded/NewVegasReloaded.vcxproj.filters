@@ -100,6 +100,9 @@
     <ClInclude Include="..\src\effects\AutoExposure.h">
       <Filter>Effects</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\effects\BounceLighting.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\effects\ImageAdjust.h">
       <Filter>Effects</Filter>
     </ClInclude>
@@ -565,6 +568,9 @@
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\AutoExposure.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\effects\BounceLighting.cpp">
       <Filter>Effects</Filter>
     </ClCompile>
     <ClCompile Include="..\src\effects\Underwater.cpp">

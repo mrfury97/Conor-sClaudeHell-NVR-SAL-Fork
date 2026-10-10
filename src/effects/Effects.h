@@ -51,3 +51,4 @@
 #include "Grass.h"
 #include "InverseSquareLighting.h"
 #include "AutoExposure.h"
+#include "BounceLighting.h"

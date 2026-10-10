@@ -193,6 +193,19 @@ Target = 0.16                        # [0.01-2] The brightness the scene's avera
 [_Shaders.AutoExposure.Status]
 Enabled = false                      # Auto exposure (eye adaptation) before tonemapping, as modern games do: measures how bright the scene is and brings it to Target over a moment -- a dark bunker opens up after a second, daylight blinds briefly when you step out. Replaces a fixed interior Exposure boost. (The older Exposure effect works after the tone curve, on colours already compressed; leave it off with this.)
 
+[_Shaders.BounceLighting.Main]
+AmbientFloor = 0.35                  # [0-1] How much of the flat ambient light stays under the bounce light, so rooms the lamps barely reach do not go black.
+Bounces = 1.0                        # [0-1] Light the probes already hold, fed back in, so light bounces more than once (over a few seconds) and reaches deeper into rooms. 0: one bounce only.
+Debug = 0                            # [0-4] (4: as 1, with every surface the probes see captured white and unlit, to test their drawing apart from their lighting) Debug view on objects: 1 the bounce light alone, amplified 32 times (real bounce light is faint), 2 the probes' validity (green: trusted, red: inside walls or beyond the grid), 3 the bounce light against the flat ambient it replaces (black none, mid grey as bright, white far brighter).
+Intensity = 1.0                      # [0-8] The bounce light's brightness, on top of the PBR AmbientScale (it replaces the ambient, so it is scaled as the ambient is).
+ProbesPerFrame = 2                   # [1-64] Probes captured each frame: higher fills a room faster after you enter it, and follows changing lamps sooner, for more GPU time.
+Range = 1200.0                       # [128-4096] How far each probe sees, in game units.
+Spacing = 96.0                       # [32-1024] The least distance between probes (bigger interiors spread them wider, to fit 24 x 24 x 6). Smaller is finer bounce light.
+Strength = 0.8                       # [0-1] How far the probes replace the flat ambient light.
+
+[_Shaders.BounceLighting.Status]
+Enabled = false                      # Bounce lighting from light probes, indoors: lamp-lit ceilings, walls and floors light the room around them, colours bleed onto nearby surfaces, corners and shelves see less light. A grid of probes is fitted to each interior and filled a few probes a frame (nearest you first, settling within seconds), then refreshed slowly. Objects and parallax surfaces for now.
+
 [_Shaders.Bloom]
 
 [_Shaders.Bloom.Main]

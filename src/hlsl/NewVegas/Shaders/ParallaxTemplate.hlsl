@@ -692,6 +692,8 @@ PS_OUTPUT main(PS_INPUT IN)
             if (TESR_ParallaxData.y) {
                 // Reflection first: it sets the share of the ambient it takes (skyReflectedFraction).
                 lighting += getObjectSkyReflection(IN.shadowWorldPos.xyz, reflectionGeometricNormal, reflectionNormal, roughness, shadowWorldPosValid);
+                probeWorldPos = IN.shadowWorldPos.xyz;   // for the bounce lighting (Includes/BounceLighting.hlsl)
+                probeWorldPosValid = shadowWorldPosValid;
                 lighting += getAmbientLighting(AmbientColor.rgb, baseColor.rgb, ambientNormal, shadowWorldPosValid);
             }
             else
@@ -774,6 +776,9 @@ PS_OUTPUT main(PS_INPUT IN)
     #else
         OUT.color.a = alpha * AmbientColor.a;
     #endif
+
+    // Bounce lighting's debug view: the light the probes give, alone (the other passes add nothing).
+    if (TESR_ProbeLighting.z > 0.5f && TESR_ProbeLighting.x > 0.0f) OUT.color.rgb = probeDebugSet > 0.5f ? encodeColor(probeDebugLight) : 0.0f;
 
     return OUT;
 };

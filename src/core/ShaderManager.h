@@ -81,7 +81,23 @@ public:
 		UInt32				First, Count;   // its lamps in ClusterLampsScratch
 	};
 	std::vector<char>				ClusterMobileScratch;
-	std::unordered_map<NiPointLight*, D3DXVECTOR3>	LampFirstSeen;   // where each lamp was first seen (mobile lamps)
+	// Each lamp's movement (GetNearbyLights): where it was first seen, where it rests (its position
+	// eased toward slowly: the middle of a swing), and whether it travels (carried, on the player, or
+	// gone well away from where it started) rather than sways.
+	struct LampTrack {
+		D3DXVECTOR3	First;
+		D3DXVECTOR3	Rest;
+		bool		Travelling;
+	};
+	std::unordered_map<const NiPointLight*, LampTrack>	LampTracks;
+	// Where a lamp's shadow (and its bounce lighting) is cast from: a swaying lamp's resting point, so
+	// a swinging bulb's shadows hold still; a travelling or untracked lamp's own position.
+	D3DXVECTOR3	LampRestPosition(const NiPointLight* Light) const {
+		const auto Track = LampTracks.find(Light);
+		if (Track != LampTracks.end() && !Track->second.Travelling) return Track->second.Rest;
+		const NiPoint3& Pos = Light->m_worldTransform.pos;
+		return D3DXVECTOR3(Pos.x, Pos.y, Pos.z);
+	}
 	std::vector<ShadowSceneLight*>	EligibleLightsScratch;
 	std::vector<ShadowSceneLight*>	ClusterLampsScratch;
 	std::vector<ShadowLampCluster>	ClustersScratch;
@@ -155,6 +171,7 @@ public:
 		GrassShaders*			Grass;
 		TerrainShaders*			Terrain;
 		InverseSquareLightingShaders*	InverseSquareLighting;
+		BounceLightingShaders*	BounceLighting;
 	};
 
 	struct GameStateStruct {

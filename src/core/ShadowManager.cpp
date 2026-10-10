@@ -1213,6 +1213,10 @@ void ShadowManager::RenderShadowMaps() {
 			shadowMapTimer.LogTime(message.c_str());
 		}
 
+		// Bounce lighting's probes, lit through the lamps' shadow maps just drawn (interiors).
+		TheShaderManager->Shaders.BounceLighting->Capture();
+		shadowMapTimer.LogTime("BounceLighting::Capture");
+
 		// Develop.DebugMode: how much the cubemap cache saves, every 600 frames.
 		static UInt32 LogFrames = 0;
 		if (TheSettingManager->SettingsMain.Develop.DebugMode && ++LogFrames >= 600) {
