@@ -94,7 +94,6 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterShaderCollection<GrassShaders>(&TheShaderManager->Shaders.Grass);
 	TheShaderManager->RegisterShaderCollection<TerrainShaders>(&TheShaderManager->Shaders.Terrain);
 	TheShaderManager->RegisterShaderCollection<InverseSquareLightingShaders>(&TheShaderManager->Shaders.InverseSquareLighting);
-	TheShaderManager->RegisterShaderCollection<BounceLightingShaders>(&TheShaderManager->Shaders.BounceLighting);
 	
 	//setup map of constant names
 	TheShaderManager->RegisterConstant("TESR_WorldTransform", (D3DXVECTOR4*)&TheRenderManager->worldMatrix);
@@ -501,8 +500,6 @@ void ShaderManager::UpdateConstants() {
 	// TESR_PBRData (see Shaders/Includes/PBRScale.hlsl) and render black at a zero scale, so
 	// these constants stay current whether or not the PBR collection is enabled.
 	if (!Shaders.PBR->Enabled) Shaders.PBR->UpdateConstants();
-	// Off, the object shaders keep the flat ambient: bounce lighting's constant says so.
-	if (!Shaders.BounceLighting->Enabled) Shaders.BounceLighting->UpdateConstants();
 	// Off, the tonemapping shaders ignore auto exposure: its constant says so.
 	if (!Effects.AutoExposure->Enabled) Effects.AutoExposure->UpdateConstants();
 	// Off, the lamps' falloff goes back to vanilla: its constant says so (Shaders/Includes/InverseSquare.hlsl).
@@ -881,6 +878,31 @@ void ShaderManager::GetNearbyLights(ShadowSceneLight* ShadowLightsList[], NiPoin
 			}
 		}
 		Clusters.push_back(Cluster);
+	}
+
+	// A cluster whose sphere lies wholly outside the view lights nothing on screen: it ranks as if
+	// OffscreenPenalty times as far. By distance alone the lamps beside and behind the player took
+	// the slots (a vault corridor: 126 clusters for 25 slots), and the lamps ahead only got one as
+	// the player came up to them -- their shadows faded in right in front of the camera. A cone
+	// round the view, as wide as its corners, against each sphere.
+	{
+		const float OffscreenPenalty = 4.0f;
+		const float TanA = tanf(TheRenderManager->FOVData.w * 0.5f), TanB = tanf(TheRenderManager->FOVData.z * 0.5f);
+		const float ViewHalfAngle = atanf(sqrtf(TanA * TanA + TanB * TanB));
+		const D3DXVECTOR3 Camera(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+		D3DXVECTOR3 Forward(TheRenderManager->CameraForward.x, TheRenderManager->CameraForward.y, TheRenderManager->CameraForward.z);
+		const float ForwardLength = D3DXVec3Length(&Forward);
+		if (ForwardLength > 0.5f && ViewHalfAngle > 0.1f) {
+			Forward /= ForwardLength;
+			for (ShadowLampCluster& Cluster : Clusters) {
+				if (Cluster.Rank < 0) continue;
+				const D3DXVECTOR3 ToCentre = Cluster.Centre - Camera;
+				const float Distance = D3DXVec3Length(&ToCentre);
+				if (Distance <= Cluster.Radius) continue;   // the camera is inside it
+				const float Angle = acosf(std::clamp(D3DXVec3Dot(&ToCentre, &Forward) / Distance, -1.0f, 1.0f));
+				if (Angle - asinf(Cluster.Radius / Distance) > ViewHalfAngle) Cluster.Score *= OffscreenPenalty;
+			}
+		}
 	}
 
 	// The active clusters, the ones lighting the player's surroundings most first (Score).

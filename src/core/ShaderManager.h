@@ -171,7 +171,6 @@ public:
 		GrassShaders*			Grass;
 		TerrainShaders*			Terrain;
 		InverseSquareLightingShaders*	InverseSquareLighting;
-		BounceLightingShaders*	BounceLighting;
 	};
 
 	struct GameStateStruct {
