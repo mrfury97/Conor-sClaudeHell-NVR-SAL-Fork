@@ -447,9 +447,14 @@ PS_OUTPUT main(PS_INPUT IN) {
     #elif defined(ONLY_LIGHT)
         float4 baseColor = tex2D(BaseMap, IN.uv.xy);
         // What the engine multiplies this pass by afterwards: the base texture, or on faces the
-        // FaceGen blend its texture pass (SLS1005) applies, the same as the full pass's.
-        float3 faceGenColor = 2.0f * ((expand(tex2D(FaceGenMap0, IN.uv.xy).rgb) + baseColor.rgb) * (2.0f * tex2D(FaceGenMap1, IN.uv.xy).rgb));
-        float3 adAlbedo = SkinScreenSpaceScatter.y > 0.0f ? faceGenColor : baseColor.rgb;
+        // FaceGen blend its texture pass (SLS1005) applies, the same as the full pass's. The FaceGen
+        // maps are read on faces only (bodies and hands have none bound), with the derivatives taken
+        // out here: none are allowed inside the branch.
+        float3 adAlbedo = baseColor.rgb;
+        float2 uvDx = ddx(IN.uv.xy);
+        float2 uvDy = ddy(IN.uv.xy);
+        [branch] if (SkinScreenSpaceScatter.y > 0.0f)
+            adAlbedo = 2.0f * ((expand(tex2Dgrad(FaceGenMap0, IN.uv.xy, uvDx, uvDy).rgb) + baseColor.rgb) * (2.0f * tex2Dgrad(FaceGenMap1, IN.uv.xy, uvDx, uvDy).rgb));
         baseColor.rgb = 1.0f;
     #else
         float4 baseTexture = tex2D(BaseMap, IN.uv.xy);
@@ -480,7 +485,11 @@ PS_OUTPUT main(PS_INPUT IN) {
             float3 shadowNormal = GetShadowGeometricNormal(worldPos);
             float sunShadow = GetSunShadow(worldPos, shadowNormal);   // this template always supplies worldPos
             // The same SKIN_SELF_SHADOW_REACH toward the sun: lit there, a shadow here is the skin's own.
-            float sunShadowBeyond = GetSunShadow(worldPos + TESR_SmoothedSunDir.xyz * SKIN_SELF_SHADOW_REACH, shadowNormal);
+            // SkinLight uses it only at the terminator (geometric N.L under 0.05), in shadow, with
+            // ShadowScatter on: anywhere else it changes nothing, and the lookup is skipped.
+            float sunShadowBeyond = 1.0f;
+            [branch] if (sunShadow < 1.0f && normalize(float3(IN.uv.zw, IN.tangent.w)).z < 0.05f && TESR_SkinExtraData.z > 0.0f)
+                sunShadowBeyond = GetSunShadow(worldPos + TESR_SmoothedSunDir.xyz * SKIN_SELF_SHADOW_REACH, shadowNormal);
         #else
             float sunShadow = 1.0f;
             float sunShadowBeyond = 1.0f;
@@ -568,11 +577,15 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // The highlights' share of the colour once the pass is done: the AD passes are multiplied by
     // the base texture afterwards, which the compensation above already allowed for.
-    float3 finalDiffuse = diffuseLight;
-    #if defined(ONLY_LIGHT) && !defined(DIFFUSE)
-        finalDiffuse *= decodeColor(adAlbedo);
-    #endif
-    float3 specularShare = encodeColor(finalDiffuse + specularLight) - encodeColor(finalDiffuse);
+    // Only when the scattering effect's target is bound (otherwise COLOR1 is discarded).
+    float3 specularShare = 0.0f;
+    [branch] if (SkinScreenSpaceScatter.x > 0.0f) {
+        float3 finalDiffuse = diffuseLight;
+        #if defined(ONLY_LIGHT) && !defined(DIFFUSE)
+            finalDiffuse *= decodeColor(adAlbedo);
+        #endif
+        specularShare = encodeColor(finalDiffuse + specularLight) - encodeColor(finalDiffuse);
+    }
 
     #ifdef FOG_COLOR
         bool fogOn = Toggles.y > 0.0f;

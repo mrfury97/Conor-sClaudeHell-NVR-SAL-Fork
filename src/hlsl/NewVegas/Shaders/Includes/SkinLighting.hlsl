@@ -32,7 +32,7 @@
 
 // c136 and c146 sit either side of SkyAmbient.hlsl's TESR_SkyIrradiance (c137-c145).
 float4 TESR_SkinData : register(c136);       // x SpecularStrength, y Roughness, z PerPixelWidth, w Translucency
-float4 TESR_SkinExtraData : register(c146);  // x SkyReflectionScale (0 indoors), y wetness, z ShadowScatter, w VanillaMatchedHighlights
+float4 TESR_SkinExtraData : register(c146);  // x SkyReflectionScale (0 indoors), y wetness, z ShadowScatter, w the vanilla-matched highlight factor (1-12, SkinShaders::UpdateConstants)
 
 // Set per draw by the SkinShader hook (NewVegas/Hooks/Shaders.cpp), not a TESR_ constant: x is 1
 // when the skin scattering effect's target is bound for this draw, i.e. the screen-space blur
@@ -90,17 +90,9 @@ void setupSkin(float3 normal, float3 vertexNormal, float3 worldPos, float mask, 
     // SpecularStrength 1 reads a 50% mask as real skin at F0 0.028.
     skinSpecScale = mask * 2.0f * TESR_SkinData.x * (1.0f + wet);
 
-    // Vanilla-matched highlights ([Shaders.Skin.Main] VanillaMatchedHighlights), as in
-    // Object.hlsl: vanilla lit a face's specular mask with its own Blinn-Phong pass, peaking at
-    // mask x the light. The two GGX lobes at skin's F0 peak at F0 / (4 alpha^2) each; this scales
-    // the direct highlight so their mixed peak reaches the mask, keeping the PBR shape. Matched at
-    // the Roughness setting, before rain smooths it (so wet skin still shines more) and before
-    // SpecularAA. 1x at the default 0.45, up to the 12x cap for very rough settings.
-    float alpha0 = pow(clamp(TESR_SkinData.y * SKIN_LOBE0_ROUGHNESS, 0.04f, 1.0f), 2.0f);
-    float alpha1 = pow(clamp(TESR_SkinData.y * SKIN_LOBE1_ROUGHNESS, 0.04f, 1.0f), 2.0f);
-    float peak = lerp(SKIN_F0 / (4.0f * alpha0 * alpha0), SKIN_F0 / (4.0f * alpha1 * alpha1), SKIN_LOBE_MIX);
-    float matched = clamp(1.0f / (2.0f * peak), 1.0f, 12.0f);   // the 2: skinSpecScale reads a 50% mask as 1
-    skinVanillaMatch = lerp(1.0f, matched, saturate(TESR_SkinExtraData.w));
+    // Vanilla-matched highlights ([Shaders.Skin.Main] VanillaMatchedHighlights): settings alone
+    // decide it, so it is worked out once a frame (SkinShaders::UpdateConstants, which says how).
+    skinVanillaMatch = TESR_SkinExtraData.w;
     skinCompensation = 1.0f / max(decodeColor(adAlbedo), 0.125f);
 
     // How fast the normal turns per millimetre of surface (Penner).
@@ -136,14 +128,22 @@ float3 SGDiffuse(float3 NdotL, float3 lambda) {
 // comes from the curvature c (1/mm), fitted to Penner's pre-integrated skin for d'Eon's
 // profile over N.L -1..1 and radii 1-20 mm: worst error 0.07 red (radii under 2 mm, slightly
 // dark), 0.016 green, 0.009 blue.
+// With no curvature (the screen-space blur takes this skin, or a flat surface) the lobes are so sharp
+// that the fit is plain saturate(N.L), within 0.002 at the terminator: skipped there.
 float3 SkinDiffusion(float3 N, float3 Nsoft, float3 L) {
     float3 normalGreen = normalize(lerp(N, Nsoft, 0.6f));
     float3 normalBlue = normalize(lerp(N, Nsoft, 0.3f));
     float3 NdotL = float3(dot(Nsoft, L), dot(normalGreen, L), dot(normalBlue, L));
 
-    float c = max(skinCurvature, 1e-3f);
-    float3 lambda = float3(2.4f * pow(c, -1.5f), 28.0f / (c * c), 71.0f / (c * c));
-    return SGDiffuse(NdotL, lambda);
+    float3 diffusion;
+    [branch] if (skinCurvature > 1e-3f) {
+        float c = skinCurvature;
+        float3 lambda = float3(2.4f * pow(c, -1.5f), 28.0f / (c * c), 71.0f / (c * c));
+        diffusion = SGDiffuse(NdotL, lambda);
+    }
+    else
+        diffusion = saturate(NdotL);
+    return diffusion;
 }
 
 // Shadow visibility with light scattered into the penumbra.

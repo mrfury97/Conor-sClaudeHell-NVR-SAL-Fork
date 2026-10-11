@@ -11,7 +11,7 @@ public:
 
 	struct SkinStruct {
 		D3DXVECTOR4		Data;        // x SpecularStrength, y Roughness, z PerPixelWidth ([Shaders.Skin.Scattering]), w Translucency
-		D3DXVECTOR4		ExtraData;   // x SkyReflectionScale (0 indoors), y wetness (rain x RainWetness), z ShadowScatter, w VanillaMatchedHighlights
+		D3DXVECTOR4		ExtraData;   // x SkyReflectionScale (0 indoors), y wetness (rain x RainWetness), z ShadowScatter, w the vanilla-matched highlight factor (1-12, from VanillaMatchedHighlights)
 		D3DXVECTOR4		DebugData;   // x [Shaders.Skin.Debug] DebugView, y 1 while the Interiors settings are in use
 	};
 	SkinStruct Constants;
