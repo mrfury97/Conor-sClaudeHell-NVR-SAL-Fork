@@ -154,6 +154,7 @@
         #define POINT_SHADOW_PACKED
     #endif
     #include "includes/PointShadow.hlsl"
+    #include "includes/HudRaindrops.hlsl"
 #endif
 
 // Forward sun shadows -- see ObjectTemplate.hlsl. PAR shaders do full sun lighting but had
@@ -535,6 +536,15 @@ PS_OUTPUT main(PS_INPUT IN)
         #endif
     #endif
 
+    // Forward sun shadows and the ambient need the geometric normal; so do the raindrops below,
+    // before the parallax. ddx/ddy must stay at top level.
+    float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
+    float shadowWorldPosValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+
+    // Raindrops on first-person geometry (Includes/HudRaindrops.hlsl), placed on the surface itself
+    // (its own coordinates, not the relief's): they sit on top of it.
+    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, shadowWorldPosValid > 0.0f ? rebuildUpTS(IN.uv.zw, sunShadowNormal).z : 1.0f);
+
     // Parallax.
     float3 viewDir = normalize(IN.viewDir.xyz);
     float distance = IN.viewDir.w;
@@ -544,6 +554,9 @@ PS_OUTPUT main(PS_INPUT IN)
     dy = ddy(IN.uv.xy);
 
     float2 offsetUV = getParallaxCoords(distance, IN.uv.xy, dx, dy, viewDir.xyz, HeightMap);
+    // Water fills the relief under a drop: the parallax eases back to the surface there, and the
+    // drop then magnifies what is under it.
+    offsetUV = lerp(offsetUV, IN.uv.xy, hudRainStrength) + hudRainOffset;
 
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
         float4 baseColor = tex2D(BaseMap, offsetUV.xy);
@@ -583,12 +596,7 @@ PS_OUTPUT main(PS_INPUT IN)
 
     // Forward sun shadows, folded into shadowMultiplier -- which scales PSLightColor[0]
     // (the sun) only, leaving ambient untouched. Skipped for DIFFUSE/POINT passes, which
-    // carry a point light in slot 0 rather than the sun.
-    // ddx/ddy must stay at top level, outside dynamic flow control.
-    // Hoisted out of the shadow block below: the ambient term also needs it, and that runs for
-    // DIFFUSE/POINT passes which the shadow block skips. ddx/ddy must stay at top level.
-    float3 sunShadowNormal = GetShadowGeometricNormal(IN.shadowWorldPos.xyz);
-    float shadowWorldPosValid = SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f;
+    // carry a point light in slot 0 rather than the sun. (sunShadowNormal: at the top of main.)
 
     #if !defined(NO_LIGHT) && !defined(DIFFUSE) && !defined(POINT)
         #if FORWARD_SHADOWS
@@ -606,7 +614,7 @@ PS_OUTPUT main(PS_INPUT IN)
         lighting = baseColor.rgb;
     #else
         float4 normal = tex2D(NormalMap, offsetUV.xy);
-        normal.xyz = normalize(expand(normal.xyz));
+        normal.xyz = HudRainNormal(normalize(expand(normal.xyz)));
 
         // Material, as in ObjectTemplate.hlsl (Object.hlsl setupMaterial), at the parallax offset.
         // OPT variants carry no Toggles (glossPower is a dummy 1 there), so they take the engine's
@@ -623,6 +631,11 @@ PS_OUTPUT main(PS_INPUT IN)
         #endif
         setupMaterial(normal.a, shine, normal.xyz, offsetUV.xy, materialAlbedo);
         float roughness = getMaterialRoughness(shine);
+        // Wet: the drops' gloss (Includes/HudRaindrops.hlsl), as in ObjectTemplate.hlsl.
+        roughness = HudRainRoughness(roughness);
+        pbrRoughness = HudRainRoughness(pbrRoughness);
+        vanillaMask = lerp(vanillaMask, 1.0f, hudRainGloss * 0.5f);
+        vanillaShine = lerp(vanillaShine, 150.0f, hudRainGloss);
         // The vanilla lighting fallback stays in gamma space, exactly as before.
         if (!TESR_ParallaxData.y) linearLighting = false;
         #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)

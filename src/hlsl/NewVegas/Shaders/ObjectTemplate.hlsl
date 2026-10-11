@@ -190,6 +190,7 @@
         #define POINT_SHADOW_PACKED
     #endif
     #include "includes/PointShadow.hlsl"
+    #include "includes/HudRaindrops.hlsl"
 #endif
 
 // Forward sun shadows. Enabled at COMPILE TIME via FORWARD_SHADOWS in Includes/Shadow.hlsl,
@@ -698,8 +699,12 @@ PS_OUTPUT main(PS_INPUT IN) {
         PointShadowPackMerged(IN.shadowWorldPos.xyz, normalize(IN.worldNormal.xyz * 2.0f - 1.0f), SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
     #endif
 
+    // Raindrops on first-person geometry (Includes/HudRaindrops.hlsl): the textures are read under them.
+    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? IN.viewDir.w : 1.0f);
+    float2 uv = IN.uv.xy + hudRainOffset;
+
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
-        float4 baseColor = tex2D(BaseMap, IN.uv.xy);
+        float4 baseColor = tex2D(BaseMap, uv);
         float3 adAlbedo = baseColor.rgb;   // see "Light-only passes" in Object.hlsl
 
         #if defined(ONLY_LIGHT)
@@ -713,8 +718,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         clip(AmbientColor.a >= 1 ? 0 : (baseColor.a - alphaTestRef));
     #endif
 
-    float4 normal = tex2D(NormalMap, IN.uv.xy);
-    normal.xyz = normalize(expand(normal.xyz));
+    float4 normal = tex2D(NormalMap, uv);
+    normal.xyz = HudRainNormal(normalize(expand(normal.xyz)));
 
     // Material (Object.hlsl): vanilla's specular mask (the normal map alpha) and glossiness, and
     // the authored _rmaos map where there is one. OPT variants carry no Toggles: the engine's
@@ -729,8 +734,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     #else
         float3 materialAlbedo = 1.0f;
     #endif
-    setupMaterial(normal.a, shine, normal.xyz, IN.uv.xy, materialAlbedo);
+    setupMaterial(normal.a, shine, normal.xyz, uv, materialAlbedo);
     float roughness = getMaterialRoughness(shine);
+    // Wet: the drops' gloss (Includes/HudRaindrops.hlsl), on the vanilla and the authored material.
+    roughness = HudRainRoughness(roughness);
+    pbrRoughness = HudRainRoughness(pbrRoughness);
+    vanillaMask = lerp(vanillaMask, 1.0f, hudRainGloss * 0.5f);
+    vanillaShine = lerp(vanillaShine, 150.0f, hudRainGloss);
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
         setupADCompensation(adAlbedo);
     #endif
@@ -750,7 +760,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     #ifndef NO_VERTEX_COLOR
         #if defined(HAIR)
-            float4 glow = tex2D(GlowMap, IN.uv.xy);
+            float4 glow = tex2D(GlowMap, uv);
             baseColor.rgb = (2 * ((IN.vertexColor.g * (EmittanceColor.rgb - 0.5)) + 0.5)) * lerp(baseColor.rgb, glow.rgb, glow.a);
         #elif !defined(OPT)
             baseColor.rgb = useVertexColor <= 0 ? baseColor.rgb : (baseColor.rgb * IN.vertexColor.rgb);
@@ -841,6 +851,7 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     // Self emmitance.
     #ifdef SI
+        // Unrefracted: the shifted coordinates held through the lamps overflowed the light-only SI passes' 32 registers.
         float3 glow = tex2D(GlowMap, IN.uv.xy).rgb;
         lighting += baseColor.rgb * decodeColor(glow.rgb * EmittanceColor.rgb);
     #endif
@@ -1007,7 +1018,17 @@ PS_OUTPUT main(PS_INPUT IN) {
     PS_OUTPUT OUT;
     POINT_SHADOW_PIXEL(IN.vpos);
 
-    float4 baseColor = tex2D(BaseMap, IN.uv.xy);
+    // Raindrops on first-person geometry (Includes/HudRaindrops.hlsl): the textures are read under
+    // them. Up is lPosition.w where the world position has its own register, else rebuilt from xy.
+    #ifdef SHADOW_WP_DEDICATED
+        float hudRainUp = IN.lPosition.w;
+    #else
+        float hudRainUp = sqrt(saturate(1.0f - dot(IN.uv.zw, IN.uv.zw)));
+    #endif
+    HudRaindrops(IN.uv.xy, IN.lPosition.xyz, SHADOW_WP_VALID(IN) ? hudRainUp : 1.0f);
+    float2 uv = IN.uv.xy + hudRainOffset;
+
+    float4 baseColor = tex2D(BaseMap, uv);
 
     #ifndef OPT
         clip(AmbientColor.a >= 1 ? 0 : (baseColor.a - alphaTestRef));
@@ -1019,8 +1040,8 @@ PS_OUTPUT main(PS_INPUT IN) {
         baseColor.rgb = baseColor.rgb * IN.vertexColor.rgb;
     #endif
 
-    float4 normal = tex2D(NormalMap, IN.uv.xy);
-    normal.xyz = normalize(expand(normal.xyz));
+    float4 normal = tex2D(NormalMap, uv);
+    normal.xyz = HudRainNormal(normalize(expand(normal.xyz)));
 
     // Material, see the LIGHTS < 4 variant. It had no specular AA here before. The specular OPT
     // variants have no Toggles but get the glossiness in PSLightColor[1].w (glossPow above:
@@ -1033,8 +1054,13 @@ PS_OUTPUT main(PS_INPUT IN) {
     #else
         float shine = 30.0f;
     #endif
-    setupMaterial(normal.a, shine, normal.xyz, IN.uv.xy, baseColor.rgb);
+    setupMaterial(normal.a, shine, normal.xyz, uv, baseColor.rgb);
     float roughness = getMaterialRoughness(shine);
+    // Wet: the drops' gloss (Includes/HudRaindrops.hlsl), on the vanilla and the authored material.
+    roughness = HudRainRoughness(roughness);
+    pbrRoughness = HudRainRoughness(pbrRoughness);
+    vanillaMask = lerp(vanillaMask, 1.0f, hudRainGloss * 0.5f);
+    vanillaShine = lerp(vanillaShine, 150.0f, hudRainGloss);
     baseColor.rgb = decodeColor(baseColor.rgb);
 
     // Lighting.

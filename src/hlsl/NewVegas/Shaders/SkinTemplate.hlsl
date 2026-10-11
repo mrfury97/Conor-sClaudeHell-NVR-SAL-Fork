@@ -225,6 +225,7 @@ VS_OUTPUT main(VS_INPUT IN) {
 #if defined(PS)
 
 #include "Includes/SkinLighting.hlsl"
+#include "Includes/HudRaindrops.hlsl"   // rain on the first-person arms
 // Every pass with lamps (but the diffuse-only ones) packs their shadows first (SkinPackShadows below):
 // the lookups do not fit among the lighting's values.
 #if POINTS > 3
@@ -440,43 +441,50 @@ PS_OUTPUT main(PS_INPUT IN) {
         SkinPackShadows(IN.shadowWorldPos.xyz, normalize(IN.normal.xyz));   // first, while nothing else is held (IN.normal: the world normal)
     #endif
 
+    // Raindrops on the first-person arms (Includes/HudRaindrops.hlsl): the textures are read under them.
+    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, normalize(IN.normal.xyz).z);
+    float2 uv = IN.uv.xy + hudRainOffset;
+
     // --- material
     #if defined(DIFFUSE)
         float4 baseColor = 1.0f;
         float3 adAlbedo = 1.0f;   // no base texture bound to divide by
     #elif defined(ONLY_LIGHT)
-        float4 baseColor = tex2D(BaseMap, IN.uv.xy);
+        float4 baseColor = tex2D(BaseMap, uv);
         // What the engine multiplies this pass by afterwards: the base texture, or on faces the
         // FaceGen blend its texture pass (SLS1005) applies, the same as the full pass's. The FaceGen
         // maps are read on faces only (bodies and hands have none bound), with the derivatives taken
         // out here: none are allowed inside the branch.
         float3 adAlbedo = baseColor.rgb;
-        float2 uvDx = ddx(IN.uv.xy);
-        float2 uvDy = ddy(IN.uv.xy);
+        float2 uvDx = ddx(uv);
+        float2 uvDy = ddy(uv);
         [branch] if (SkinScreenSpaceScatter.y > 0.0f)
-            adAlbedo = 2.0f * ((expand(tex2Dgrad(FaceGenMap0, IN.uv.xy, uvDx, uvDy).rgb) + baseColor.rgb) * (2.0f * tex2Dgrad(FaceGenMap1, IN.uv.xy, uvDx, uvDy).rgb));
+            adAlbedo = 2.0f * ((expand(tex2Dgrad(FaceGenMap0, uv, uvDx, uvDy).rgb) + baseColor.rgb) * (2.0f * tex2Dgrad(FaceGenMap1, uv, uvDx, uvDy).rgb));
         baseColor.rgb = 1.0f;
     #else
-        float4 baseTexture = tex2D(BaseMap, IN.uv.xy);
+        float4 baseTexture = tex2D(BaseMap, uv);
         clip(AmbientColor.a >= 1 ? 0 : (baseTexture.a - Toggles.w));
 
-        float3 faceGenVar = tex2D(FaceGenMap0, IN.uv.xy).rgb;
-        float3 faceGenBlend = tex2D(FaceGenMap1, IN.uv.xy).rgb;
+        float3 faceGenVar = tex2D(FaceGenMap0, uv).rgb;
+        float3 faceGenBlend = tex2D(FaceGenMap1, uv).rgb;
         float4 baseColor = float4(2.0f * ((expand(faceGenVar) + baseTexture.rgb) * (2.0f * faceGenBlend)), baseTexture.a);
         baseColor.rgb = Toggles.x <= 0.0f ? baseColor.rgb : baseColor.rgb * IN.color.rgb;
         float3 adAlbedo = 1.0f;
     #endif
 
     // --- normals: tangent space for direct light, world for the sky
-    float4 normalTexel = tex2D(NormalMap, IN.uv.xy);
-    float3 N = normalize(expand(normalTexel.xyz));
-    float3 Nsoft = normalize(expand(tex2Dbias(NormalMap, float4(IN.uv.xy, 0.0f, 2.0f)).xyz));
+    float4 normalTexel = tex2D(NormalMap, uv);
+    float3 N = HudRainNormal(normalize(expand(normalTexel.xyz)));
+    float3 Nsoft = normalize(expand(tex2Dbias(NormalMap, float4(uv, 0.0f, 2.0f)).xyz));
     const float3 geometricNormal = float3(0.0f, 0.0f, 1.0f);
     float3 V = normalize(float3(IN.binormal.w, IN.normal.w, IN.shadowWorldPos.w));
 
     float3 worldPos = IN.shadowWorldPos.xyz;
 
     setupSkin(N, IN.normal.xyz, worldPos, normalTexel.a, adAlbedo);
+    // Wet: water is smooth and shines at least as a full specular mask would (Includes/HudRaindrops.hlsl).
+    skinRoughness = HudRainRoughness(skinRoughness);
+    skinSpecScale = lerp(skinSpecScale, max(skinSpecScale, 1.0f), hudRainGloss);
     float3 albedo = decodeColor(baseColor.rgb);
 
     // --- shadows (top level: both take derivatives)

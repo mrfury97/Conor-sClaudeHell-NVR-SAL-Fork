@@ -1203,6 +1203,21 @@ refractionPower = 0.2               # Multiplier for the refraction.
 [_Shaders.Water.Status]
 Enabled = true                      # Replaces water shaders with a custom shader.
 
+[_Shaders.HudRaindrops.Main]
+AnimSpeed = 1.0                      # [0-8] How fast the drops come and go while it rains (faster in heavy rain).
+Density = 0.6                        # [0-1] How many drops gather at full wetness.
+DebugView = 0                        # [0-1] 1 keeps the arms and weapon wet without rain, to try it out.
+DropSize = 8.0                       # [0.5-64] The drop pattern's tile in game units: the biggest drops are about a fortieth of it across. Bigger gives bigger drops.
+DryTime = 45.0                       # [0.5-600] Seconds for the drops to dry off after the rain, under cover or indoors.
+Gloss = 0.8                          # [0-1] How glossy the drops are.
+Reflection = 2.5                     # [0-8] How strongly the drops tilt the surface's normal: their highlights and reflections.
+Refraction = 1.0                     # [0-4] How strongly the drops bend and magnify the surface under them.
+WetGloss = 0.3                       # [0-1] How much glossier the wet surface between the drops gets.
+WetTime = 20.0                       # [0.5-600] Seconds in heavy rain for the arms and weapon to wet through (lighter rain takes longer).
+
+[_Shaders.HudRaindrops.Status]
+Enabled = true                       # Raindrops on the first-person arms and weapon in the rain (after Screen Space Shaders' HUD raindrops), drawn in their own shaders so they stay on the surface: they magnify the surface under them and catch the light. They gather while you stand in the rain (not under cover) and dry off afterwards.
+
 [_Shaders.WaterLens.Main]
 Amount = 0.1
 Time = 180.0

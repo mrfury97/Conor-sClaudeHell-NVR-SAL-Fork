@@ -802,16 +802,28 @@ void* __fastcall ShadowLightShader__PrepareGeometryForRendering(void* apThis, vo
     MergedLights::OnDraw((NiGeometry*)apGeometry, PixelShader);
     ForwardPointShadows::OnDraw((NiGeometry*)apGeometry, PixelShader);
     DebugViewPasses::OnDraw(PixelShader);
+    if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->SetDrawConstants((NiGeometry*)apGeometry);   // rain on a first-person weapon
     return Result;
 }
 
 void __fastcall ShadowLightShader__PostGeometry(void* apThis, void*, void* apProperties) {
     ThisCall(kLightPostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
+    if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->ClearDrawConstants();
     DebugViewPasses::EndDraw();   // restored first: it muted after MergedLights and MaterialMaps
     ForwardPointShadows::EndDraw();
     MergedLights::EndDraw();
     MaterialMaps::EndDraw();
     VanillaDecals::EndDraw();
+}
+
+// The Pip-Boy's screen: once the game has rendered the menu into the screen's texture (its scanlines
+// and blur included), the raindrops are drawn into it (HudRaindropsEffect::DrawOnScreen), so they sit
+// on the screen itself.
+VirtFuncDetour kPipboyPostProcessDetour;
+
+void __fastcall FOPipboyManager__RenderPostProcess(void* apThis, void*, void* apSource, BSRenderedTexture* apTarget, UInt32 aeClearFlags) {
+    ThisCall(kPipboyPostProcessDetour.GetOverwrittenAddr(), apThis, apSource, apTarget, aeClearFlags);
+    if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->DrawOnScreen(apTarget);
 }
 
 // ParallaxShader's (vtable 0x10BB7A8): the same two functions again, in its own vtable.
@@ -828,11 +840,13 @@ void* __fastcall ParallaxShader__PrepareGeometryForRendering(void* apThis, void*
     MergedLights::OnDraw((NiGeometry*)apGeometry, PixelShader);
     ForwardPointShadows::OnDraw((NiGeometry*)apGeometry, PixelShader);
     DebugViewPasses::OnDraw(PixelShader);
+    if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->SetDrawConstants((NiGeometry*)apGeometry);   // rain on a first-person weapon
     return Result;
 }
 
 void __fastcall ParallaxShader__PostGeometry(void* apThis, void*, void* apProperties) {
     ThisCall(kParallaxPostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
+    if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->ClearDrawConstants();
     DebugViewPasses::EndDraw();   // restored first: it muted after MergedLights and MaterialMaps
     ForwardPointShadows::EndDraw();
     MergedLights::EndDraw();
@@ -971,12 +985,15 @@ void* __fastcall SkinShader__PrepareGeometryForRendering(void* apThis, void*, vo
     // are bound to a light-only pass.
     const float ScreenSpace[4] = { (Scattering && Scattering->Bound) ? 1.0f : 0.0f, FaceGenBound ? 1.0f : 0.0f, 0.0f, 0.0f };
     TheRenderManager->device->SetPixelShaderConstantF(147, ScreenSpace, 1);
+    // Rain on the first-person arms (Shaders/Includes/HudRaindrops.hlsl).
+    if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->SetDrawConstants((NiGeometry*)apGeometry);
     return Result;
 }
 
 void __fastcall SkinShader__PostGeometry(void* apThis, void*, void* apProperties) {
     ThisCall(kSkinPostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
     if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();
+    if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->ClearDrawConstants();
     ForwardPointShadows::EndDraw();
     MergedLights::EndDraw();
     if (sFaceGenStage2) {

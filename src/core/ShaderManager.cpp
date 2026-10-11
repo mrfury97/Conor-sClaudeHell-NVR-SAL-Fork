@@ -80,6 +80,7 @@ void ShaderManager::Initialize() {
 	TheShaderManager->RegisterEffect<VolumetricFogEffect>(&TheShaderManager->Effects.VolumetricFog);
 	TheShaderManager->RegisterEffect<WaterLensEffect>(&TheShaderManager->Effects.WaterLens);
 	TheShaderManager->RegisterEffect<WetWorldEffect>(&TheShaderManager->Effects.WetWorld);
+	TheShaderManager->RegisterEffect<HudRaindropsEffect>(&TheShaderManager->Effects.HudRaindrops);
 	TheShaderManager->RegisterEffect<DitherBusterEffect>(&TheShaderManager->Effects.DitherBuster);
 	TheShaderManager->RegisterEffect<SMAAEffect>(&TheShaderManager->Effects.SMAA);
 	TheShaderManager->RegisterEffect<CinematicDOFEffect>(&TheShaderManager->Effects.CinematicDOF);
@@ -1208,6 +1209,9 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	Effects.SnowAccumulation->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
 	Effects.AmbientOcclusion->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
 	Effects.WetWorld->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	// The wetness the first-person arms' and weapon's raindrops read next frame (HudRaindropsEffect).
+	Effects.HudRaindrops->UpdateWetness(Device);
+	Device->SetRenderTarget(0, RenderTarget);
 
 	// March into VolumetricLight's own half res buffer first (technique 0); the Composite pass
 	// below (technique 1) reads it back at full res. Same two-step pattern as FlashlightBeam,
