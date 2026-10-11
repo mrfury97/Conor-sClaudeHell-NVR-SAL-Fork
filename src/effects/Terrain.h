@@ -92,9 +92,27 @@ public:
 	};
 	ParallaxStruct  ParallaxConstants;
 
+	// Terrain blending ([Shaders.Terrain.Blending]), after Community Shaders' Terrain Blending: where the land
+	// covers an object by less than BlendDistance, the land fades out (dithered, TAA smooths it), so the
+	// object sinks softly into the ground instead of ending in a hard line.
+	struct BlendingSettingsStruct {
+		bool Enabled;
+		bool Debug;
+		float BlendDistance;
+		float MaxDistance;
+	};
+	BlendingSettingsStruct BlendingSettings;
+
+	struct BlendingStruct {
+		D3DXVECTOR4		Data;		// x: on for this draw, y: blend distance, z: max distance, w: debug view
+		D3DXVECTOR4		Frame;		// x: frame index (moves the dither every frame)
+	};
+	BlendingStruct	BlendingConstants;
+
 	bool			usePBR;
 
 	void	UpdateConstants();
 	void	RegisterConstants();
 	void	UpdateSettings();
+	void	PrepareBlending();
 };

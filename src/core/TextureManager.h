@@ -24,6 +24,11 @@ public:
 	IDirect3DSurface9*		BloomSurface;
 	IDirect3DTexture9*		DepthTexture;
 	IDirect3DTexture9*		DepthTextureViewModel;
+	IDirect3DTexture9*		TerrainBlendDepthTexture;	// the world's depth as the land starts drawing (terrain blending)
+	int						TerrainBlendDepthState;		// 0 outside the world scene, 1 copy still to take, 2 taken this scene
+	IDirect3DSurface9*		TerrainBlendWorldDepth;		// the depth surface bound as the world scene starts (compared only)
+	bool					TerrainBlendLogScene;		// diagnostic: log this world scene's shader order (Hooks/Render.cpp)
+	std::string				TerrainBlendLog;
 	IDirect3DSurface9*		CombinedDepthSurface;
 	IDirect3DTexture9*		CombinedDepthTexture;
 	IDirect3DTexture9*		DepthTextureINTZ;

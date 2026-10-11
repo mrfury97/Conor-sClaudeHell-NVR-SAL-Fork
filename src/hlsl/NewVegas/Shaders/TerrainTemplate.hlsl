@@ -96,6 +96,7 @@ struct PS_INPUT
     float4 projectionPosition : TEXCOORD6_centroid;
     float3 viewPosition : TEXCOORD7_centroid;
     float4 sPosition : POSITION1;
+    float2 screenPos : VPOS;
 };
 
 struct PS_OUTPUT {
@@ -121,6 +122,47 @@ float4 PointLightColor[NUM_PT_LIGHTS] : register(c39);
 float4 PointLightPosition[NUM_PT_LIGHTS] : register(c63);
 float PointLightCount : register(c88);
 #endif
+
+// Terrain blending ([Shaders.Terrain.Blending]), after Community Shaders' Terrain Blending. The world's depth as
+// the land started drawing holds the objects drawn before it; where the land covers one of them by less than the
+// blend distance it fades out, so the object's buried part shows through and sinks into the ground over that
+// depth instead of ending in a hard line. Faded with a moving dither (no blending in this pass); TAA smooths it.
+float4 TESR_TerrainBlendData;   // x: on for this draw, y: blend distance, z: max distance, w: debug view
+float4 TESR_TerrainBlendFrame;  // x: frame index
+float4 TESR_CameraData;         // x: near, y: far
+float4 TESR_DepthConstants;     // z: 1 for reversed depth
+float4 TESR_ReciprocalResolution;
+sampler2D TESR_TerrainBlendDepth : register(s15) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+// Distance along the view axis from a depth buffer value.
+float terrainBlendLinearDepth(float depth) {
+    float nearZ = TESR_CameraData.x;
+    float farZ = TESR_CameraData.y;
+    float d = TESR_DepthConstants.z > 0.5f ? depth : 1.0f - depth;
+    return nearZ * farZ / (nearZ + d * (farZ - nearZ));
+}
+
+// How much of the land to keep at this pixel: 1 opaque, 0 faded away; -1 when blending doesn't apply.
+float getTerrainBlend(float4 projectionPosition, float2 screenPos) {
+    float terrainDepth = terrainBlendLinearDepth(projectionPosition.z / projectionPosition.w);
+    float maxDistance = TESR_TerrainBlendData.z;
+    if (terrainDepth > maxDistance) return -1.0f;
+
+    float2 uv = (screenPos + 0.5f) * TESR_ReciprocalResolution.xy;
+    float sceneDepth = terrainBlendLinearDepth(tex2Dlod(TESR_TerrainBlendDepth, float4(uv, 0.0f, 0.0f)).x);
+    float covered = sceneDepth - terrainDepth;  // how far behind the land the object is
+    if (covered <= 0.0f) return -1.0f;          // the object is in front: the depth test handles it
+
+    float keep = saturate(covered / TESR_TerrainBlendData.y);
+    // Back to a hard edge over the last quarter before the max distance, so there's no visible line.
+    return lerp(keep, 1.0f, saturate((terrainDepth / maxDistance - 0.75f) * 4.0f));
+}
+
+// Interleaved gradient noise, moved every frame.
+float terrainBlendNoise(float2 screenPos) {
+    float2 p = screenPos + 5.588238f * TESR_TerrainBlendFrame.x;
+    return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
+}
 
 
 PS_OUTPUT main(PS_INPUT IN) {
@@ -215,6 +257,16 @@ PS_OUTPUT main(PS_INPUT IN) {
 
     [branch] if (TESR_TerrainPBRData.w > 0.0f)
         finalColor = getTerrainDebug(TESR_TerrainPBRData.w, terrainRoughness, getTerrainSpecularScale(gloss, terrainRoughness), ambientNormal);
+
+    [branch] if (TESR_TerrainBlendData.x > 0.0f) {
+        float keep = getTerrainBlend(IN.projectionPosition, IN.screenPos);
+        if (keep >= 0.0f) {
+            if (TESR_TerrainBlendData.w > 0.0f)
+                finalColor = lerp(float3(1.0f, 0.0f, 1.0f), finalColor, keep);  // debug: the blend band in magenta
+            else if (keep < 1.0f)
+                clip(keep - terrainBlendNoise(IN.screenPos));
+        }
+    }
 
     OUT.color_0.a = 1;
     OUT.color_0.rgb = finalColor;

@@ -19,6 +19,7 @@ ShaderRecord::ShaderRecord() {
 
 	HasRenderedBuffer = false;
 	HasDepthBuffer = false;
+	HasTerrainBlendDepth = false;
 	ClearSamplers = true;
 
 }
@@ -390,6 +391,7 @@ void ShaderRecord::CreateCT(ID3DXBuffer* ShaderSource, ID3DXConstantTable* Const
 			// mark this shader as needing to render depth/a buffer of the scene before the object can be rendered
 			if (!memcmp(ConstantDesc.Name, "TESR_DepthBuffer", 17)) HasDepthBuffer = true;
 			if (!memcmp(ConstantDesc.Name, "TESR_RenderedBuffer", 20)) HasRenderedBuffer = true;
+			if (!strcmp(ConstantDesc.Name, "TESR_TerrainBlendDepth")) HasTerrainBlendDepth = true;
 	
 			TextureIndex++;
 			break;
@@ -497,6 +499,14 @@ void ShaderRecord::SetCT() {
 		//Logger::Log("Resolving depth buffer for shader %s", Name);
 		TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTexture);
 	}
+	if (TheTextureManager->TerrainBlendLogScene && TheTextureManager->TerrainBlendLog.size() < 6000) {
+		// Consecutive binds of one shader collapse to a single entry.
+		std::string entry = std::string(Name) + " ";
+		size_t len = TheTextureManager->TerrainBlendLog.size();
+		if (len < entry.size() || TheTextureManager->TerrainBlendLog.compare(len - entry.size(), entry.size(), entry) != 0)
+			TheTextureManager->TerrainBlendLog += entry;
+	}
+	if (HasTerrainBlendDepth && TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->PrepareBlending();
 
 	// reset samplers
 	if (ClearSamplers) {

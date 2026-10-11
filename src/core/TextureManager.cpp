@@ -20,9 +20,15 @@ void TextureManager::Initialize() {
 	TheTextureManager->RegisterTexture("TESR_DepthBufferWorld",(IDirect3DBaseTexture9**)&TheTextureManager->DepthTexture);
 	Device->CreateTexture(Width, Height, 1, D3DUSAGE_DEPTHSTENCIL, (D3DFORMAT)MAKEFOURCC('I', 'N', 'T', 'Z'), D3DPOOL_DEFAULT, &TheTextureManager->DepthTextureViewModel, NULL);
 	TheTextureManager->RegisterTexture("TESR_DepthBufferViewModel",(IDirect3DBaseTexture9**)&TheTextureManager->DepthTextureViewModel);
+	Device->CreateTexture(Width, Height, 1, D3DUSAGE_DEPTHSTENCIL, (D3DFORMAT)MAKEFOURCC('I', 'N', 'T', 'Z'), D3DPOOL_DEFAULT, &TheTextureManager->TerrainBlendDepthTexture, NULL);
+	TheTextureManager->RegisterTexture("TESR_TerrainBlendDepth",(IDirect3DBaseTexture9**)&TheTextureManager->TerrainBlendDepthTexture);
+	TheTextureManager->TerrainBlendDepthState = 0;
+	TheTextureManager->TerrainBlendWorldDepth = nullptr;
+	TheTextureManager->TerrainBlendLogScene = false;
 
 	NvAPI_D3D9_RegisterResource(TheTextureManager->DepthTexture);
 	NvAPI_D3D9_RegisterResource(TheTextureManager->DepthTextureViewModel);
+	NvAPI_D3D9_RegisterResource(TheTextureManager->TerrainBlendDepthTexture);
 
 	TheTextureManager->RegisterTexture(WordWaterHeightMapBuffer, &TheTextureManager->WaterHeightMapB);
 	TheTextureManager->RegisterTexture(WordWaterReflectionMapBuffer, &TheTextureManager->WaterReflectionMapB);

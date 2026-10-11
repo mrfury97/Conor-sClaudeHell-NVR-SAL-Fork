@@ -10,6 +10,34 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainPBRData", &Constants.PBRData);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxData", &ParallaxConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
+	TheShaderManager->RegisterConstant("TESR_TerrainBlendData", &BlendingConstants.Data);
+	TheShaderManager->RegisterConstant("TESR_TerrainBlendFrame", &BlendingConstants.Frame);
+}
+
+// Runs as a land shader binds (ShaderRecord::SetCT), before its constants upload. In the world scene the first
+// bind copies the depth drawn so far -- the objects the land will cover -- and every land draw of that scene
+// compares against it. Anywhere else (water reflections, cube maps: their own depth buffer) blending is off.
+void TerrainShaders::PrepareBlending() {
+	BlendingConstants.Data.x = 0.0f;
+	if (!BlendingSettings.Enabled || !TheShaderManager->GameState.isExterior) return;
+	if (TheTextureManager->TerrainBlendDepthState == 0 || !TheTextureManager->TerrainBlendWorldDepth) {
+		if (TheTextureManager->TerrainBlendLogScene) TheTextureManager->TerrainBlendLog += "[no-depth-surface] ";
+		return;
+	}
+
+	IDirect3DSurface9* Current = nullptr;
+	TheRenderManager->device->GetDepthStencilSurface(&Current);
+	bool mainScene = Current && Current == TheTextureManager->TerrainBlendWorldDepth;
+	if (Current) Current->Release();
+	if (TheTextureManager->TerrainBlendLogScene)
+		TheTextureManager->TerrainBlendLog += mainScene ? (TheTextureManager->TerrainBlendDepthState == 1 ? "[COPY] " : "[on] ") : "[other-depth] ";
+	if (!mainScene) return;
+
+	if (TheTextureManager->TerrainBlendDepthState == 1) {
+		TheRenderManager->ResolveDepthBuffer(TheTextureManager->TerrainBlendDepthTexture);
+		TheTextureManager->TerrainBlendDepthState = 2;
+	}
+	BlendingConstants.Data.x = 1.0f;
 }
 
 
@@ -76,6 +104,14 @@ void TerrainShaders::UpdateSettings() {
 	// DebugView stays the object one: one switch for the whole material debug view.
 	Constants.PBRData.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.PBR.Main", "DebugView"), 0, 4);
 
+	BlendingSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled");
+	BlendingSettings.Debug = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Debug");
+	BlendingSettings.BlendDistance = max(0.1f, TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"));
+	BlendingSettings.MaxDistance = TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MaxDistance");
+	BlendingConstants.Data.y = BlendingSettings.BlendDistance;
+	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
+	BlendingConstants.Data.w = BlendingSettings.Debug ? 1.0f : 0.0f;
+
 	LODSettings.NoiseScale = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseScale");
 	LODSettings.NoiseTile = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseTile");
 }
@@ -85,6 +121,8 @@ void TerrainShaders::UpdateConstants() {
 	float rainFactor = max(TheShaderManager->Effects.WetWorld->Constants.Data.x, TheShaderManager->Effects.WetWorld->Constants.Data.z);
 
 	if (!TheShaderManager->GameState.isExterior) return;
+
+	BlendingConstants.Frame.x = fmodf(BlendingConstants.Frame.x + 1.0f, 64.0f);
 
 	Constants.ExtraData.x = usePBR;
 	Constants.ExtraData.y = std::lerp(TheShaderManager->GetTransitionValue(Settings.Default.Saturation, Settings.Night.Saturation, 0.0),

@@ -1050,6 +1050,12 @@ MaxDistance = 2048                  # Controls the maximum distance for the para
 Height = 0.1						# Controls the height. Changing can break the visuals, especially with low max steps.
 ShadowsIntensity = 2.0              # Intensity of self shadowing.
 
+[_Shaders.Terrain.Blending]
+Enabled = true                      # Blend objects into the ground where they meet it (like Community Shaders' Terrain Blending): the land fades out over the part of an object just below it, so rocks, walls and props sink softly into the terrain instead of ending in a hard line. Dithered; best with TAA on.
+BlendDistance = 10.0                # [1.0-50.0] How deep below the land surface an object still shows through, fading out (game units).
+MaxDistance = 4096.0                # [512.0-16384.0] Blending stops beyond this distance from the camera.
+Debug = false                       # Paint the blend band magenta instead of fading it, to see where blending happens.
+
 [_Shaders.Terrain.LOD]
 LODNoiseScale = 0.7                 # Amount of noise applied to LOD.
 LODNoiseTile = 2.7                  # LOD noise texture tiling modifier.

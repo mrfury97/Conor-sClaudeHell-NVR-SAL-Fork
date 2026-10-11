@@ -106,7 +106,28 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	SkinScatteringEffect* SkinScattering = TheShaderManager->Effects.SkinScattering;
 	if (SkinScattering) SkinScattering->InWorldScene = true;
 
+	// Terrain blending copies the world's depth once, as the first land shader binds (TerrainShaders::PrepareBlending).
+	TheTextureManager->TerrainBlendDepthState = 1;
+	// The world's depth surface, so terrain blending knows the main scene from reflections and cube maps (their own
+	// depth). Only the pointer is kept, for comparing; the reference is released at once.
+	{
+		IDirect3DSurface9* worldDepth = nullptr;
+		TheRenderManager->device->GetDepthStencilSurface(&worldDepth);
+		TheTextureManager->TerrainBlendWorldDepth = worldDepth;
+		if (worldDepth) worldDepth->Release();
+	}
+	// Diagnostic: every 2000th exterior scene, log the order NVR's shaders bind in, to show whether the land draws
+	// before or after the objects it should blend with.
+	static UInt32 sceneCount = 0;
+	TheTextureManager->TerrainBlendLogScene = TheSettingManager->SettingsMain.Develop.DebugMode && TheShaderManager->GameState.isExterior && (++sceneCount % 2000) == 300;
+	TheTextureManager->TerrainBlendLog.clear();
+
 	(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+
+	if (TheTextureManager->TerrainBlendLogScene)
+		Logger::Log("[TerrainBlend] world scene shader order: %s", TheTextureManager->TerrainBlendLog.c_str());
+	TheTextureManager->TerrainBlendLogScene = false;
+	TheTextureManager->TerrainBlendDepthState = 0;
 
 	// The SkinShader hooks unbind the skin scattering target after every skin draw; this only
 	// guarantees nothing below (the material pass, depth resolves) ever draws into it.

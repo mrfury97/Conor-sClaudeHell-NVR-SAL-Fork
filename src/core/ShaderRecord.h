@@ -92,6 +92,7 @@ public:
 	const char* Name;
 	bool					HasRenderedBuffer;
 	bool					HasDepthBuffer;
+	bool					HasTerrainBlendDepth;	// the land shaders: take the depth copy for terrain blending
 	bool					ClearSamplers;
 };
 
