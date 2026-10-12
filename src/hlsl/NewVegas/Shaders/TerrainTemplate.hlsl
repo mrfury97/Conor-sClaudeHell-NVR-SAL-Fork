@@ -126,9 +126,10 @@ float PointLightCount : register(c88);
 // Terrain blending ([Shaders.Terrain.Blending]), after Community Shaders' Terrain Blending. The world's depth as
 // the land started drawing holds the objects drawn before it; where the land covers one of them by less than the
 // blend distance it fades out, so the object's buried part shows through and sinks into the ground over that
-// depth instead of ending in a hard line. Faded with a moving dither (no blending in this pass); TAA smooths it.
+// depth instead of ending in a hard line. Faded by alpha blending, which the shader hooks switch on for the land's
+// draws (TerrainShaders::BeginLandDraw), so no TAA is needed; or, with Dither, by a moving dither TAA smooths.
 float4 TESR_TerrainBlendData;   // x: on for this draw, y: blend distance, z: max distance, w: debug view
-float4 TESR_TerrainBlendFrame;  // x: frame index
+float4 TESR_TerrainBlendFrame;  // x: frame index, y: 1 to dither instead of blending
 float4 TESR_CameraData;         // x: near, y: far
 float4 TESR_DepthConstants;     // z: 1 for reversed depth
 float4 TESR_ReciprocalResolution;
@@ -258,17 +259,22 @@ PS_OUTPUT main(PS_INPUT IN) {
     [branch] if (TESR_TerrainPBRData.w > 0.0f)
         finalColor = getTerrainDebug(TESR_TerrainPBRData.w, terrainRoughness, getTerrainSpecularScale(gloss, terrainRoughness), ambientNormal);
 
+    float landAlpha = 1.0f;   // blended over what is behind it while terrain blending runs (alpha only: colour is untouched)
     [branch] if (TESR_TerrainBlendData.x > 0.0f) {
         float keep = getTerrainBlend(IN.projectionPosition, IN.screenPos);
         if (keep >= 0.0f) {
             if (TESR_TerrainBlendData.w > 0.0f)
                 finalColor = lerp(float3(1.0f, 0.0f, 1.0f), finalColor, keep);  // debug: the blend band in magenta
-            else if (keep < 1.0f)
-                clip(keep - terrainBlendNoise(IN.screenPos));
+            else if (keep < 1.0f) {
+                if (TESR_TerrainBlendFrame.y > 0.5f)
+                    clip(keep - terrainBlendNoise(IN.screenPos));
+                else
+                    landAlpha = keep;
+            }
         }
     }
 
-    OUT.color_0.a = 1;
+    OUT.color_0.a = landAlpha;
     OUT.color_0.rgb = finalColor;
 
     return OUT;

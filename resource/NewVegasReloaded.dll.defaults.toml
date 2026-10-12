@@ -1051,10 +1051,11 @@ Height = 0.1						# Controls the height. Changing can break the visuals, especia
 ShadowsIntensity = 2.0              # Intensity of self shadowing.
 
 [_Shaders.Terrain.Blending]
-Enabled = true                      # Blend objects into the ground where they meet it (like Community Shaders' Terrain Blending): the land fades out over the part of an object just below it, so rocks, walls and props sink softly into the terrain instead of ending in a hard line. Dithered; best with TAA on.
+Enabled = true                      # Blend objects into the ground where they meet it (like Community Shaders' Terrain Blending): the land fades out over the part of an object just below it, so rocks, walls and props sink softly into the terrain instead of ending in a hard line. Alpha blended (works without TAA); see Dither.
 BlendDistance = 10.0                # [1.0-50.0] How deep below the land surface an object still shows through, fading out (game units).
 MaxDistance = 4096.0                # [512.0-16384.0] Blending stops beyond this distance from the camera.
 Debug = false                       # Paint the blend band magenta instead of fading it, to see where blending happens.
+Dither = false                      # Fade with a moving dither (smoothed by TAA) instead of alpha blending. Blending needs no TAA and leaves no pattern; the dither is the original method.
 
 [_Shaders.Terrain.LOD]
 LODNoiseScale = 0.7                 # Amount of noise applied to LOD.

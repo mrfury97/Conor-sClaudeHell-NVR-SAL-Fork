@@ -803,11 +803,14 @@ void* __fastcall ShadowLightShader__PrepareGeometryForRendering(void* apThis, vo
     ForwardPointShadows::OnDraw((NiGeometry*)apGeometry, PixelShader);
     DebugViewPasses::OnDraw(PixelShader);
     if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->SetDrawConstants((NiGeometry*)apGeometry);   // rain on a first-person weapon
+    // Terrain blending fades the land by alpha blending: on for the land's own draws.
+    if (TheShaderManager->Shaders.Terrain && PixelShader && PixelShader->Name) TheShaderManager->Shaders.Terrain->BeginLandDraw(PixelShader->Name);
     return Result;
 }
 
 void __fastcall ShadowLightShader__PostGeometry(void* apThis, void*, void* apProperties) {
     ThisCall(kLightPostGeometryDetour.GetOverwrittenAddr(), apThis, apProperties);
+    if (TheShaderManager->Shaders.Terrain) TheShaderManager->Shaders.Terrain->EndLandDraw();
     if (TheShaderManager->Effects.HudRaindrops) TheShaderManager->Effects.HudRaindrops->ClearDrawConstants();
     DebugViewPasses::EndDraw();   // restored first: it muted after MergedLights and MaterialMaps
     ForwardPointShadows::EndDraw();

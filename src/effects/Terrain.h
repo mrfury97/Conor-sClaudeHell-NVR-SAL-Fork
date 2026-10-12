@@ -98,6 +98,7 @@ public:
 	struct BlendingSettingsStruct {
 		bool Enabled;
 		bool Debug;
+		bool Dither;		// fade by a moving dither (needs TAA) instead of alpha blending
 		float BlendDistance;
 		float MaxDistance;
 	};
@@ -105,7 +106,7 @@ public:
 
 	struct BlendingStruct {
 		D3DXVECTOR4		Data;		// x: on for this draw, y: blend distance, z: max distance, w: debug view
-		D3DXVECTOR4		Frame;		// x: frame index (moves the dither every frame)
+		D3DXVECTOR4		Frame;		// x: frame index (moves the dither every frame), y: 1 to dither instead of blending
 	};
 	BlendingStruct	BlendingConstants;
 
@@ -115,4 +116,10 @@ public:
 	void	RegisterConstants();
 	void	UpdateSettings();
 	void	PrepareBlending();
+	// Alpha blending for the land's own draws while terrain blending fades it (ShadowLightShader's per-geometry
+	// hooks, Hooks/Shaders.cpp): on before a draw with a land pixel shader, the states put back after it.
+	void	BeginLandDraw(const char* PixelShaderName);
+	void	EndLandDraw();
+	bool	LandBlendSet = false;
+	DWORD	LandBlendSaved[7] = {};
 };
