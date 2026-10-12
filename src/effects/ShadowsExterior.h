@@ -42,6 +42,8 @@ public:
 		D3DXVECTOR4		FormatData;
 		D3DXVECTOR4		ScreenSpaceData;
 		D3DXVECTOR4		ContactData;		// x: strength, y: ray length, z: thickness, w: max distance
+		D3DXVECTOR4		ContactWeapon;		// the first-person weapon's contact shadows: x ray length, y thickness, z hardness, w depth (nearer is the weapon)
+		D3DXVECTOR4		ContactExtra;		// x the world's hardness (0: the strongest hit only), y 1 when the weapon casts onto the world
 		D3DXVECTOR4		SunLight;			// rgb: the sun colour the object shaders receive
 		D3DXVECTOR4		AmbientLight;		// rgb: the ambient colour the object shaders receive
 		D3DXVECTOR4		ContactDebug;		// x: debug view of the contact shadows, 0 off

@@ -824,6 +824,12 @@ ContactLength = 20.0                 # Length of the contact ray in game units a
 ContactThickness = 8.0               # How thick things in the depth buffer are assumed to be. Too low and thin objects cast nothing, too high and they cast shadows from behind.
 ContactDistance = 2500.0             # Contact shadows fade out by this distance. Past it the shadow maps are the only shadows, which is all that is needed there.
 ContactDebug = false                 # Debug view: the scene in grey, contact shadows in red, and in blue what the shadow maps already shade. Forward shadows only.
+ContactHardness = 4.0                # [0-20] How fast a contact shadow deepens as more of the ray toward the sun is blocked (every hit counts, the nearer the more, after Screen Space Shaders). 0: the strongest single hit decides it (the old behaviour).
+ContactWeaponDepth = 40.0            # [0-200] Pixels nearer than this (game units) are the first-person weapon and arms, which get the settings below. 0 treats them as the world.
+ContactWeaponLength = 3.0            # [0.1-50] Length of the contact ray on the first-person weapon, in game units.
+ContactWeaponThickness = 0.75        # [0.05-20] How thick the weapon's parts are assumed to be.
+ContactWeaponHardness = 3.0          # [0-20] ContactHardness for the weapon. 0: the strongest single hit.
+ContactWeaponOnWorld = false         # Whether the first-person weapon casts contact shadows onto the world. Off, the world's rays pass through it, so the gun throws no screen-space shadow onto the ground below it.
 
 [_Shaders.ShadowsExteriors.ShadowMaps]
 Mode = 2							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4

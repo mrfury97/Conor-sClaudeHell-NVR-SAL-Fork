@@ -6,6 +6,8 @@ float4 TESR_ViewSpaceLightDir;
 float4 TESR_ShadowData; // x: quality, y: darkness, z: texel size
 float4 TESR_ShadowScreenSpaceData; // x: Enabled, y: blurRadius, z: renderDistance, w: intensity
 float4 TESR_ShadowContactData; // x: strength, y: ray length, z: thickness, w: max distance
+float4 TESR_ShadowContactWeapon; // the first-person weapon's: x ray length, y thickness, z hardness, w depth (nearer is the weapon)
+float4 TESR_ShadowContactExtra;  // x the world's hardness (0: the strongest hit only), y 1 when the weapon casts onto the world
 float4 TESR_SunAmbient;
 float4 TESR_ShadowFade; // x: sunset attenuation, y: shadows maps active, z: point lights shadows active
 // Injected as a D3DXMACRO by EffectRecord from [Shaders.ShadowsExteriors.Main] ForwardShadows,
@@ -124,10 +126,21 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 	// sun (ported from NVR UNOFFICIAL Optimized, P8-P26).
 	float facing = saturate(NdotL * 8.0f);
 
+	// The first-person weapon, after Screen Space Shaders (STALKER Anomaly, Ascii1457): nearer than
+	// ContactWeaponDepth a pixel is the view model's, marched at its own scale (the world's rays, tens of
+	// units long, smeared the gun's own shadows over all of it), blended over the last quarter of that depth.
+	float weaponDepth = TESR_ShadowContactWeapon.w;
+	float worldShare = weaponDepth > 0.0f ? smoothstep(weaponDepth * 0.75f, weaponDepth, origin.z) : 1.0f;   // 0 the weapon, 1 the world
+	// And the world's rays pass through it (unless ContactWeaponOnWorld): the gun threw a screen-space
+	// shadow onto the ground below it that moved with the camera.
+	bool skipWeapon = worldShare >= 0.5f && TESR_ShadowContactExtra.y < 0.5f && weaponDepth > 0.0f;
+
 	// The ray grows a little with distance so it keeps a usable size on screen, up to a cap.
 	float scale = min(1.0f + origin.z * CONTACT_GROWTH, CONTACT_MAX_SCALE);
-	float3 contactStep = TESR_ViewSpaceLightDir.xyz * (TESR_ShadowContactData.y * scale / CONTACT_STEPNUM);
-	float contactThickness = TESR_ShadowContactData.z * scale;
+	float rayLength = lerp(TESR_ShadowContactWeapon.x, TESR_ShadowContactData.y * scale, worldShare);
+	float3 contactStep = TESR_ViewSpaceLightDir.xyz * (rayLength / CONTACT_STEPNUM);
+	float contactThickness = lerp(TESR_ShadowContactWeapon.y, TESR_ShadowContactData.z * scale, worldShare);
+	float hardness = lerp(TESR_ShadowContactWeapon.z, TESR_ShadowContactExtra.x, worldShare);
 	// The self-intersection bias also grows with distance (same port), so grazing lit faces far off do not band.
 	float contactBias = max(contactThickness * 0.05f, origin.z * 0.002f);
 
@@ -149,18 +162,28 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 	//
 	// Every hit counts, grass blades included: grass is not in the shadow maps, so this is the
 	// only shadow it casts.
+	//
+	// Hardness 0: the strongest hit alone. Above it, as Screen Space Shaders sums it: every hit counts,
+	// the nearer the more and the last steps fading out, scaled by the hardness -- a shadow that deepens
+	// with how much of the ray is blocked, steadier than one hit deciding it.
 	float contact = 0.0f;
+	float occlusion = 0.0f;
 	[unroll]
 	for (int j = 0; j < CONTACT_STEPNUM; j++) {
 		clipPos += clipStep;
 		rayDepth += contactStep.z;
 		float2 sampleUV = clipPos.xy / clipPos.w * float2(0.5f, -0.5f) + 0.5f;
-		float delta = rayDepth - tex2Dlod(TESR_DepthBuffer, float4(sampleUV, 0.0f, 0.0f)).x * farZ;
-		contact = (delta > contactBias && delta < contactThickness) ? max(contact, 1.0f - (float)j / CONTACT_STEPNUM) : contact;
+		float sceneDepth = tex2Dlod(TESR_DepthBuffer, float4(sampleUV, 0.0f, 0.0f)).x * farZ;
+		float delta = rayDepth - sceneDepth;
+		bool hit = delta > contactBias && delta < contactThickness && !(skipWeapon && sceneDepth < weaponDepth);
+		float nearness = 1.0f - (float)j / CONTACT_STEPNUM;
+		contact = hit ? max(contact, nearness) : contact;
+		occlusion += hit ? nearness * (1.0f - smoothstep(CONTACT_STEPNUM * 0.75f, CONTACT_STEPNUM + 1.0f, (float)j)) : 0.0f;
 	}
+	float shadow = hardness > 0.0f ? saturate(occlusion / CONTACT_STEPNUM * hardness) : contact;
 
 	float fade = 1.0f - smoothstep(TESR_ShadowContactData.w * 0.8f, TESR_ShadowContactData.w, origin.z);
-	color.r = 1.0f - saturate(contact * TESR_ShadowContactData.x * fade * facing);
+	color.r = 1.0f - saturate(shadow * TESR_ShadowContactData.x * fade * facing);
 	return color;
 }
 

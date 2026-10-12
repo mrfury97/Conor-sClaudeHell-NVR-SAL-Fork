@@ -401,6 +401,14 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Constants.ContactData.y = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactLength"), 1.0f);
 	Constants.ContactData.z = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactThickness"), 0.1f);
 	Constants.ContactData.w = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactDistance"), 1.0f);
+	// After Screen Space Shaders (STALKER Anomaly): the first-person weapon marched at its own scale, and the
+	// shadow summed along the ray with a hardness (Effects/SunShadows.fx).
+	Constants.ContactWeapon.x = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponLength"), 0.1f, 50.0f);
+	Constants.ContactWeapon.y = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponThickness"), 0.05f, 20.0f);
+	Constants.ContactWeapon.z = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponHardness"), 0.0f, 20.0f);
+	Constants.ContactWeapon.w = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponDepth"), 0.0f, 200.0f);
+	Constants.ContactExtra.x = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactHardness"), 0.0f, 20.0f);
+	Constants.ContactExtra.y = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponOnWorld") ? 1.0f : 0.0f;
 	Constants.ContactDebug.x = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "ContactDebug");
 
 	// Sun smoothing settings.
@@ -544,6 +552,8 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowBlur", &Constants.ShadowBlur);
 	TheShaderManager->RegisterConstant("TESR_ShadowScreenSpaceData", &Constants.ScreenSpaceData);
 	TheShaderManager->RegisterConstant("TESR_ShadowContactData", &Constants.ContactData);
+	TheShaderManager->RegisterConstant("TESR_ShadowContactWeapon", &Constants.ContactWeapon);
+	TheShaderManager->RegisterConstant("TESR_ShadowContactExtra", &Constants.ContactExtra);
 	TheShaderManager->RegisterConstant("TESR_ShadowSunLight", &Constants.SunLight);
 	TheShaderManager->RegisterConstant("TESR_ShadowAmbientLight", &Constants.AmbientLight);
 	TheShaderManager->RegisterConstant("TESR_ShadowContactDebug", &Constants.ContactDebug);
