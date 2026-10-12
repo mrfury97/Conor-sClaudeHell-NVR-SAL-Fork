@@ -543,7 +543,7 @@ PS_OUTPUT main(PS_INPUT IN)
 
     // Raindrops on first-person geometry (Includes/HudRaindrops.hlsl), placed on the surface itself
     // (its own coordinates, not the relief's): they sit on top of it.
-    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, shadowWorldPosValid > 0.0f ? rebuildUpTS(IN.uv.zw, sunShadowNormal).z : 1.0f);
+    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, IN.shadowWorldPos.xyz, shadowWorldPosValid > 0.0f ? rebuildUpTS(IN.uv.zw, sunShadowNormal).z : 1.0f);
 
     // Parallax.
     float3 viewDir = normalize(IN.viewDir.xyz);

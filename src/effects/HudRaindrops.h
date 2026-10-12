@@ -35,6 +35,16 @@ public:
 		float WetGloss;     // the wet surface's around them
 		float AnimSpeed;
 		int   DebugView;
+		bool  World;          // the world gets rain too: ripples, beads close by (rocks, props, NPCs outdoors)
+		float WorldWetTime;   // seconds of heavy rain for the world to be fully wet
+		float WorldDryTime;   // and to dry
+		float WorldFadeEnd;   // where the world's rain is gone (it fades from 45% of it)
+		bool  WorldDroplets;  // beads of water on world surfaces close by
+		float RippleSize;     // a ripple tile, game units
+		bool  NpcBeads;       // characters (skinned meshes) get beads; off, the wet gloss alone
+		float NpcDensity;
+		float NpcDropSize;
+		float NpcFadeEnd;     // where a character's rain is gone (the beads fade over its last 40%)
 	};
 	HudRaindropsSettings	Settings = {};
 
@@ -70,4 +80,7 @@ private:
 	float	Clock = 0.0f;        // the drops' clock: runs while it rains
 	float	DryingLeft = 0.0f;   // seconds the drops may still be drying (the passes run until then)
 	bool	DrawSet = false;     // the hooks' constants are nonzero on the device
+	float	WorldWet = 0.0f;     // the world's wetness, from the weather alone (the cover is per pixel)
+	float	RainNow = 0.0f;      // the rain this frame (0-1): the world's ripples and rivulets
+	bool	WorldOn = false;     // world draws get drops this frame
 };

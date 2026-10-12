@@ -30,6 +30,16 @@ void HudRaindropsEffect::UpdateSettings() {
 	Settings.WetGloss = std::clamp(TheSettingManager->GetSettingF(Section, "WetGloss"), 0.0f, 1.0f);
 	Settings.AnimSpeed = std::clamp(TheSettingManager->GetSettingF(Section, "AnimSpeed"), 0.0f, 8.0f);
 	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 1);
+	Settings.World = TheSettingManager->GetSettingI(Section, "World") != 0;
+	Settings.WorldWetTime = std::clamp(TheSettingManager->GetSettingF(Section, "WorldWetTime"), 0.5f, 3600.0f);
+	Settings.WorldDryTime = std::clamp(TheSettingManager->GetSettingF(Section, "WorldDryTime"), 0.5f, 3600.0f);
+	Settings.WorldFadeEnd = std::clamp(TheSettingManager->GetSettingF(Section, "WorldFadeEnd"), 50.0f, 20000.0f);
+	Settings.WorldDroplets = TheSettingManager->GetSettingI(Section, "WorldDroplets") != 0;
+	Settings.RippleSize = std::clamp(TheSettingManager->GetSettingF(Section, "RippleSize"), 4.0f, 1024.0f);
+	Settings.NpcBeads = TheSettingManager->GetSettingI(Section, "NpcBeads") != 0;
+	Settings.NpcDensity = std::clamp(TheSettingManager->GetSettingF(Section, "NpcDensity"), 0.0f, 1.0f);
+	Settings.NpcDropSize = std::clamp(TheSettingManager->GetSettingF(Section, "NpcDropSize"), 0.5f, 64.0f);
+	Settings.NpcFadeEnd = std::clamp(TheSettingManager->GetSettingF(Section, "NpcFadeEnd"), 50.0f, 20000.0f);
 }
 
 void HudRaindropsEffect::UpdateConstants() {
@@ -50,6 +60,15 @@ void HudRaindropsEffect::UpdateConstants() {
 	if (Rain > 0.0f) DryingLeft = Settings.DryTime + 1.0f;
 	else DryingLeft = max(DryingLeft - Elapsed, 0.0f);
 	if (Rain > 0.0f) TheShaderManager->orthoRequired = true;   // the cover test (Effects/HudRaindrops.fx)
+
+	// The world's wetness, from the weather alone: up over WorldWetTime of heavy rain, down over
+	// WorldDryTime after it (kept through interiors, for the way back out). Whether a surface is under
+	// cover each pixel looks up in the ortho map, which must then be drawn as long as anything is wet.
+	RainNow = Settings.DebugView > 0 ? max(Rain, 1.0f) : Rain;
+	if (Rain > 0.0f) WorldWet = min(WorldWet + Elapsed * Rain / Settings.WorldWetTime, 1.0f);
+	else if (State.isExterior) WorldWet = max(WorldWet - Elapsed / Settings.WorldDryTime, 0.0f);
+	WorldOn = Settings.World && State.isExterior && !State.isUnderwater && (WorldWet > 0.0f || Settings.DebugView > 0);
+	if (WorldOn) TheShaderManager->orthoRequired = true;
 
 	// The drops' clock runs while it rains, faster in heavy rain (SSS's script slows it in light
 	// rain), and stands while they dry. Wrapped on a whole number of both layers' cycles (5 and 10).
@@ -86,25 +105,52 @@ void HudRaindropsEffect::UpdateWetness(IDirect3DDevice9* Device) {
 // effect runs, off for everything else. A mesh is first-person when it hangs under the player's
 // first-person node (as ShadowManager tells the player's own geometry).
 void HudRaindropsEffect::SetDrawConstants(NiGeometry* Geometry) {
-	bool FirstPerson = false;
-	if (Enabled && Cleared && ShouldRender() && Geometry && Player && Player->firstPersonNiNode) {
-		for (const NiAVObject* Node = Geometry; Node; Node = Node->m_parent)
-			if (Node == Player->firstPersonNiNode) { FirstPerson = true; break; }
+	// One walk up the mesh's parents: under the player's first-person node (its drops), or under a
+	// skeleton (a node named Bip01...: carried by an actor or a creature, as a held or holstered weapon is).
+	bool UnderFirstPerson = false;
+	bool UnderSkeleton = false;
+	if (Enabled && Geometry && Player) {
+		for (const NiAVObject* Node = Geometry; Node; Node = Node->m_parent) {
+			if (Node == Player->firstPersonNiNode) { UnderFirstPerson = true; break; }
+			if (!UnderSkeleton && Node->m_pcName && !strncmp(Node->m_pcName, "Bip01", 5)) UnderSkeleton = true;
+		}
 	}
-	if (!FirstPerson) {   // written every draw: whatever the device held there before is not ours
-		static const float Zero[8] = {};
-		TheRenderManager->device->SetPixelShaderConstantF(218, Zero, 2);
+	const bool FirstPerson = UnderFirstPerson && Cleared && ShouldRender();
+	const bool World = Enabled && WorldOn && !UnderFirstPerson;
+	if (!FirstPerson && !World) {   // written every draw: whatever the device held there before is not ours
+		static const float Zero[12] = {};
+		TheRenderManager->device->SetPixelShaderConstantF(218, Zero, 3);
 		DrawSet = false;
 		return;
 	}
-	// Draw: x on, y the drops' threshold (Density 1: 0.05, 0: 0.5), z the clock, w the refraction
-	// (the texture coordinates' shift per unit of slope, in drop texture tiles).
-	// Look: x the normal's tilt, y the drops' gloss, z the wet surface's, w the tile's size (units).
-	const float Data[8] = {
-		1.0f, 0.5f - 0.45f * Settings.Density, Clock, Settings.Refraction * 0.01f,
-		Settings.Reflection, Settings.Gloss, Settings.WetGloss, Settings.DropSize,
+	// The layout of Shaders/Includes/HudRaindrops.hlsl:
+	// c218: x the rain now (world draws), y the drops' threshold (Density 1: 0.05, 0: 0.5; nonzero: rain
+	//       on this draw), z the clock, w the refraction (the texture coordinates' shift per unit of
+	//       slope, in drop texture tiles).
+	// c219: x the normal's tilt, y the drops' gloss, z the wet surface's, w the drop tile's size (units).
+	// c220: x the world's wetness (-1: first person), y where the world's rain is gone (negative: no
+	//       beads), z a ripple tile (units), w 1 for a character: a skinned mesh (NPCs' bodies,
+	//       faces, armour and clothes, creatures) gets beads and no ripples.
+	// c221-c223 (world draws): the ortho map camera's first three columns.
+	// A character (a skinned mesh: NPCs' bodies, faces, armour and clothes, creatures; or anything hung on
+	// a skeleton: held and holstered weapons) gets beads and no ripples, with its own settings in the
+	// same constants.
+	const bool Character = World && (Geometry->skinInstance || UnderSkeleton);
+	const float Density = Character ? Settings.NpcDensity : Settings.Density;
+	const float Reach = Character ? (Settings.NpcBeads ? Settings.NpcFadeEnd : -Settings.NpcFadeEnd) : (Settings.WorldDroplets ? Settings.WorldFadeEnd : -Settings.WorldFadeEnd);
+	float Data[24] = {
+		World ? RainNow : 0.0f, 0.5f - 0.45f * Density, Clock, Settings.Refraction * 0.01f,
+		Settings.Reflection, Settings.Gloss, Settings.WetGloss, Character ? Settings.NpcDropSize : Settings.DropSize,
+		World ? (Settings.DebugView > 0 ? 1.0f : WorldWet) : -1.0f, Reach,
+		Settings.RippleSize, Character ? 1.0f : 0.0f,
 	};
-	TheRenderManager->device->SetPixelShaderConstantF(218, Data, 2);
+	if (World) {
+		const D3DXMATRIX& Ortho = TheShaderManager->Effects.ShadowsExteriors->ShadowMaps[ShadowsExteriorEffect::MapOrtho].ShadowCameraToLight;
+		for (int Column = 0; Column < 3; Column++)
+			for (int Row = 0; Row < 4; Row++)
+				Data[12 + Column * 4 + Row] = Ortho.m[Row][Column];
+	}
+	TheRenderManager->device->SetPixelShaderConstantF(218, Data, World ? 6 : 3);
 	DrawSet = true;
 }
 
@@ -189,7 +235,7 @@ void HudRaindropsEffect::DrawOnScreen(BSRenderedTexture* Target) {
 
 void HudRaindropsEffect::ClearDrawConstants() {
 	if (!DrawSet) return;
-	static const float Zero[8] = {};
-	TheRenderManager->device->SetPixelShaderConstantF(218, Zero, 2);
+	static const float Zero[12] = {};
+	TheRenderManager->device->SetPixelShaderConstantF(218, Zero, 3);
 	DrawSet = false;
 }

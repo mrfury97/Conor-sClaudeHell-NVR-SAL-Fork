@@ -700,7 +700,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     // Raindrops on first-person geometry (Includes/HudRaindrops.hlsl): the textures are read under them.
-    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? IN.viewDir.w : 1.0f);
+    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? IN.viewDir.w : 1.0f);
     float2 uv = IN.uv.xy + hudRainOffset;
 
     #if !defined(DIFFUSE) && !defined(ONLY_SPECULAR)
@@ -1025,7 +1025,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #else
         float hudRainUp = sqrt(saturate(1.0f - dot(IN.uv.zw, IN.uv.zw)));
     #endif
-    HudRaindrops(IN.uv.xy, IN.lPosition.xyz, SHADOW_WP_VALID(IN) ? hudRainUp : 1.0f);
+    HudRaindrops(IN.uv.xy, IN.lPosition.xyz, SHADOW_WP_LOAD(IN), SHADOW_WP_VALID(IN) ? hudRainUp : 1.0f);
     float2 uv = IN.uv.xy + hudRainOffset;
 
     float4 baseColor = tex2D(BaseMap, uv);

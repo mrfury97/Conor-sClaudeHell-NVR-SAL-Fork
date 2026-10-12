@@ -442,7 +442,7 @@ PS_OUTPUT main(PS_INPUT IN) {
     #endif
 
     // Raindrops on the first-person arms (Includes/HudRaindrops.hlsl): the textures are read under them.
-    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, normalize(IN.normal.xyz).z);
+    HudRaindrops(IN.uv.xy, IN.shadowWorldPos.xyz, IN.shadowWorldPos.xyz, normalize(IN.normal.xyz).z);
     float2 uv = IN.uv.xy + hudRainOffset;
 
     // --- material

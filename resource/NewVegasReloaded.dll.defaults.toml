@@ -1227,6 +1227,16 @@ Reflection = 2.5                     # [0-8] How strongly the drops tilt the sur
 Refraction = 1.0                     # [0-4] How strongly the drops bend and magnify the surface under them.
 WetGloss = 0.3                       # [0-1] How much glossier the wet surface between the drops gets.
 WetTime = 20.0                       # [0.5-600] Seconds in heavy rain for the arms and weapon to wet through (lighter rain takes longer).
+NpcBeads = true                      # Characters (NPCs, creatures: skinned meshes, and what they carry: held and holstered weapons) get beads of water in the rain; they never get ripples. Off: the wet gloss alone.
+NpcDensity = 0.6                     # [0-1] How many beads gather on characters at full wetness.
+NpcDropSize = 8.0                    # [0.5-64] The bead pattern's tile on characters, game units: bigger gives bigger beads.
+NpcFadeEnd = 1200.0                  # [50-20000] Past this distance (game units) characters have no rain; the beads fade over its last 40%.
+RippleSize = 96.0                    # [4-1024] The world's ripple pattern tile, game units: bigger gives bigger rings.
+World = true                         # The world gets rain too (after Screen Space Shaders' wet surfaces): ripples where it lands on flat surfaces, beads close by and a wet gloss, on rocks, props, cars and NPCs outdoors; not under roofs or bridges (each surface checks the ortho map above it).
+WorldDroplets = false                # Beads of water on world surfaces close by, on top of the ripples (they fade out by a third of WorldFadeEnd). Off: the world gets the ripples and the wet gloss alone. Characters have their own (Npc*).
+WorldDryTime = 240.0                 # [0.5-3600] Seconds for the world to dry after the rain.
+WorldFadeEnd = 1500.0                # [50-20000] Past this distance (game units) the world's rain is gone (it fades from 45% of it).
+WorldWetTime = 60.0                  # [0.5-3600] Seconds of heavy rain for the world to be fully wet (lighter rain takes longer).
 
 [_Shaders.HudRaindrops.Status]
 Enabled = true                       # Raindrops on the first-person arms and weapon in the rain (after Screen Space Shaders' HUD raindrops), drawn in their own shaders so they stay on the surface: they magnify the surface under them and catch the light. They gather while you stand in the rain (not under cover) and dry off afterwards.
