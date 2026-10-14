@@ -270,9 +270,11 @@ float4 Wet( VSOUT IN ) : COLOR0
 	float3 Ks = FresnelShlick(0.02, halfwayDir, TESR_SunDirection.xyz);
 
 	float3 puddleNormal = normalize(lerp(normal, combinedNormals, specularMask));
-	float roughness = lerp(TESR_DebugVar.x, TESR_DebugVar.y, puddlemask);
-	// float roughness = lerp(0.00015, 0.00007, puddlemask);
-	float3 specular = modifiedBRDF(lerp(TESR_DebugVar.x * 0.00015, TESR_DebugVar.y * 0.0001, puddlemask), shades(puddleNormal, sunDir), shades(puddleNormal, eyeDirection), shades(puddleNormal, halfwayDir), Ks);
+	// GGX alphas: a wet surface (ripples) and still water (puddles). They came from the Develop DebugVar
+	// sliders, 0 by default, which left no highlight at all; the sun's NdotL read a scalar (the view's
+	// dot with the sun) as a direction.
+	float roughness = lerp(0.04f, 0.015f, puddlemask);
+	float3 specular = modifiedBRDF(lerp(0.004f, 0.0015f, puddlemask), shades(puddleNormal, TESR_SunDirection.xyz), shades(puddleNormal, eyeDirection), shades(puddleNormal, halfwayDir), Ks);
 	// float3 specular = PBR(0, 0.0002, fresnelColor, puddleNormal, eyeDirection, TESR_SunDirection.xyz, sunColor.rgb * 5);
 
 	for (int i=0; i < 12; i++){
@@ -283,9 +285,9 @@ float4 Wet( VSOUT IN ) : COLOR0
 	// transition between surface ripple and deeper puddles
 	puddleColor = lerp(rippleColor.rgb, puddleColor.rgb, puddlemask);
 
-	// float4 color = float4(lerp(puddleColor, fresnelColor, fresnel * specularMask), 1.0);
-	// float4 color = float4(lerp(puddleColor, fresnelColor, fresnel * specularMask), 1.0);
-	float4 color = float4(puddleColor, 1);
+	// The sky reflected at grazing angles (Fresnel, scaled by Amount), more in the puddles.
+	float3 skyLinear = linearize(float4(fresnelColor, 1.0f)).rgb;
+	float4 color = float4(lerp(puddleColor, skyLinear, saturate(fresnel * specularMask)), 1.0f);
 	// color.rgb += specular * specularMask * 1000;
 	color.rgb += specular * sunColor.rgb * specularMask * inShadow * lerp(10, 50, saturate(sunHeight));
 	

@@ -12,7 +12,17 @@ void WetWorldEffect::UpdateConstants() {
 		Constants.PuddlesAnimator.switched = false;
 		Constants.PuddlesAnimator.Start(decreaseRate, 0);
 	}
-	Constants.Data.x = TheShaderManager->Effects.Rain->Constants.RainAnimator.GetValue();
+	// How much it rains, from the sky itself, not the Precipitations effect (whose animator only runs while
+	// that effect is on): the weathers flagged rainy, across a weather transition the outgoing one fading as
+	// the incoming one comes in (Sky::weatherPercent, 0-1 toward firstWeather).
+	float Rain = 0.0f;
+	Sky* WorldSky = Tes ? Tes->sky : nullptr;
+	if (TheShaderManager->GameState.isExterior && WorldSky) {
+		auto Rainy = [](TESWeather* Weather) { return (Weather && (Weather->GetWeatherType() & TESWeather::WeatherType::kType_Rainy)) ? 1.0f : 0.0f; };
+		const float Progress = std::clamp(WorldSky->weatherPercent, 0.0f, 1.0f);
+		Rain = WorldSky->secondWeather ? Rainy(WorldSky->firstWeather) * Progress + Rainy(WorldSky->secondWeather) * (1.0f - Progress) : Rainy(WorldSky->firstWeather);
+	}
+	Constants.Data.x = Rain;
 	Constants.Data.y = TheShaderManager->GameState.isRainy;
 	Constants.Data.z = Constants.PuddlesAnimator.GetValue();
 

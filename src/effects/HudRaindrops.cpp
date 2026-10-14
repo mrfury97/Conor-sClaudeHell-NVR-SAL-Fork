@@ -30,12 +30,9 @@ void HudRaindropsEffect::UpdateSettings() {
 	Settings.WetGloss = std::clamp(TheSettingManager->GetSettingF(Section, "WetGloss"), 0.0f, 1.0f);
 	Settings.AnimSpeed = std::clamp(TheSettingManager->GetSettingF(Section, "AnimSpeed"), 0.0f, 8.0f);
 	Settings.DebugView = std::clamp(TheSettingManager->GetSettingI(Section, "DebugView"), 0, 1);
-	Settings.World = TheSettingManager->GetSettingI(Section, "World") != 0;
-	Settings.WorldWetTime = std::clamp(TheSettingManager->GetSettingF(Section, "WorldWetTime"), 0.5f, 3600.0f);
-	Settings.WorldDryTime = std::clamp(TheSettingManager->GetSettingF(Section, "WorldDryTime"), 0.5f, 3600.0f);
-	Settings.WorldFadeEnd = std::clamp(TheSettingManager->GetSettingF(Section, "WorldFadeEnd"), 50.0f, 20000.0f);
-	Settings.WorldDroplets = TheSettingManager->GetSettingI(Section, "WorldDroplets") != 0;
-	Settings.RippleSize = std::clamp(TheSettingManager->GetSettingF(Section, "RippleSize"), 4.0f, 1024.0f);
+	Settings.Npc = TheSettingManager->GetSettingI(Section, "Npc") != 0;
+	Settings.NpcWetTime = std::clamp(TheSettingManager->GetSettingF(Section, "NpcWetTime"), 0.5f, 3600.0f);
+	Settings.NpcDryTime = std::clamp(TheSettingManager->GetSettingF(Section, "NpcDryTime"), 0.5f, 3600.0f);
 	Settings.NpcBeads = TheSettingManager->GetSettingI(Section, "NpcBeads") != 0;
 	Settings.NpcDensity = std::clamp(TheSettingManager->GetSettingF(Section, "NpcDensity"), 0.0f, 1.0f);
 	Settings.NpcDropSize = std::clamp(TheSettingManager->GetSettingF(Section, "NpcDropSize"), 0.5f, 64.0f);
@@ -61,14 +58,13 @@ void HudRaindropsEffect::UpdateConstants() {
 	else DryingLeft = max(DryingLeft - Elapsed, 0.0f);
 	if (Rain > 0.0f) TheShaderManager->orthoRequired = true;   // the cover test (Effects/HudRaindrops.fx)
 
-	// The world's wetness, from the weather alone: up over WorldWetTime of heavy rain, down over
-	// WorldDryTime after it (kept through interiors, for the way back out). Whether a surface is under
-	// cover each pixel looks up in the ortho map, which must then be drawn as long as anything is wet.
-	RainNow = Settings.DebugView > 0 ? max(Rain, 1.0f) : Rain;
-	if (Rain > 0.0f) WorldWet = min(WorldWet + Elapsed * Rain / Settings.WorldWetTime, 1.0f);
-	else if (State.isExterior) WorldWet = max(WorldWet - Elapsed / Settings.WorldDryTime, 0.0f);
-	WorldOn = Settings.World && State.isExterior && !State.isUnderwater && (WorldWet > 0.0f || Settings.DebugView > 0);
-	if (WorldOn) TheShaderManager->orthoRequired = true;
+	// Characters' wetness, from the weather alone: up over NpcWetTime of heavy rain, down over NpcDryTime
+	// after it (kept through interiors, for the way back out). Whether one is under cover each pixel looks
+	// up in the ortho map, which must then be drawn as long as anything is wet.
+	if (Rain > 0.0f) NpcWet = min(NpcWet + Elapsed * Rain / Settings.NpcWetTime, 1.0f);
+	else if (State.isExterior) NpcWet = max(NpcWet - Elapsed / Settings.NpcDryTime, 0.0f);
+	NpcOn = Settings.Npc && State.isExterior && !State.isUnderwater && (NpcWet > 0.0f || Settings.DebugView > 0);
+	if (NpcOn) TheShaderManager->orthoRequired = true;
 
 	// The drops' clock runs while it rains, faster in heavy rain (SSS's script slows it in light
 	// rain), and stands while they dry. Wrapped on a whole number of both layers' cycles (5 and 10).
@@ -116,7 +112,10 @@ void HudRaindropsEffect::SetDrawConstants(NiGeometry* Geometry) {
 		}
 	}
 	const bool FirstPerson = UnderFirstPerson && Cleared && ShouldRender();
-	const bool World = Enabled && WorldOn && !UnderFirstPerson;
+	// A character outdoors: a skinned mesh (NPCs' bodies, faces, armour and clothes, creatures) or anything
+	// hung on a skeleton (held and holstered weapons). The rest of the world gets nothing here: its rain
+	// is Effects/WetWorld.fx's.
+	const bool World = Enabled && NpcOn && !UnderFirstPerson && (Geometry->skinInstance || UnderSkeleton);
 	if (!FirstPerson && !World) {   // written every draw: whatever the device held there before is not ours
 		static const float Zero[12] = {};
 		TheRenderManager->device->SetPixelShaderConstantF(218, Zero, 3);
@@ -124,25 +123,16 @@ void HudRaindropsEffect::SetDrawConstants(NiGeometry* Geometry) {
 		return;
 	}
 	// The layout of Shaders/Includes/HudRaindrops.hlsl:
-	// c218: x the rain now (world draws), y the drops' threshold (Density 1: 0.05, 0: 0.5; nonzero: rain
-	//       on this draw), z the clock, w the refraction (the texture coordinates' shift per unit of
-	//       slope, in drop texture tiles).
+	// c218: x unused, y the drops' threshold (Density 1: 0.05, 0: 0.5; nonzero: rain on this draw), z the
+	//       clock, w the refraction (the texture coordinates' shift per unit of slope, in drop tiles).
 	// c219: x the normal's tilt, y the drops' gloss, z the wet surface's, w the drop tile's size (units).
-	// c220: x the world's wetness (-1: first person), y where the world's rain is gone (negative: no
-	//       beads), z a ripple tile (units), w 1 for a character: a skinned mesh (NPCs' bodies,
-	//       faces, armour and clothes, creatures) gets beads and no ripples.
-	// c221-c223 (world draws): the ortho map camera's first three columns.
-	// A character (a skinned mesh: NPCs' bodies, faces, armour and clothes, creatures; or anything hung on
-	// a skeleton: held and holstered weapons) gets beads and no ripples, with its own settings in the
-	// same constants.
-	const bool Character = World && (Geometry->skinInstance || UnderSkeleton);
-	const float Density = Character ? Settings.NpcDensity : Settings.Density;
-	const float Reach = Character ? (Settings.NpcBeads ? Settings.NpcFadeEnd : -Settings.NpcFadeEnd) : (Settings.WorldDroplets ? Settings.WorldFadeEnd : -Settings.WorldFadeEnd);
+	// c220: x a character's wetness (-1: first person), y where its rain is gone (negative: no beads).
+	// c221-c223 (character draws): the ortho map camera's first three columns.
+	const float Density = World ? Settings.NpcDensity : Settings.Density;
 	float Data[24] = {
-		World ? RainNow : 0.0f, 0.5f - 0.45f * Density, Clock, Settings.Refraction * 0.01f,
-		Settings.Reflection, Settings.Gloss, Settings.WetGloss, Character ? Settings.NpcDropSize : Settings.DropSize,
-		World ? (Settings.DebugView > 0 ? 1.0f : WorldWet) : -1.0f, Reach,
-		Settings.RippleSize, Character ? 1.0f : 0.0f,
+		0.0f, 0.5f - 0.45f * Density, Clock, Settings.Refraction * 0.01f,
+		Settings.Reflection, Settings.Gloss, Settings.WetGloss, World ? Settings.NpcDropSize : Settings.DropSize,
+		World ? (Settings.DebugView > 0 ? 1.0f : NpcWet) : -1.0f, Settings.NpcBeads ? Settings.NpcFadeEnd : -Settings.NpcFadeEnd, 0.0f, 0.0f,
 	};
 	if (World) {
 		const D3DXMATRIX& Ortho = TheShaderManager->Effects.ShadowsExteriors->ShadowMaps[ShadowsExteriorEffect::MapOrtho].ShadowCameraToLight;

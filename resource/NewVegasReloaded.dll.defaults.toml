@@ -1231,16 +1231,13 @@ Reflection = 2.5                     # [0-8] How strongly the drops tilt the sur
 Refraction = 1.0                     # [0-4] How strongly the drops bend and magnify the surface under them.
 WetGloss = 0.3                       # [0-1] How much glossier the wet surface between the drops gets.
 WetTime = 20.0                       # [0.5-600] Seconds in heavy rain for the arms and weapon to wet through (lighter rain takes longer).
+Npc = true                           # Characters outdoors in the rain (NPCs, creatures, what they carry: skinned meshes and anything on a skeleton) get beads and a wet gloss, not under roofs or bridges. The world's surfaces get WetWorld's rain instead.
 NpcBeads = true                      # Characters (NPCs, creatures: skinned meshes, and what they carry: held and holstered weapons) get beads of water in the rain; they never get ripples. Off: the wet gloss alone.
 NpcDensity = 0.6                     # [0-1] How many beads gather on characters at full wetness.
 NpcDropSize = 8.0                    # [0.5-64] The bead pattern's tile on characters, game units: bigger gives bigger beads.
 NpcFadeEnd = 1200.0                  # [50-20000] Past this distance (game units) characters have no rain; the beads fade over its last 40%.
-RippleSize = 96.0                    # [4-1024] The world's ripple pattern tile, game units: bigger gives bigger rings.
-World = true                         # The world gets rain too (after Screen Space Shaders' wet surfaces): ripples where it lands on flat surfaces, beads close by and a wet gloss, on rocks, props, cars and NPCs outdoors; not under roofs or bridges (each surface checks the ortho map above it).
-WorldDroplets = false                # Beads of water on world surfaces close by, on top of the ripples (they fade out by a third of WorldFadeEnd). Off: the world gets the ripples and the wet gloss alone. Characters have their own (Npc*).
-WorldDryTime = 240.0                 # [0.5-3600] Seconds for the world to dry after the rain.
-WorldFadeEnd = 1500.0                # [50-20000] Past this distance (game units) the world's rain is gone (it fades from 45% of it).
-WorldWetTime = 60.0                  # [0.5-3600] Seconds of heavy rain for the world to be fully wet (lighter rain takes longer).
+NpcDryTime = 240.0                   # [0.5-3600] Seconds for characters to dry after the rain.
+NpcWetTime = 60.0                    # [0.5-3600] Seconds of heavy rain for characters to be fully wet (lighter rain takes longer).
 
 [_Shaders.HudRaindrops.Status]
 Enabled = true                       # Raindrops on the first-person arms and weapon in the rain (after Screen Space Shaders' HUD raindrops), drawn in their own shaders so they stay on the surface: they magnify the surface under them and catch the light. They gather while you stand in the rain (not under cover) and dry off afterwards.
@@ -1256,13 +1253,13 @@ Viscosity = 0.05
 Enabled = true                      # Short refraction water drop animation on the lens when exiting water.
 
 [_Shaders.WetWorld.Main]
-Amount = 0.0                        # Darkness of puddles
-Decrease = 0.0                      # Time it takes in game hours for puddles to dissipate
-Increase = 0.0                      # Time it takes in game hours for puddles to appear
+Amount = 0.6                        # [0-1] Darkness of the puddles and how much they reflect the sky.
+Decrease = 2.0                      # Game hours for the puddles to dry up after the rain.
+Increase = 0.5                      # Game hours of rain for the puddles to fill.
 PuddleCoeff_B = 0.48                # Not used.
 PuddleCoeff_G = 0.62                # Not used.
 PuddleCoeff_R = 0.72                # Not used.
 PuddleSpecularMultiplier = 0.2      # Not used.
 
 [_Shaders.WetWorld.Status]
-Enabled = true                      # Water ripples on surfaces, and puddles based on physical terrain pockets during rainy weathers. 
+Enabled = true                      # The world's rain: ripples, puddles in hollows and the wet look on surfaces facing up (the ground, roofs, the tops of objects), not under cover. Characters and the first-person arms and weapon get HudRaindrops' beads instead. 
