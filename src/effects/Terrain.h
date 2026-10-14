@@ -97,16 +97,21 @@ public:
 	// object sinks softly into the ground instead of ending in a hard line.
 	struct BlendingSettingsStruct {
 		bool Enabled;
-		bool Debug;
+		int DebugView;		// 1 band magenta, 2 land kept, 3 depth below the surface, 4 fade depth
 		bool Dither;		// fade by a moving dither (needs TAA) instead of alpha blending
 		float BlendDistance;
 		float MaxDistance;
+		float GroundWidth;	// the band's width across the ground at most (shallow objects)
+		float HeightBlend;	// how much the land texture's height map shapes the edge
+		float SlopeBlend;	// BlendDistance multiplier on steep land
+		float MinPixels;	// the fade's minimum width on screen
 	};
 	BlendingSettingsStruct BlendingSettings;
 
 	struct BlendingStruct {
 		D3DXVECTOR4		Data;		// x: on for this draw, y: blend distance, z: max distance, w: debug view
 		D3DXVECTOR4		Frame;		// x: frame index (moves the dither every frame), y: 1 to dither instead of blending
+		D3DXVECTOR4		Shape;		// x: ground width, y: height blend, z: slope blend, w: minimum pixels
 	};
 	BlendingStruct	BlendingConstants;
 

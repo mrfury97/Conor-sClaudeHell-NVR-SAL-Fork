@@ -12,6 +12,7 @@ void TerrainShaders::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_TerrainParallaxExtraData", &ParallaxConstants.ExtraData);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendData", &BlendingConstants.Data);
 	TheShaderManager->RegisterConstant("TESR_TerrainBlendFrame", &BlendingConstants.Frame);
+	TheShaderManager->RegisterConstant("TESR_TerrainBlendShape", &BlendingConstants.Shape);
 }
 
 // Runs as a land shader binds (ShaderRecord::SetCT), before its constants upload. In the world scene the first
@@ -143,14 +144,20 @@ void TerrainShaders::UpdateSettings() {
 	Constants.PBRData.w = (float)std::clamp(TheSettingManager->GetSettingI("Shaders.PBR.Main", "DebugView"), 0, 4);
 
 	BlendingSettings.Enabled = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Enabled");
-	BlendingSettings.Debug = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Debug");
+	BlendingSettings.DebugView = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "DebugView");
 	BlendingSettings.Dither = TheSettingManager->GetSettingI("Shaders.Terrain.Blending", "Dither");
 	BlendingConstants.Frame.y = BlendingSettings.Dither ? 1.0f : 0.0f;
-	BlendingSettings.BlendDistance = max(0.1f, TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"));
+	// Capped at 20: deeper bands show too much of what the land covers.
+	BlendingSettings.BlendDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "BlendDistance"), 0.5f, 20.0f);
+	BlendingSettings.GroundWidth = max(0.0f, TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "GroundWidth"));
+	BlendingSettings.HeightBlend = max(0.0f, TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "HeightBlend"));
+	BlendingSettings.SlopeBlend = max(0.0f, TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "SlopeBlend"));
+	BlendingSettings.MinPixels = max(0.0f, TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MinPixels"));
+	BlendingConstants.Shape = D3DXVECTOR4(BlendingSettings.GroundWidth, BlendingSettings.HeightBlend, BlendingSettings.SlopeBlend, BlendingSettings.MinPixels);
 	BlendingSettings.MaxDistance = TheSettingManager->GetSettingF("Shaders.Terrain.Blending", "MaxDistance");
 	BlendingConstants.Data.y = BlendingSettings.BlendDistance;
 	BlendingConstants.Data.z = BlendingSettings.MaxDistance;
-	BlendingConstants.Data.w = BlendingSettings.Debug ? 1.0f : 0.0f;
+	BlendingConstants.Data.w = (float)BlendingSettings.DebugView;
 
 	LODSettings.NoiseScale = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseScale");
 	LODSettings.NoiseTile = TheSettingManager->GetSettingF("Shaders.Terrain.LOD", "LODNoiseTile");
