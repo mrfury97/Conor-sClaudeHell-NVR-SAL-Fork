@@ -182,8 +182,14 @@ TerrainBlendGap terrainBlendGap(float2 screenPos, float3 landPos, float landView
     float3 o = terrainBlendObject(uv, landPos, landViewDepth, eye);
     gap.covered = dot(landPos - o, normal);
 
+    // A land pixel only draws in front of the object behind it (the depth test), so a negative gap is the two
+    // depths' imprecision (and anti-aliasing's sampling) right where the object meets the ground: it counts as
+    // 0, the object at the surface, so the land is fully faded there. Read as "object in front", it drew the
+    // land opaque along the contact line: a thin bright line between faded pixels.
+    float tolerance = 1.0f + landViewDepth * 0.001f;
     float limit = TESR_TerrainBlendData.y * 4.0f * max(1.0f, TESR_TerrainBlendShape.z);
-    [branch] if (TESR_TerrainBlendData.x > 0.0f && gap.covered > 0.0f && gap.covered < limit) {
+    [branch] if (TESR_TerrainBlendData.x > 0.0f && gap.covered > -tolerance && gap.covered < limit) {
+        gap.covered = max(gap.covered, 0.0f);
         float3 oR = terrainBlendObject(uv + float2(texel.x, 0.0f), landPos + dPx, landViewDepth + dZx, eye);
         float3 oL = terrainBlendObject(uv - float2(texel.x, 0.0f), landPos - dPx, landViewDepth - dZx, eye);
         float3 oD = terrainBlendObject(uv + float2(0.0f, texel.y), landPos + dPy, landViewDepth + dZy, eye);
@@ -218,7 +224,7 @@ float terrainBlendDepthRange(TerrainBlendGap gap, float slope) {
 // its depth (so a hill in front of a distant object never turns see-through at its edge).
 float getTerrainBlend(TerrainBlendGap gap, float landViewDepth, float slope) {
     float maxDistance = TESR_TerrainBlendData.z;
-    if (landViewDepth > maxDistance || gap.covered <= 0.0f) return -1.0f;   // the object in front: the depth test handles it
+    if (landViewDepth > maxDistance || gap.covered < 0.0f) return -1.0f;   // the object in front: the depth test handles it
     float distance = terrainBlendDepthRange(gap, slope);
     if (distance < 0.05f) return -1.0f;   // parallel to the ground: nothing to fade
     float range = clamp(gap.width * TESR_TerrainBlendShape.w, distance, distance * 4.0f);
@@ -362,7 +368,7 @@ PS_OUTPUT main(PS_INPUT IN) {
         float keep = getTerrainBlend(gap, landViewDepth, 1.0f - normal.z);
         if (keep >= 0.0f) keep = terrainBlendEdge(keep, baseHeight.a);
         if (debugView > 2.5f) {
-            if (gap.covered <= 0.0f) finalColor = float3(0.0f, 0.0f, 0.3f);
+            if (gap.covered < 0.0f) finalColor = float3(0.0f, 0.0f, 0.3f);
             else if (debugView < 3.5f) finalColor = saturate(gap.covered / (TESR_TerrainBlendData.y * 4.0f));
             else finalColor = saturate(terrainBlendDepthRange(gap, 1.0f - normal.z) / TESR_TerrainBlendData.y);
         }
