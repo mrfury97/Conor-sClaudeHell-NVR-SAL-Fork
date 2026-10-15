@@ -92,7 +92,7 @@ static inline void HashTransform(UInt32& Hash, const NiTransform& Transform) {
 // in bone space) through the bone's world transform, merged; and each bone's world transform. The
 // mesh's own world bound does not follow the pose, and its world transform does not change as it
 // animates. False when the skin has no bones to go by.
-static bool GetSkinnedBound(NiGeometry* Geo, NiBound* Bound, UInt32* PoseHash) {
+static bool GetSkinnedBound(NiGeometry* Geo, NiBound* Bound, std::vector<D3DXVECTOR3>* BonePositions) {
 	NiSkinInstance* Skin = Geo->skinInstance;
 	if (!Skin || !Skin->BoneObjects || !Skin->SkinData || !Skin->SkinData->BoneData) return false;
 	// NiSkinData's count: NiSkinInstance's word at 0x1C is the software skinning matrix count, 0 for
@@ -101,12 +101,12 @@ static bool GetSkinnedBound(NiGeometry* Geo, NiBound* Bound, UInt32* PoseHash) {
 	if (!Bones) return false;
 
 	D3DXVECTOR3 Min(FLT_MAX, FLT_MAX, FLT_MAX), Max(-FLT_MAX, -FLT_MAX, -FLT_MAX);
-	UInt32 Hash = 2166136261u;
+	BonePositions->clear();
 	for (UInt32 b = 0; b < Bones; b++) {
 		const NiAVObject* Bone = Skin->BoneObjects[b];
 		if (!Bone) continue;
 		const NiTransform& World = Bone->m_worldTransform;
-		HashTransform(Hash, World);
+		BonePositions->push_back(D3DXVECTOR3(World.pos.x, World.pos.y, World.pos.z));
 		const NiBound& Local = Skin->SkinData->BoneData[b].Bound;
 		const NiPoint3 Rotated = World.rot * NiPoint3{ Local.Center.x * World.scale, Local.Center.y * World.scale, Local.Center.z * World.scale };
 		const D3DXVECTOR3 Centre(Rotated.x + World.pos.x, Rotated.y + World.pos.y, Rotated.z + World.pos.z);
@@ -120,7 +120,6 @@ static bool GetSkinnedBound(NiGeometry* Geo, NiBound* Bound, UInt32* PoseHash) {
 	const D3DXVECTOR3 HalfSize = (Max - Min) * 0.5f;
 	Bound->Center = NiPoint3{ Centre.x, Centre.y, Centre.z };
 	Bound->Radius = D3DXVec3Length(&HalfSize) + 8.0f;   // a little slack for the sphere fit
-	*PoseHash = Hash;
 	return true;
 }
 
@@ -496,8 +495,11 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	const D3DXVECTOR3 Position(SlotPosition->x, SlotPosition->y, SlotPosition->z);
 	const D3DXVECTOR3 Drift = Position - Cache->Position;
 	// A lamp that moves (carried, on the player, walking about: ShaderManager::GetNearbyLights) is
-	// followed within half a unit, not six: its shadows would lag behind it in steps.
-	const float DriftLimit = SlotMobile[LightIndex] ? 0.25f : 36.0f;
+	// frozen too, only further: its cube stays where it was drawn until the lamp is MovingLampStep
+	// units from it. Followed within half a unit, each such lamp redrew its whole cube (six faces and
+	// their still layers) nearly every frame it moved; its shadows now catch up in steps.
+	const float MobileStep = Settings->MovingLampStep;
+	const float DriftLimit = SlotMobile[LightIndex] ? MobileStep * MobileStep : 36.0f;
 	if (Cache->Light != pNiLight || Cache->Texture != CubeTexture || D3DXVec3LengthSq(&Drift) > DriftLimit || fabsf(Cache->Radius - Radius) > 0.5f) {
 		if (Cache->Light != pNiLight) CubeResetLight++;
 		else if (Cache->Texture != CubeTexture) CubeResetTexture++;
@@ -528,6 +530,19 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 	Shadows->Constants.ShadowCubeMapLightPosition.w = Radius;
 	Shadows->Constants.Data.z = Radius;
 	D3DXMatrixPerspectiveFovRH(&Proj, D3DXToRadian(90.0f), 1.0f, 0.1f, Radius);
+
+	// How often this lamp's faces redraw what moves in them (ActorShadowFullRate, ActorShadowSlowFrames):
+	// every frame near the camera, every 2nd out to twice that distance, every ActorShadowSlowFrames-th
+	// beyond, each lamp on its own frames so the work spreads out. Only faces whose still layer is
+	// unchanged wait: what changed in them is their moving casters (NPCs walking), whose shadows then
+	// refresh at 15-30 fps in the far corners instead of every frame.
+	UInt32 ActorInterval = 1;
+	if (Settings->ActorShadowSlowFrames > 1) {
+		const float Distance = D3DXVec3Length(&Eye);   // the lamp from the camera
+		if (Distance > Settings->ActorShadowFullRate * 2.0f) ActorInterval = (UInt32)Settings->ActorShadowSlowFrames;
+		else if (Distance > Settings->ActorShadowFullRate) ActorInterval = min(2u, (UInt32)Settings->ActorShadowSlowFrames);
+	}
+	const bool ActorTurn = ActorInterval <= 1 || ((MotionFrame + LightIndex) % ActorInterval) == 0;
 
 	// The casters, gathered and filtered once for the six faces: every mesh any lamp of the cluster
 	// lights (the game's per-lamp lists, merged, in pointer order so the face hashes do not depend
@@ -624,9 +639,13 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		// by is drawn in every face, every frame.
 		CubeCaster Caster = {};
 		Caster.Geo = geo;
+		static std::vector<D3DXVECTOR3> BonePositions;
+		bool Posed = false;
 		if (geo->skinInstance) {
-			if (GetSkinnedBound(geo, &Caster.Bound, &Caster.PoseHash))
+			if (GetSkinnedBound(geo, &Caster.Bound, &BonePositions)) {
 				Caster.HasBound = true;
+				Posed = true;
+			}
 			else {
 				Caster.AlwaysRedraw = true;
 				if (!CubeDynamicExample[0])
@@ -639,15 +658,33 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		}
 		// Moving: its transform or pose changed within the last 30 frames (RedrawActorsOnly). Updated
 		// once a frame, however many lamps it is near.
+		// A skinned mesh's pose counts as changed only once a bone has moved ActorPoseThreshold units from
+		// where it was when the pose last changed: breathing and fidgeting stay under it, so an NPC standing
+		// idle is kept like any still mesh and goes into the face's still layer; walking, turning or a
+		// gesture crosses it at once. Every bone transform used to go into the hash, so idle NPCs redrew
+		// every face they were in, every turn.
 		CasterMotion& Mo = Motion[geo];
 		if (Mo.Frame != MotionFrame) {
+			if (Posed) {
+				const float Threshold = Settings->ActorPoseThreshold;
+				bool Changed = Mo.RefBones.size() != BonePositions.size();
+				for (size_t b = 0; !Changed && b < BonePositions.size(); b++) {
+					const D3DXVECTOR3 Delta = BonePositions[b] - Mo.RefBones[b];
+					Changed = D3DXVec3LengthSq(&Delta) > Threshold * Threshold;
+				}
+				if (Changed) {
+					Mo.RefBones = BonePositions;
+					Mo.PoseVersion++;
+				}
+			}
 			UInt32 Hash = 2166136261u;
 			HashTransform(Hash, geo->m_worldTransform);
-			HashMix(Hash, Caster.PoseHash);
+			HashMix(Hash, Mo.PoseVersion);
 			if (Hash == Mo.Hash) Mo.StillFrames++;
 			else { Mo.Hash = Hash; Mo.StillFrames = 0; }
 			Mo.Frame = MotionFrame;
 		}
+		Caster.PoseHash = Mo.PoseVersion;
 		Caster.Moving = Caster.AlwaysRedraw || Mo.StillFrames < 30;
 		Casters.push_back(Caster);
 	}
@@ -725,13 +762,19 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 			}
 		}
 		else {
-			// old form based geo accumulation when the one perform by the game has not handled this light
-			Dynamic = true;
+			// The cell's references within reach, for lamps the game gave no list (the form based fallback).
+			// Hashed like the lists' casters, each reference by its node and transform, so the face is kept
+			// while nothing in it moves. It used to redraw every face of such lamps, every frame, walls and
+			// all: most of the cube faces drawn in busy interiors. A reference that animates in place (an
+			// idle NPC) keeps its last shadow until it moves.
 			TList<TESObjectREFR>::Entry* Entry = &Player->parentCell->objectList.First;
 			while (Entry) {
 				if (NiNode* RefNode = GetRefNode(Entry->item, &Settings->Forms)) {
-					if (RefNode->GetDistance(LightPos) <= Radius + RefNode->GetWorldBoundRadius() && !IsRefracting(Entry->item))
+					if (RefNode->GetDistance(LightPos) <= Radius + RefNode->GetWorldBoundRadius() && !IsRefracting(Entry->item)) {
+						HashMix(Signature, (UInt32)RefNode);
+						HashTransform(Signature, RefNode->m_worldTransform);
 						AccumChildren(RefNode, &Settings->Forms, false, false);
+					}
 				}
 				Entry = Entry->next;
 			}
@@ -744,6 +787,14 @@ void ShadowManager::RenderShadowCubeMap(ShadowSceneLight** Lights, UInt32 LightI
 		if (!Dynamic && Cache->Valid[Face] && Cache->Signature[Face] == Signature && (ForwardShadows || !Cache->AtlasOnly[Face])) {
 			ClearAccums();   // the form based fallback accumulates as it goes
 			CubeFacesKept++;
+			continue;
+		}
+		// Only its moving casters changed, and this is not the lamp's turn: the face keeps last turn's
+		// drawing (still layer plus movers, in the atlas). Its signature stays the old one, so it redraws
+		// on the lamp's next turn.
+		if (!ActorTurn && !Dynamic && UseGeometryLists && !Moving.empty() && ForwardShadows && Cache->Valid[Face] && Cache->AtlasOnly[Face]
+			&& Cache->StaticValid[Face] && Cache->StaticSignature[Face] == StaticSignature) {
+			CubeFacesThrottled++;
 			continue;
 		}
 		if (!Cache->Valid[Face]) CubeFacesFirst++;
@@ -1221,9 +1272,9 @@ void ShadowManager::RenderShadowMaps() {
 				CubeFacesFirst, CubeFacesDynamic, CubeDynamicExample[0] ? CubeDynamicExample : "-", CubeFacesChanged);
 			Logger::Log("ShadowManager: shadow slots over %u frames: %u clusters given a slot (%u taking a held one), dropped: %u outranked, %u gone, %u inactive past grace; up to %u shadow-casting lamps gathered, in %u clusters",
 				LogFrames, SlotAssigned, SlotEvicted, SlotDropOutranked, SlotDropGone, SlotDropExpired, SlotMaxGathered, SlotMaxClusters);
-			Logger::Log("ShadowManager: RedrawActorsOnly over %u frames: %u cube faces redrawn as their moving casters over a kept static layer (%u static layers drawn)",
-				LogFrames, CubeFacesSplit, CubeStaticDrawn);
-			CubeFacesSplit = CubeStaticDrawn = 0;
+			Logger::Log("ShadowManager: RedrawActorsOnly over %u frames: %u cube faces redrawn as their moving casters over a kept static layer (%u static layers drawn), %u waited for their lamp's turn (ActorShadowSlowFrames)",
+				LogFrames, CubeFacesSplit, CubeStaticDrawn, CubeFacesThrottled);
+			CubeFacesSplit = CubeStaticDrawn = CubeFacesThrottled = 0;
 			SlotAssigned = SlotEvicted = SlotDropOutranked = SlotDropGone = SlotDropExpired = SlotMaxGathered = SlotMaxClusters = 0;
 			LogFrames = 0;
 			CubeFacesDrawn = CubeFacesKept = 0;

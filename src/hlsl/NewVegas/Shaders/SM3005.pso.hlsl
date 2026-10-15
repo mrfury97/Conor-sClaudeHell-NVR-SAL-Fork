@@ -22,6 +22,7 @@
 #include "includes/Shadow.hlsl"
 #include "includes/Helpers.hlsl"
 #include "includes/PBRScale.hlsl"
+#include "includes/PointShadow.hlsl"   // each lamp's own shadow (ForwardPointShadows, set per draw by the Lighting30Shader hook)
 
 float4 AmbientColor    : register(c0);
 float4 EyePosition     : register(c1);
@@ -43,6 +44,7 @@ struct VS_INPUT {
     float3 normal         : TEXCOORD5_centroid;
     float3 objPos         : TEXCOORD6_centroid;
     float4 fog            : TEXCOORD7_centroid;
+    float2 vpos           : VPOS;   // the pixel's screen position (Includes/PointShadow.hlsl, POINT_SHADOW_PIXEL)
 };
 
 struct VS_OUTPUT {
@@ -51,6 +53,7 @@ struct VS_OUTPUT {
 
 VS_OUTPUT main(VS_INPUT IN) {
     VS_OUTPUT OUT;
+    POINT_SHADOW_PIXEL(IN.vpos);
 
     float3x3 tbn = float3x3(normalize(IN.tangent), normalize(IN.binormal), normalize(IN.normal));
 
@@ -123,8 +126,10 @@ VS_OUTPUT main(VS_INPUT IN) {
             att = 1.0f - d * d;
         }
 
-        // The shadow scales the sun only; point lights and ambient stay untouched.
+        // The sun takes its shadow, each lamp its own (LightData pair i is the pass's light i,
+        // Lighting30Shader::SetupGeometryConstants_Lights, as in SM3003.pso). Ambient stays untouched.
         if (isDirectional) att *= sunShadow;
+        else att *= PointShadowBaseFacingLamp(i, IN.shadowWorldPos.xyz, SHADOW_VS_PRESENT(IN.shadowWorldPos.w) ? 1.0f : 0.0f);
 
         float NdotL = max(dot(N, lightT), 0.0f);
         diffuse += lightColor * (NdotL * att);

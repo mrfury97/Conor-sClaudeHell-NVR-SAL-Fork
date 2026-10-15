@@ -122,7 +122,9 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	TheTextureManager->TerrainBlendLogScene = TheSettingManager->SettingsMain.Develop.DebugMode && TheShaderManager->GameState.isExterior && (++sceneCount % 2000) == 300;
 	TheTextureManager->TerrainBlendLog.clear();
 
+	GpuProfiler::Begin(GpuProfiler::WorldScene);
 	(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+	GpuProfiler::End(GpuProfiler::WorldScene);
 
 	if (TheTextureManager->TerrainBlendLogScene)
 		Logger::Log("[TerrainBlend] world scene shader order: %s", TheTextureManager->TerrainBlendLog.c_str());
@@ -322,7 +324,10 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 	if (!DestinationTarget && TheRenderManager->currentRTGroup) {
 		OutputSurface = TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface;
 		if (!TheSettingManager->SettingsMain.Main.RenderPreTonemapping) TheShaderManager->RenderEffectsPreTonemapping(OutputSurface);
+		GpuProfiler::Begin(GpuProfiler::Effects);
 		TheShaderManager->RenderEffects(OutputSurface);
+		GpuProfiler::End(GpuProfiler::Effects);
+		GpuProfiler::EndFrame();
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
 	}
 

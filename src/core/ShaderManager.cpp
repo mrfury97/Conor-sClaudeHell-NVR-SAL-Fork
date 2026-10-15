@@ -534,9 +534,12 @@ ShaderCollection* ShaderManager::GetShaderCollection(const char* Name) {
 	if (!memcmp(Name, "SKIN", 4)) return Shaders.Skin;
 	// Hair (BSSM_3XLIGHTING_*) lives in the SM3 family, not HAIR*. Only SM3003 has a
 	// replacement on disk; the rest resolve to no file and fall through to vanilla.
-	// The decal shaders (SM3004.vso, SM3005/SM3007.pso: blood, bullet holes) stay the game's own,
-	// as every decal does (VanillaDecals, Hooks/Shaders.cpp): replaced, they flickered in interiors.
-	if (!memcmp(Name, "SM3004", 6) || !memcmp(Name, "SM3005", 6) || !memcmp(Name, "SM3007", 6)) return NULL;
+	// The decal shaders (SM3004.vso, SM3005/SM3007.pso: blood, bullet holes). With DecalLampShadows NVR's
+	// ports draw them, so they take each lamp's shadow (and the sun's, the skylight, PBR scaling) like the
+	// surface under them; without it they stay the game's own, as decals drawn by the other shaders do
+	// (VanillaDecals, Hooks/Shaders.cpp), which fixed decals flickering in interiors. Read once, at load.
+	if (!memcmp(Name, "SM3004", 6) || !memcmp(Name, "SM3005", 6) || !memcmp(Name, "SM3007", 6))
+		return TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "DecalLampShadows") ? Shaders.PBR : NULL;
 	if (!memcmp(Name, "SM3", 3)) return Shaders.PBR;
 	// SpeedTree leaves. STLEAF001/003.vso are vs_3_0 replacements, so every leaf PS must have
 	// a ps_3_0 replacement too: D3D9 rejects a 2.x VS paired with a 3.0 PS.
@@ -1153,9 +1156,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// Lamps' contact shadows (Effects/SunShadows.fx, technique 1): their share of each pixel's
 		// light into the buffer's red channel, composited below (ShadowsInteriors.fx, technique 1).
 		if (ForwardPointShadows && Effects.ShadowsExteriors->Constants.LampContactData.x > 0.0f) {
+			GpuProfiler::Begin(GpuProfiler::LampContact);
 			Device->SetRenderTarget(0, Effects.ShadowsExteriors->Textures.ShadowPassSurface);
 			Effects.SunShadows->Render(Device, Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.ShadowsExteriors->Textures.ShadowPassSurface,
 				Effects.ShadowsExteriors->Settings.Interiors.ContactBlur ? 2 : 1, false, nullptr);   // sharp, or blurred too
+			GpuProfiler::End(GpuProfiler::LampContact);
 		}
 	}
 

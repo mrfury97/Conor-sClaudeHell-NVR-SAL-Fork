@@ -158,6 +158,10 @@ public:
 		float				ShadowNormalOffset;   // lamp shadow lookups pushed off the surface, in cube texels (Shaders/Includes/PointShadow.hlsl)
 		bool				PCSS;                 // lamp shadows' edges widen with distance from what casts them (Shaders/Includes/PointShadow.hlsl)
 		bool				RedrawActorsOnly;     // lamp shadow faces with something moving in them keep their still part and redraw only what moves (ShadowManager)
+		float				MovingLampStep;       // a moving lamp's cube is redrawn only once it has moved this far from where it was drawn (game units)
+		float				ActorShadowFullRate;  // lamps nearer the camera than this redraw their moving casters every frame (game units)
+		int					ActorShadowSlowFrames; // farther ones every this many frames at most, staggered (1: every frame)
+		float				ActorPoseThreshold;   // a skinned mesh's pose counts as changed once a bone has moved this far (game units)
 		float				PCSSLightSize;        // the lamps' radius for it, in units
 		float				PCSSMaxSpread;        // the widest edge, in shadow map texels
 		int					PCSSFilter;           // 0 auto (smooth without TAA, dithered with it), 1 smooth, 2 dithered

@@ -10,7 +10,9 @@ void __fastcall RenderShadowMapHook(void* apThis) {
 		reportedJitteredShadows = true;
 	}
 
+	GpuProfiler::Begin(GpuProfiler::ShadowMaps);
 	TheShadowManager->RenderShadowMaps();
+	GpuProfiler::End(GpuProfiler::ShadowMaps);
 	CdeclCall(0x871A50);
 }
 

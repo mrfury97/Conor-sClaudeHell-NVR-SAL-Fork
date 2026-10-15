@@ -506,6 +506,10 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.ShadowNormalOffset = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ShadowNormalOffset"), 0.0f, 8.0f);
 	Settings.Interiors.PCSS = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PCSS");
 	Settings.Interiors.RedrawActorsOnly = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "RedrawActorsOnly");
+	Settings.Interiors.MovingLampStep = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "MovingLampStep"), 0.5f, 256.0f);
+	Settings.Interiors.ActorShadowFullRate = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ActorShadowFullRate"), 0.0f, 100000.0f);
+	Settings.Interiors.ActorShadowSlowFrames = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ActorShadowSlowFrames"), 1, 8);
+	Settings.Interiors.ActorPoseThreshold = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ActorPoseThreshold"), 0.0f, 32.0f);
 	Settings.Interiors.PCSSLightSize = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PCSSLightSize"), 0.0f, 32.0f);
 	Settings.Interiors.PCSSMaxSpread = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PCSSMaxSpread"), 1.0f, 8.0f);
 	Settings.Interiors.PCSSFilter = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PCSSFilter"), 0, 2);

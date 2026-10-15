@@ -107,6 +107,8 @@ public:
 		UInt32		Hash;           // its transform and pose, last time it was seen
 		UInt32		Frame;          // MotionFrame it was last updated in
 		UInt32		StillFrames;    // frames since that last changed
+		UInt32		PoseVersion;    // a skinned mesh's pose: bumped when a bone moves past ActorPoseThreshold
+		std::vector<D3DXVECTOR3> RefBones;   // the bones' positions at that pose
 	};
 	std::unordered_map<NiGeometry*, CasterMotion>	Motion;
 	UInt32					MotionFrame;
@@ -115,6 +117,7 @@ public:
 	int						SplitSupport;   // 0 unknown, 1 yes, -1 no (min blending into R32F)
 	std::vector<const CubeCaster*>	FaceStaticScratch, FaceMovingScratch;
 	UInt32					CubeFacesSplit, CubeStaticDrawn;   // Develop.DebugMode log
+	UInt32					CubeFacesThrottled = 0;            // ... faces whose moving casters waited for their turn (ActorShadowSlowFrames)
 	bool					SplitAvailable();
 	bool					EnsureStaticCube(UInt32 Slot);
 	void					AccumCasters(const std::vector<const CubeCaster*>& List, bool Alpha);
