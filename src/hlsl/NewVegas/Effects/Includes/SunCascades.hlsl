@@ -12,6 +12,7 @@ float4x4 TESR_ShadowCameraToLightTransformMiddle;
 float4x4 TESR_ShadowCameraToLightTransformFar;
 float4x4 TESR_ShadowCameraToLightTransformLod;
 float4 TESR_SmoothedSunDir;
+float4 TESR_ShadowReceiverOffset; // x: the receiver offset toward the sun (GetSunShadow's TESR_ShadowForwardData.y)
 float4 TESR_ShadowFormatData; // x: mode, y: format bits per pixels
 float4 TESR_ShadowBlur; // x: 1 / atlas resolution, y: whether the lod cascade was updated
 float4 TESR_ShadowNearCenter; // x,y,z: center (world space), w: radius
@@ -101,6 +102,9 @@ float GetLightAmountValue(float4x4 lightTransform, float4 coord, float offsetX, 
 
 float GetLightAmount(float4 positionWS, float3 normal)
 {
+	// Receiver offset toward the sun, as GetSunShadow (near-flat surfaces meeting don't shade each other).
+    positionWS.xyz += TESR_SmoothedSunDir.xyz * TESR_ShadowReceiverOffset.x;
+
 	// Normal offset.
     float NdotL = dot(normal, TESR_SmoothedSunDir.xyz);
     float offsetScale = saturate(1 - NdotL);

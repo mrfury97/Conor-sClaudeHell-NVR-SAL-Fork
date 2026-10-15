@@ -433,7 +433,9 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	// (nothing ever sets ShaderManager::EffectReloadQueued), so the macro is frozen at whatever
 	// it was when the shader was first compiled.
 	Constants.ForwardData.x = Settings.Exteriors.ForwardShadows ? 0.0f : 1.0f;
-	Constants.ForwardData.y = 0.0f;
+	// A few units toward the sun for every shadow receiver: see GetSunShadow in Shaders/Includes/Shadow.hlsl.
+	Constants.ForwardData.y = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ShadowMaps", "ReceiverOffset"), 0.0f, 64.0f);
+	Constants.ReceiverOffset = D3DXVECTOR4(Constants.ForwardData.y, 0.0f, 0.0f, 0.0f);
 	Constants.ForwardData.z = 0.0f;
 	Constants.ForwardData.w = 0.0f;
 	Settings.Exteriors.Quality = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.Main", "Quality"), 0, 4);
@@ -549,6 +551,7 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowData", &Constants.Data);
 	TheShaderManager->RegisterConstant("TESR_ShadowFormatData", &Constants.FormatData);
 	TheShaderManager->RegisterConstant("TESR_ShadowForwardData", &Constants.ForwardData);
+	TheShaderManager->RegisterConstant("TESR_ShadowReceiverOffset", &Constants.ReceiverOffset);
 	TheShaderManager->RegisterConstant("TESR_ShadowBlur", &Constants.ShadowBlur);
 	TheShaderManager->RegisterConstant("TESR_ShadowScreenSpaceData", &Constants.ScreenSpaceData);
 	TheShaderManager->RegisterConstant("TESR_ShadowContactData", &Constants.ContactData);

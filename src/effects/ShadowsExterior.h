@@ -69,7 +69,8 @@ public:
 		// and zero here means "not suppressed" -- i.e. the current, working behaviour. The
 		// opposite polarity would turn a dropped constant into silently missing shadows,
 		// which is exactly the failure that made this a compile-time macro in the first place.
-		D3DXVECTOR4		ForwardData;
+		D3DXVECTOR4		ForwardData;		// x: 1 when the forward path is suppressed, y: receiver offset toward the sun
+		D3DXVECTOR4		ReceiverOffset;		// x: the same offset, for the effects (SunCascades.hlsl)
 	};
 
 	// Settings

@@ -56,7 +56,7 @@ float4 TESR_ShadowFormatData  : register(c129); // x: mode (0 VSM, 1 EVSM2, 2 EV
 float4 TESR_ShadowFade        : register(c130); // x: sunrise/sunset fade, y: shadow maps active
 float4 TESR_SmoothedSunDir    : register(c131);
 float4 TESR_ShadowBlur        : register(c132); // x: 1 / atlas resolution, y: lod cascade updated
-float4 TESR_ShadowForwardData : register(c133); // x: 1 when the forward path is SUPPRESSED
+float4 TESR_ShadowForwardData : register(c133); // x: 1 when the forward path is SUPPRESSED, y: receiver offset toward the sun
 
 // Object templates top out at s7. Override BEFORE including for wider sampler arrays --
 // TerrainTemplate's NormalMap[7] spans s7-s13.
@@ -266,6 +266,12 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
 
     // ShadowMap.pso's channel layout differs per Mode. Fail unshadowed on a mismatch.
     if (TESR_ShadowFormatData.x != (float)SHADOW_FIXED_MODE) return 1.0f;
+
+    // Receiver offset ([Shaders.ShadowsExteriors.ShadowMaps] ReceiverOffset): the point is tested as if a few
+    // units nearer the sun. The prefiltered (blurred) VSM/EVSM moments mix the depths of surfaces a few units
+    // apart, so two nearly flat surfaces meeting (a slab under the land's edge, a road piece) shaded each other
+    // in a soft band along the edge, widest with a low sun. Real occluders are far further away than this.
+    worldPos += TESR_SmoothedSunDir.xyz * TESR_ShadowForwardData.y;
 
     // Push the sample along the normal, scaled by how grazing the sun is.
     float NdotL = dot(worldNormal, TESR_SmoothedSunDir.xyz);

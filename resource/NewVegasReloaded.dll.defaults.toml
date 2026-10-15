@@ -840,6 +840,7 @@ CascadeResolution = 1				 # Resolution used for shadow cascades. 0: 1024, 1: 153
                                      # 3 is ~2.6x the cost of 2, and 5 is ~5x. Clamped down if it
                                      # exceeds the device's maximum texture size.
 Prefilter = true					 # Enable prefiltering the shadow maps. Prefiltering is a blur.
+ReceiverOffset = 8.0                 # [0-64] Every shadow receiver is tested this many game units nearer the sun. Stops nearly flat surfaces a few units apart (a slab meeting the land's edge, road pieces, terrain-blended bases) shading each other in a soft dark band along their edge, worst with a low sun. Higher can detach shadows from small objects' bases (contact shadows cover that).
 MSAA = true							 # Enable multisample antialiasing for shadow maps.
 Mipmaps = false						 # DISABLED. Enable mipmaps for the shadow maps.
 Anisotropy = 0						 # DISABLED. Anisotropic filteric for mipmaps, 0: disabled, 1: 8x, 2: 16x
