@@ -168,13 +168,13 @@ float4 Shadow(VSOUT IN) : COLOR0
 	// whenever the sun lights the surface.
 	[branch] if (!TESR_ShadowForwardData.x && !TESR_ShadowFade.z) {
 		float contactVisibility = saturate(Shadow.r);
-		// The land's shadow (TerrainShadow), faded at sunrise and sunset as the cascades are.
+		// The land's shadow (TerrainShadow), faded on the CPU by the sun's height (TerrainShadowMap::Update).
 		// Not on the sky, which CombineDepth puts on the near plane (nor on the far plane): its depth rebuilds a
 		// point beside the camera, which would take the shadow of the camera's own spot. As SunShadows.fx skips them.
 		float terrainVisibility = 1.0f;
 		[branch] if (TESR_TerrainShadowData.w > 0.0f) {
 			float rawDepth = tex2Dlod(TESR_DepthBuffer, float4(IN.UVCoord, 0.0f, 0.0f)).y;
-			if (rawDepth > 0.0f && rawDepth < 0.99999f) terrainVisibility = saturate(lerp(TerrainShadow(world_pos.xyz), 1.0f, TESR_ShadowFade.x));
+			if (rawDepth > 0.0f && rawDepth < 0.99999f) terrainVisibility = TerrainShadow(world_pos.xyz);
 		}
 		// On skin in the lighting (above): nothing to take here, but the debug view still shows the mask.
 

@@ -220,6 +220,7 @@
     <ClCompile Include="..\src\NewVegas\Hooks\ShaderIO.cpp" />
     <ClCompile Include="..\src\NewVegas\Hooks\Shaders.cpp" />
     <ClCompile Include="..\src\NewVegas\Hooks\Shadows.cpp" />
+    <ClCompile Include="..\src\NewVegas\Hooks\Profiling.cpp" />
     <ClCompile Include="..\src\NewVegas\Managers.cpp" />
     <ClInclude Include="..\src\base\Logger.h" />
     <ClInclude Include="..\src\base\PluginVersion.h" />
@@ -327,6 +328,7 @@
     <ClInclude Include="..\src\NewVegas\Hooks\ShaderIO.h" />
     <ClInclude Include="..\src\NewVegas\Hooks\Shaders.h" />
     <ClInclude Include="..\src\NewVegas\Hooks\Shadows.h" />
+    <ClInclude Include="..\src\NewVegas\Hooks\Profiling.h" />
     <ClInclude Include="..\src\NewVegas\Managers.h" />
     <ClInclude Include="..\src\NewVegas\Plugin.h" />
     <ClInclude Include="resource.h" />

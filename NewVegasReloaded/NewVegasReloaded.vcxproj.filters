@@ -262,6 +262,9 @@
     <ClInclude Include="..\src\NewVegas\Hooks\Shadows.h">
       <Filter>NewVegas\Hooks</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\NewVegas\Hooks\Profiling.h">
+      <Filter>NewVegas\Hooks</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\core\BinkManager.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -520,6 +523,9 @@
       <Filter>NewVegas\Hooks</Filter>
     </ClCompile>
     <ClCompile Include="..\src\NewVegas\Hooks\Shadows.cpp">
+      <Filter>NewVegas\Hooks</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\NewVegas\Hooks\Profiling.cpp">
       <Filter>NewVegas\Hooks</Filter>
     </ClCompile>
     <ClCompile Include="..\src\core\BinkManager.cpp">

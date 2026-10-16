@@ -29,6 +29,8 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	UpdateFaceGenInteriorFlag();
 
 	//if (SettingsMain->Develop.TraceShaders && InterfaceManager->IsActive(Menu::MenuType::kMenuType_None) && Global->OnKeyDown(SettingsMain->Develop.TraceShaders) && DWNode::Get() == NULL) DWNode::Create();
+	EnsureProfilingDeviceHooks();
+	PerfProfiler::Scope Profile(PerfProfiler::DrawWorld);
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 
 }
@@ -167,7 +169,10 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 
 	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->UpdateLights();   // after the nearby lights are gathered (shadow maps)
 	GpuProfiler::Begin(GpuProfiler::WorldScene);
-	(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+	{
+		PerfProfiler::Scope Profile(PerfProfiler::TScene, PerfProfiler::Scene);
+		(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
+	}
 	GpuProfiler::End(GpuProfiler::WorldScene);
 
 	if (TheTextureManager->TerrainBlendLogScene)
@@ -211,7 +216,10 @@ void __fastcall RenderFirstPersonHook(Main* This, UInt32 edx, NiDX9Renderer* Ren
 	// Clear the depth buffer before rendering first person model to prevent clipping with world objects & other artefacts
 	TheRenderManager->Clear(NULL, NiRenderer::kClear_ZBUFFER);
 	//ThisCall(0x00874C10, Global);
-	(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	{
+		PerfProfiler::Scope Profile(PerfProfiler::TFirstPerson, PerfProfiler::FirstPerson);
+		(*RenderFirstPerson)(This, Renderer, Geo, SkySun, RenderedTexture);
+	}
 	if (TheShaderManager->Effects.SkinScattering) TheShaderManager->Effects.SkinScattering->Unbind();
 	TheRenderManager->ResolveDepthBuffer(TheTextureManager->DepthTextureViewModel);
 }
@@ -266,7 +274,12 @@ void (__thiscall* RenderReflections)(WaterManager*, NiCamera*, ShadowSceneNode*)
 void __fastcall RenderReflectionsHook(WaterManager* This, UInt32 edx, NiCamera* Camera, ShadowSceneNode* SceneNode) {
 	ReflectionPassScope scope;
 	if (DWNode::Get()) DWNode::AddNode("BEGIN REFLECTIONS RENDERING", NULL, NULL);
-	(*RenderReflections)(This, Camera, SceneNode);
+	{
+		PerfProfiler::Scope Profile(PerfProfiler::TWater, PerfProfiler::Water);
+		GpuProfiler::Begin(GpuProfiler::Water);
+		(*RenderReflections)(This, Camera, SceneNode);
+		GpuProfiler::End(GpuProfiler::Water);
+	}
 	if (DWNode::Get()) DWNode::AddNode("END REFLECTIONS RENDERING", NULL, NULL);
 }
 void (__thiscall* RenderPipboy)(Main*, NiGeometry*, NiDX9Renderer*) = (void (__thiscall*)(Main*, NiGeometry*, NiDX9Renderer*))Hooks::RenderPipboy;
@@ -359,6 +372,7 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 		RenderState->SetRenderState(D3DRS_NORMALIZENORMALS, D3DZB_FALSE, RenderStateArgs);
 		RenderState->SetRenderState(D3DRS_POINTSIZE, 810365505, RenderStateArgs); // fix flickering linked to alpha somehow
 
+		PerfProfiler::Scope Profile(PerfProfiler::TEffects, PerfProfiler::Effects);
 		TheShaderManager->RenderEffectsPreTonemapping(GameSurface);
 	
 	}
@@ -367,11 +381,15 @@ void __cdecl ProcessImageSpaceShadersHook(NiDX9Renderer* Renderer, BSRenderedTex
 
 	if (!DestinationTarget && TheRenderManager->currentRTGroup) {
 		OutputSurface = TheRenderManager->currentRTGroup->RenderTargets[0]->data->Surface;
-		if (!TheSettingManager->SettingsMain.Main.RenderPreTonemapping) TheShaderManager->RenderEffectsPreTonemapping(OutputSurface);
-		GpuProfiler::Begin(GpuProfiler::Effects);
-		TheShaderManager->RenderEffects(OutputSurface);
-		GpuProfiler::End(GpuProfiler::Effects);
+		{
+			PerfProfiler::Scope Profile(PerfProfiler::TEffects, PerfProfiler::Effects);
+			if (!TheSettingManager->SettingsMain.Main.RenderPreTonemapping) TheShaderManager->RenderEffectsPreTonemapping(OutputSurface);
+			GpuProfiler::Begin(GpuProfiler::Effects);
+			TheShaderManager->RenderEffects(OutputSurface);
+			GpuProfiler::End(GpuProfiler::Effects);
+		}
 		GpuProfiler::EndFrame();
+		PerfProfiler::EndFrame();
 		TheRenderManager->CheckAndTakeScreenShot(OutputSurface, TheSettingManager->SettingsMain.Main.HDRScreenshot);
 	}
 

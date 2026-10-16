@@ -46,12 +46,15 @@ public:
 	void	UpdateSettings();
 	void	RegisterConstants();
 	void	RegisterTextures();
-	// Once a frame outdoors, from ShadowManager::RenderShadowMaps. SunDir points at the sun (or moon).
+	// Once a frame outdoors, from ShadowManager::RenderShadowMaps. SunDir points at the sun (or moon): the
+	// real direction the lighting uses, not the shadow maps' quantized one (15 degree steps would make low-sun
+	// shadows half again too long or short, and jump).
 	void	Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDir);
 
 private:
 	struct HeightMap {
-		std::vector<float>	Heights;   // row 0 north, column 0 west
+		std::vector<float>	Heights;   // row 0 north, column 0 west: each texel's average (the ground)
+		std::vector<float>	Peaks;     // ...and its highest point (what casts: averaging flattens ridge tops)
 		UINT	Width = 0, Height = 0;
 		float	West = 0.0f, North = 0.0f;   // the centre of texel (0, 0)
 		float	Texel = 128.0f;              // game units between texel centres
@@ -63,6 +66,8 @@ private:
 		float	Low = 0.0f, Range = 1.0f, Blur = 0.0f;
 		UINT	Generation = 0;
 		std::string	Error;   // set if it failed (out of memory), logged
+		float	Shadowed = 0.0f;   // share of the map's texels in the land's shadow (DebugMode log)
+		D3DXVECTOR3	SunDir = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 	};
 
 	// Both run on worker threads and never throw: a failure comes back as an empty result and a message.
@@ -94,4 +99,5 @@ private:
 	bool				Uploading = false;
 	void*				UploadedWorldSpace = nullptr;
 	UINT				TextureWidth = 0, TextureHeight = 0;
+	float				LastFade = 1.0f;     // for the DebugMode log
 };

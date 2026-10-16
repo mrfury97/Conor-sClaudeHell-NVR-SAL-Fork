@@ -11,7 +11,10 @@ void __fastcall RenderShadowMapHook(void* apThis) {
 	}
 
 	GpuProfiler::Begin(GpuProfiler::ShadowMaps);
-	TheShadowManager->RenderShadowMaps();
+	{
+		PerfProfiler::Scope Profile(PerfProfiler::TShadowMaps, PerfProfiler::ShadowMaps);
+		TheShadowManager->RenderShadowMaps();
+	}
 	GpuProfiler::End(GpuProfiler::ShadowMaps);
 	CdeclCall(0x871A50);
 }

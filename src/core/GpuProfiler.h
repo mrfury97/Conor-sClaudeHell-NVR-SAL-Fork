@@ -1,7 +1,7 @@
 #pragma once
 
 // GPU time per section of the frame, from D3D9 timestamp queries (DXVK supports them), averaged and
-// logged every 300 frames while [Main.Develop.Main] DebugMode is on. CPU timers can't see GPU cost:
+// logged every 300 frames by PerfProfiler while [Main.Develop.Main] DebugMode is on. CPU timers can't see GPU cost:
 // D3D9 queues the work and returns.
 //
 // Each section keeps a ring of query sets and reads a result back only once it is ready (never
@@ -13,6 +13,9 @@ public:
 	enum Section {
 		ShadowMaps,     // ShadowManager::RenderShadowMaps: sun cascades outdoors, lamp cubemaps indoors
 		WorldScene,     // the world drawn, every object shader's lighting and forward shadows included
+		Water,          // the water reflection: the scene drawn again into its own target
+		ScenePre,       // the world scene's opaque draws (BSShaderUtil::RenderScenePreResolveDepth)
+		ScenePost,      // its draws after the depth resolve (BSShaderUtil::RenderScenePostResolveDepth)
 		LampContact,    // the lamps' screen-space contact shadows (interiors, ForwardPointShadows)
 		Effects,        // the whole post-process chain
 		Count
@@ -41,22 +44,21 @@ public:
 		T.Next = (T.Next + 1) % RingSize;
 	}
 
-	// Once a frame: collects what's ready and logs the averages every 300 frames.
+	// Once a frame: collects what's ready (PerfProfiler::EndFrame logs it).
 	static void EndFrame() {
 		if (!Active()) return;
 		for (int s = 0; s < Count; s++)
 			for (int i = 0; i < RingSize; i++)
 				if (Timers[s].Sets[i].Pending) Collect(Timers[s], Timers[s].Sets[i]);
-		FrameTimeSum += TheFrameRateManager->ElapsedTime * 1000.0;
-		if (++Frames < 300) return;
+	}
 
-		auto Average = [](int s) { return Timers[s].Count ? Timers[s].Sum / Timers[s].Count : 0.0; };
-		Logger::Log("[GpuProfile] %s, %u frames: frame %.2f ms; GPU: shadow maps %.2f ms, world scene %.2f ms, lamp contact shadows %.2f ms, post-process %.2f ms",
-			TheShaderManager->GameState.isExterior ? "exterior" : "interior", Frames, FrameTimeSum / Frames,
-			Average(ShadowMaps), Average(WorldScene), Average(LampContact), Average(Effects));
-		for (int s = 0; s < Count; s++) { Timers[s].Sum = 0.0; Timers[s].Count = 0; }
-		Frames = 0;
-		FrameTimeSum = 0.0;
+	// A section's average since the last call, in ms, and the average restarted.
+	static double TakeAverage(Section S) {
+		Timer& T = Timers[S];
+		const double Average = T.Count ? T.Sum / T.Count : 0.0;
+		T.Sum = 0.0;
+		T.Count = 0;
+		return Average;
 	}
 
 private:
@@ -78,8 +80,6 @@ private:
 	};
 
 	static inline Timer Timers[Count];
-	static inline UInt32 Frames = 0;
-	static inline double FrameTimeSum = 0.0;
 	static inline bool Failed = false;
 
 	static bool Active() {

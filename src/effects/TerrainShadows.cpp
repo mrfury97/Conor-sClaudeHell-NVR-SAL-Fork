@@ -147,12 +147,14 @@ TerrainShadowMap::HeightMap TerrainShadowMap::Load(void* WorldSpace, std::string
 		Out.Height = (Height + Factor - 1) / Factor;
 		const float NoLand = -1.0e30f;
 		Out.Heights.assign((size_t)Out.Width * Out.Height, NoLand);
+		Out.Peaks.assign((size_t)Out.Width * Out.Height, NoLand);
 		std::vector<UINT16> Row(Width);
-		std::vector<float> Sum(Out.Width);
+		std::vector<float> Sum(Out.Width), Peak(Out.Width);
 		std::vector<UINT> Count(Out.Width);
 		float Low = FLT_MAX, High = -FLT_MAX;
 		for (UINT r = 0; r < Out.Height; r++) {
 			std::fill(Sum.begin(), Sum.end(), 0.0f);
+			std::fill(Peak.begin(), Peak.end(), NoLand);
 			std::fill(Count.begin(), Count.end(), 0u);
 			const UINT EndY = (r + 1) * Factor < Height ? (r + 1) * Factor : Height;
 			for (UINT y = r * Factor; y < EndY; y++) {
@@ -164,7 +166,9 @@ TerrainShadowMap::HeightMap TerrainShadowMap::Load(void* WorldSpace, std::string
 				}
 				for (UINT x = 0; x < Width; x++) {
 					if (!Row[x]) continue;
-					Sum[x / Factor] += ((float)Row[x] - 32767.0f) * 8.0f;
+					const float h = ((float)Row[x] - 32767.0f) * 8.0f;
+					Sum[x / Factor] += h;
+					Peak[x / Factor] = (std::max)(Peak[x / Factor], h);
 					Count[x / Factor]++;
 				}
 			}
@@ -172,6 +176,7 @@ TerrainShadowMap::HeightMap TerrainShadowMap::Load(void* WorldSpace, std::string
 				if (!Count[c]) continue;
 				const float h = Sum[c] / (float)Count[c];
 				Out.Heights[(size_t)r * Out.Width + c] = h;
+				Out.Peaks[(size_t)r * Out.Width + c] = Peak[c];
 				Low = (std::min)(Low, h);
 				High = (std::max)(High, h);
 			}
@@ -183,6 +188,8 @@ TerrainShadowMap::HeightMap TerrainShadowMap::Load(void* WorldSpace, std::string
 			return Out;
 		}
 		for (float& h : Out.Heights)
+			if (h == NoLand) h = Low;
+		for (float& h : Out.Peaks)
 			if (h == NoLand) h = Low;
 
 		// Texel (c, r) of the file is the vertex at West * 4096 + c * 128, (North + 1) * 4096 - 128 - r * 128.
@@ -198,6 +205,8 @@ TerrainShadowMap::HeightMap TerrainShadowMap::Load(void* WorldSpace, std::string
 	catch (const std::exception& e) {
 		Out.Heights.clear();
 		Out.Heights.shrink_to_fit();
+		Out.Peaks.clear();
+		Out.Peaks.shrink_to_fit();
 		Out.Width = Out.Height = 0;
 		Out.Message = std::string("[ERROR] Terrain shadows: loading the height map for ") + Name + " failed (" + e.what() + ")";
 	}
@@ -210,11 +219,14 @@ TerrainShadowMap::HeightMap TerrainShadowMap::Load(void* WorldSpace, std::string
 TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const HeightMap> Map, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation) {
 	SweepResult Out;
 	Out.Generation = Generation;
+	Out.SunDir = SunDir;
 	try {
 		const std::vector<float>& H = Map->Heights;
+		const std::vector<float>& P = Map->Peaks.size() == H.size() ? Map->Peaks : Map->Heights;
 		const int W = (int)Map->Width, R = (int)Map->Height;
 		float Low = FLT_MAX, High = -FLT_MAX;
-		for (float h : H) { Low = (std::min)(Low, h); High = (std::max)(High, h); }
+		for (float h : H) Low = (std::min)(Low, h);
+		for (float h : P) High = (std::max)(High, h);
 
 		const float Flat = sqrtf(SunDir.x * SunDir.x + SunDir.y * SunDir.y);
 		const bool Overhead = Flat <= 1e-4f;
@@ -245,28 +257,35 @@ TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const Heig
 
 		Out.Packed.resize(H.size());
 		std::vector<float> PreviousUpper(AcrossCount), PreviousLower(AcrossCount), CurrentUpper(AcrossCount), CurrentLower(AcrossCount);
+		size_t ShadowedCount = 0;
 		const int First = Step > 0 ? 0 : AlongCount - 1;
 		for (int n = 0; n < AlongCount; n++) {
 			const int i = First + n * Step;
 			for (int j = 0; j < AcrossCount; j++) {
 				const size_t k = ColumnMajor ? (size_t)j * W + i : (size_t)i * W + j;
-				float Upper = H[k], Lower = H[k];
+				// The shadow the land before casts here, from what it carried: its peaks.
+				float CastUpper = -FLT_MAX, CastLower = -FLT_MAX;
 				const float From = j - Slope;   // where the light came from, on the line before
 				if (n > 0 && !Overhead && From >= 0.0f && From <= (float)(AcrossCount - 1)) {
 					const int j0 = (int)From;
 					const int j1 = (std::min)(j0 + 1, AcrossCount - 1);
 					const float t = From - j0;
-					Upper = (std::max)(Upper, PreviousUpper[j0] + (PreviousUpper[j1] - PreviousUpper[j0]) * t - DropUpper);
-					Lower = (std::max)(Lower, PreviousLower[j0] + (PreviousLower[j1] - PreviousLower[j0]) * t - DropLower);
+					CastUpper = PreviousUpper[j0] + (PreviousUpper[j1] - PreviousUpper[j0]) * t - DropUpper;
+					CastLower = PreviousLower[j0] + (PreviousLower[j1] - PreviousLower[j0]) * t - DropLower;
 				}
-				CurrentUpper[j] = Upper;
-				CurrentLower[j] = Lower;
+				// This texel's shadow heights (against its own ground, not its peak, or it would shade itself), and
+				// what it carries on (its peak included).
+				const float Upper = (std::max)(H[k], CastUpper), Lower = (std::max)(H[k], CastLower);
+				if (H[k] < Upper - Bias - Blur) ShadowedCount++;   // the ground fully under the soft edge, as the shader sees it
+				CurrentUpper[j] = (std::max)(P[k], CastUpper);
+				CurrentLower[j] = (std::max)(P[k], CastLower);
 				// A16B16G16R16: r upper, g lower shadow height, b the ground, a unused
 				Out.Packed[k] = (UINT64)Encode(Upper) | ((UINT64)Encode(Lower) << 16) | ((UINT64)Encode(H[k]) << 32) | (0xFFFFull << 48);
 			}
 			PreviousUpper.swap(CurrentUpper);
 			PreviousLower.swap(CurrentLower);
 		}
+		Out.Shadowed = H.empty() ? 0.0f : (float)ShadowedCount / (float)H.size();
 	}
 	catch (const std::exception& e) {
 		Out.Packed.clear();
@@ -321,6 +340,15 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 		SweepResult Result = SweepJob.get();
 		Sweeping = false;
 		if (!Result.Error.empty()) Logger::Log("%s", Result.Error.c_str());
+		static ULONGLONG LastLog = 0;
+		if (TheSettingManager->SettingsMain.Develop.DebugMode && Result.Error.empty() && GetTickCount64() - LastLog > 5000) {
+			LastLog = GetTickCount64();
+			const D3DXVECTOR3& L = Result.SunDir;
+			const float Azimuth = atan2f(L.x, L.y) * 57.2958f, Elevation = asinf(std::clamp(L.z, -1.0f, 1.0f)) * 57.2958f;
+			Logger::Log("[TerrainShadows] sweep: light from azimuth %.0f (0 north, 90 east), elevation %.1f, %s; fade %.2f, strength %.2f; land in shadow %.1f%%, blur %.0f, bias %.0f",
+				Azimuth < 0.0f ? Azimuth + 360.0f : Azimuth, Elevation, TheShaderManager->GameState.dayLight > 0.5f ? "the sun" : "the moon",
+				LastFade, Settings.Strength, Result.Shadowed * 100.0f, Result.Blur, SweptBias);
+		}
 		const bool Valid = Map && Result.Generation == Generation && Result.Packed.size() == (size_t)Map->Width * Map->Height;
 		const bool SameEncoding = Valid && Uploaded && Texture && TextureWidth == Map->Width && TextureHeight == Map->Height &&
 			UploadedGeneration == Result.Generation && Constants.Range.x == Result.Low && Constants.Range.y == Result.Range;
@@ -401,5 +429,13 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 	Constants.Params.y = (float)Settings.DebugView;
 	Constants.Params.z = Settings.Darkness;
 	Constants.Params.w = Settings.Contrast;
-	Constants.Data.w = (Uploaded && UploadedWorldSpace == World && Sun.z > 0.0f) ? Settings.Strength : 0.0f;
+	// Faded only as the light nears the horizon (to nothing at it, where the sun hands over to the moon),
+	// and at night by the moon's visibility as the shadow maps are. Not by the shadow maps' sunrise and
+	// sunset fade: low sun is when the land's long shadows matter most.
+	float Fade = std::clamp(Sun.z / 0.1f, 0.0f, 1.0f);   // 0.1: about 6 degrees of elevation
+	Fade = Fade * Fade * (3.0f - 2.0f * Fade);
+	if (TheShaderManager->GameState.dayLight <= 0.5f && TheShaderManager->Effects.ShadowsExteriors)   // the moon is the light
+		Fade *= 1.0f - std::clamp(TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowFade.x, 0.0f, 1.0f);
+	LastFade = Fade;
+	Constants.Data.w = (Uploaded && UploadedWorldSpace == World && Sun.z > 0.0f) ? Settings.Strength * Fade : 0.0f;
 }

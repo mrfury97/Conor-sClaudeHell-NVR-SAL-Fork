@@ -1350,7 +1350,7 @@ void ShadowManager::RenderShadowMaps() {
 
 		// [ShadowsExteriors.TerrainShadows]: the xLODGen height map loaded and swept toward the sun on
 		// worker threads (effects/TerrainShadows.cpp).
-		Shadows->TerrainShadows.Update(Device, SunDir);
+		Shadows->TerrainShadows.Update(Device, D3DXVECTOR3(TheShaderManager->ShaderConst.SunDir));   // the real sun, not the quantized one
 	}
 
 	// Render shadow maps for point lights

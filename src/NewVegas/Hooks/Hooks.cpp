@@ -35,6 +35,7 @@ void AttachHooks() {
 	DetourAttach(&(PVOID&)LoadForm, &LoadFormHook);
 	if (SettingsMain->FlyCam.Enabled) DetourAttach(&(PVOID&)UpdateFlyCam, &UpdateFlyCamHook);
 	DetourTransactionCommit();
+	AttachProfilingHooks();   // DebugMode only, each its own transaction
 
 	// Vanilla shader specific hooks.
 	kSkyShaderConstantsDetour.ReplaceVirtualFunc(0x10AFE94, SkyShader__UpdateConstants);

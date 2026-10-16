@@ -48,3 +48,5 @@
 #include "../NewVegas/Hooks/Shadows.h"
 #include "../NewVegas/Hooks/FlyCam.h"
 #include "../core/GpuProfiler.h"
+#include "../core/PerfProfiler.h"
+#include "../NewVegas/Hooks/Profiling.h"

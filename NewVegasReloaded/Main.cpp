@@ -104,6 +104,10 @@ extern "C" {
 		CommandManager::Initialize(Interface);
 
 		if (!Interface->IsEditor) {
+			// Plugins load on the game's main thread. Keep 64 KB of its stack in reserve for exception handlers: on a
+			// stack overflow, Crash Logger otherwise has no stack left to write its report with.
+			ULONG StackGuarantee = 64 * 1024;
+			if (!SetThreadStackGuarantee(&StackGuarantee)) Logger::Log("[WARNING] could not reserve stack for crash reports");
 			((NVSEMessagingInterface*)Interface->QueryInterface(kInterface_Messaging))->RegisterListener(Interface->GetPluginHandle(), "NVSE", MessageHandler);
 			((NVSEMessagingInterface*)Interface->QueryInterface(kInterface_Messaging))->RegisterListener(Interface->GetPluginHandle(), "Shader Loader", ShaderLoaderHandler);
 
