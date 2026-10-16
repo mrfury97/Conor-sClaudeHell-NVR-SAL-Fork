@@ -98,6 +98,7 @@ VS_OUTPUT main(VS_INPUT IN) {
     //TODO: TESR_ToneMapping.w isn't used anymore (it was in gamma), TESR_HDRData.w isn't used anymore (it was out gamma)
 
     float4 final = tex2D(DestBlend, IN.texcoord_1.xy);
+    float3 bloomDebug = 0.0f;   // the bloom as added ([Shaders.Tonemapping.Main] DebugView 4)
     float3 tint = Tint.rgb;
     float3 fade = Fade.rgb;
 
@@ -121,6 +122,7 @@ VS_OUTPUT main(VS_INPUT IN) {
         // lerp(final, bloom, blend), except that only the part of the pixel above the threshold is
         // swapped for bloom: that is the energy the bloom took and spread around. Without a
         // threshold this is exactly the lerp; with one, a lerp would dim everything below it.
+        bloomDebug = saturate(TESR_HDRBloomData.x) * NVRbloom.rgb * TESR_HDRBloomData.y;
         final.rgb += saturate(TESR_HDRBloomData.x) * (NVRbloom.rgb * TESR_HDRBloomData.y - BloomThreshold(final.rgb, TESR_BloomExtraData.y));
     }else{
         // vanilla bloom
@@ -132,7 +134,9 @@ VS_OUTPUT main(VS_INPUT IN) {
         //}
         bloom.rgb = TESR_HDRBloomData.x * pows(bloom.rgb, TESR_HDRBloomData.y);
 
-        float q0 = 1.0 / max(bloom.w, HDRParam.x); // HDRParam.x is brights cutoff (clamp)
+        // HDRParam.x is brights cutoff (clamp); bloom.w the game's adapted brightness, its eye
+        // adaptation, which auto exposure replaces (Includes/Tonemapping.hlsl): not both.
+        float q0 = 1.0 / (TESR_AutoExposureData.x > 0.0f ? HDRParam.x : max(bloom.w, HDRParam.x));
         final.rgb = ((q0 * HDRParam.x) * final.rgb) + bloom.rgb * (q0 * 0.5); // blend image and bloom
         if (gammaSpacePostProcess){
             final.rgb = linearize(final.rgb);
@@ -140,19 +144,23 @@ VS_OUTPUT main(VS_INPUT IN) {
     }
     
     final.rgb = lerp(final.rgb, final.rgb * Cinematic.w, cinematicScalar); // apply brightness from Cinematic
-    // Exposure (the setting, then auto exposure's scale: Includes/Tonemapping.hlsl), then the curve.
-    final.rgb = tonemap(final.rgb * (TESR_HDRData.y * AutoExposureScale()));
+    // Exposure (the setting and its EV, then auto exposure's scale: Includes/Tonemapping.hlsl), the
+    // scene half of the grading, then the curve.
+    float3 exposed = GradeScene(final.rgb * (TESR_HDRData.y * AutoExposureScale()));
+    final.rgb = tonemap(exposed);
     
     if (gammaSpacePostProcess){
         final.rgb = delinearize(final.rgb);
     }
     
     final.rgb = lerp(final.rgb, (Cinematic.z * (final.rgb - Cinematic.y)) + Cinematic.y, cinematicScalar * TESR_ToneMapping.y); // apply contrast from Cinematic, scaled by modifier
+    final.rgb = GradeDisplay(final.rgb, gammaSpacePostProcess ? 1.0f : TESR_HDRData.w); // the display half of the grading, before fades
     final.rgb = lerp(final.rgb, fade, Fade.a); // apply night eye and fade
 
     if (!gammaSpacePostProcess){
         final.rgb = pows(final.rgb, 1/TESR_HDRData.w); // delinearize
     }
+    [branch] if (TESR_GradingControl.z > 0.0f) final.rgb = TonemapDebug(TESR_GradingControl.z, final.rgb, exposed, bloomDebug, IN.texcoord_1.xy);
     
     OUT.color_0 = float4(final.rgb,BlurScale.z); 
 

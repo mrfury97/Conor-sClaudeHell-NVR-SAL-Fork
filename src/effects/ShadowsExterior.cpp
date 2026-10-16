@@ -318,6 +318,10 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 	int oldCascadeResolution = Settings.ShadowMaps.CascadeResolution;
 	bool oldMSAA = Settings.ShadowMaps.MSAA;
 	bool oldPrefilter = Settings.ShadowMaps.Prefilter;
+
+	// At every quality: neither changes the shadow maps' size or format.
+	Settings.ShadowMaps.LodSkipLoaded = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "LodSkipLoaded") != 0;
+	Settings.ShadowMaps.CachedDistant = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ShadowMaps", "CachedDistantShadows") != 0;
 	
 	// Custom settings.
 	if (quality < 0 || quality > 3) {
@@ -517,6 +521,7 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 }
 
 void ShadowsExteriorEffect::UpdateSettings() {
+	TerrainShadows.UpdateSettings();
 
 	Constants.ScreenSpaceData.x = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Enabled") && Enabled;
 	Constants.ScreenSpaceData.y = Constants.ScreenSpaceData.z = 0.0f;   // were the old contact march's blur radius and distance
@@ -694,6 +699,7 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ContactInject", &Constants.ContactInject);
 	TheShaderManager->RegisterConstant("TESR_ContactSkinMask", &Constants.ContactSkinMask);
 	TheShaderManager->RegisterConstant("TESR_OrthoData", &Constants.OrthoData);
+	TerrainShadows.RegisterConstants();
 	TheShaderManager->RegisterConstant("TESR_ShadowFade", &Constants.ShadowFade);
 	TheShaderManager->RegisterConstant("TESR_ShadowRadius", &Constants.ShadowMapRadius);
 	TheShaderManager->RegisterConstant("TESR_ShadowViewProjTransform", (D3DXVECTOR4*)&Constants.ShadowViewProj);
@@ -732,6 +738,7 @@ bool ShadowsExteriorEffect::EnsureShadowCube(UInt32 Slot) {
 }
 
 void ShadowsExteriorEffect::RegisterTextures() {
+	TerrainShadows.RegisterTextures();
 	ULONG ShadowMapSize = Settings.ShadowMaps.CascadeResolution;
 	ULONG ShadowCubeMapSize = Settings.Interiors.ShadowCubeMapSize;
 	ULONG ShadowAtlasSize = ShadowMapSize * 2;

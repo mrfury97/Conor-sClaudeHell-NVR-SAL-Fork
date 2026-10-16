@@ -230,8 +230,22 @@ void ShadowManager::AccumObject(NiAVObject* NiObject, ShadowsExteriorEffect::For
 
 
 // go through the Object children and sort the ones that will be rendered based on their properties
+// LodSkipLoaded: a distant-object LOD node lying wholly inside the loaded cells, whose full objects
+// already cast its shadow (a doubled shadow, or a ghost of a swapped or removed one). Geometry is
+// judged by its centre, a node by its whole bound. BSShaderManager::kLoadedRange is the loaded area's
+// centre (x, y) and half size (z, w). After NVR UNOFFICIAL Optimized (adeesababa).
+static bool IsLodInLoadedCells(NiAVObject* Object) {
+	NiBound* Bound = Object->m_kWorldBound;
+	if (!Bound) return false;
+	const float Reach = Object->IsGeometry() ? 0.0f : Bound->Radius;
+	const NiPoint4* Range = BSShaderManager::kLoadedRange;
+	return fabsf(Bound->Center.x - Range->x) + Reach < Range->z && fabsf(Bound->Center.y - Range->y) + Reach < Range->w;
+}
+
 void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::FormsStruct* Forms, bool isLand, bool isLOD, NiFrustumPlanes *arPlanes) {
 	if (!NiObject) return;
+
+	const bool skipLoadedLod = isLOD && !isLand && TheShaderManager->Effects.ShadowsExteriors->Settings.ShadowMaps.LodSkipLoaded;
 
 	std::vector<NiAVObject*>& containers = containersScratch;
 	containers.clear();
@@ -261,10 +275,12 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 		if (Node->IsKindOf<NiSwitchNode>()) {
 			// NiSwitchNode - only render active children (if exists) to the shadow map.
 			NiSwitchNode* SwitchNode = static_cast<NiSwitchNode*>(Node);
-			if (SwitchNode->m_iIndex < 0)
+			if (SwitchNode->m_iIndex < 0 || SwitchNode->m_iIndex >= Node->m_children.end)
 				continue;
 
 			child = Node->m_children.data[SwitchNode->m_iIndex];
+			if (!child || (skipLoadedLod && IsLodInLoadedCells(child)))
+				continue;
 			if (!child->IsGeometry())
 				containers.push_back(child);
 			else
@@ -286,6 +302,7 @@ void ShadowManager::AccumChildren(NiAVObject* NiObject, ShadowsExteriorEffect::F
 			else if (arPlanes && !child->WithinFrustum(arPlanes)) continue;
 
 			if (child->IsFadeNode() && static_cast<BSFadeNode*>(child)->FadeAlpha < 0.75f) continue; // stop rendering fadenodes below a certain opacity
+			if (skipLoadedLod && IsLodInLoadedCells(child)) continue;
 			if (!child->IsGeometry())
 				containers.push_back(child);
 			else
@@ -1044,6 +1061,63 @@ void ShadowManager::RecalculateBillboardVectors(D3DXVECTOR3* SunDir) {
 /*
 * Renders the different shadow maps: Near, Far, Ortho.
 */
+
+// CachedDistantShadows: the characters this frame (the player and every NPC and creature in the loaded
+// cells), as bound spheres, and how far a shadow reaches from one with this sun (its length over its
+// height, capped). After NVR UNOFFICIAL Optimized P59 (adeesababa).
+void ShadowManager::CollectMovers(const D3DXVECTOR3& SunDir) {
+	FrameMovers.clear();
+	MoverShadowStretch = (std::min)(sqrtf(SunDir.x * SunDir.x + SunDir.y * SunDir.y) / (std::max)(SunDir.z, 0.1f), 10.0f);
+	auto Add = [this](NiNode* Node) {
+		if (!Node || Node->m_flags & NiAVObject::NiFlags::APP_CULLED) return;
+		NiBound* Bound = Node->GetWorldBound();
+		if (Bound) FrameMovers.push_back(D3DXVECTOR4(Bound->Center.x, Bound->Center.y, Bound->Center.z, Bound->Radius));
+	};
+	Add(Player->GetNode());
+	if (!Player->GetWorldSpace() || !Tes || !Tes->gridCellArray) return;
+	GridCellArray* CellArray = Tes->gridCellArray;
+	const UInt32 CellArraySize = CellArray->size * CellArray->size;
+	for (UInt32 c = 0; c < CellArraySize; c++) {
+		TESObjectCELL* Cell = CellArray->GetCell(c);
+		if (!Cell || Cell->IsInterior()) continue;
+		for (TList<TESObjectREFR>::Entry* Entry = &Cell->objectList.First; Entry; Entry = Entry->next) {
+			TESObjectREFR* Ref = Entry->item;
+			if (!Ref || !Ref->baseForm) continue;
+			const UInt8 Type = Ref->baseForm->formType;
+			if (Type == TESForm::FormType::kFormType_NPC || Type == TESForm::FormType::kFormType_Creature ||
+				Type == TESForm::FormType::kFormType_LeveledCreature)
+				Add(Ref->GetNode());
+		}
+	}
+}
+
+// Whether a character's shadow can land in what this cascade shows: the cascade draws actors, the
+// character (with its shadow's reach) is not wholly nearer than the inner cascade's end (the sharper
+// cascades shade those points; only the outer 10% of a cascade blends), and it is not outside the
+// cascade's last shadow frustum, widened by how far the camera moved since that redraw.
+bool ShadowManager::MoversInCascade(int Cascade, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, float InnerDepth) {
+	if (!ShadowMap->Forms.Actors || FrameMovers.empty()) return false;
+	const D3DXVECTOR3 Camera = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+	const D3DXVECTOR3 Forward(TheRenderManager->CameraForward.x, TheRenderManager->CameraForward.y, TheRenderManager->CameraForward.z);
+	const D3DXVECTOR3 Moved = Camera - CascadeRefreshCamera[Cascade];
+	const float Pad = D3DXVec3Length(&Moved) + 64.0f;
+	NiFrustumPlanes* Planes = &ShadowMap->ShadowMapFrustumPlanes;
+	for (const D3DXVECTOR4& Mover : FrameMovers) {
+		const D3DXVECTOR3 ToMover = D3DXVECTOR3(Mover.x, Mover.y, Mover.z) - Camera;
+		const float ShadowReach = Mover.w * (1.0f + 2.0f * MoverShadowStretch) + 64.0f;
+		if (D3DXVec3Dot(&ToMover, &Forward) + ShadowReach < 0.9f * InnerDepth) continue;
+		bool Inside = true;
+		for (UInt32 p = 0; p < NiFrustumPlanes::MaxPlanes && Inside; p++) {
+			if (!Planes->IsPlaneActive(p)) continue;
+			const NiPlane& Plane = Planes->CullingPlanes[p];
+			const float Distance = Plane.Normal.x * Mover.x + Plane.Normal.y * Mover.y + Plane.Normal.z * Mover.z - Plane.Constant;
+			if (Distance < -(Mover.w + Pad)) Inside = false;
+		}
+		if (Inside) return true;
+	}
+	return false;
+}
+
 void ShadowManager::RenderShadowMaps() {
 	if (!TheSettingManager->SettingsMain.Main.RenderEffects) return; // cancel out if rendering effects is disabled
 
@@ -1170,23 +1244,47 @@ void ShadowManager::RenderShadowMaps() {
 
 			Device->SetDepthStencilSurface(Shadows->ShadowAtlasDepthSurface);
 
+			// CachedDistantShadows: the near cascade every frame; middle every 4th, far and LOD every 8th,
+			// on different frames, and any of them also on a frame where a character's shadow can be in
+			// it (or was at its last redraw, so the shadow it left behind is cleared). Otherwise every
+			// cascade every frame, the LOD one every 4th with LimitFrequency. After NVR UNOFFICIAL
+			// Optimized P59 (adeesababa).
+			const bool cachedDistant = Shadows->Settings.ShadowMaps.CachedDistant;
+			if (cachedDistant) CollectMovers(SunDir);
+			unsigned updatedCascades = 0;
 			for (int i = MapNear; i < MapOrtho; i++) {
 				ShadowsExteriorEffect::ShadowMapSettings* ShadowMap = &Shadows->ShadowMaps[i];
+				const bool cachedCascade = cachedDistant && i != MapNear;
+				const float innerDepth = i > MapNear ? ((const float*)Shadows->Constants.ShadowMapRadius)[i - 1] : 0.0f;
 
-				if (!Shadows->Settings.ShadowMaps.LimitFrequency || i != MapLod || !(FrameCounter % 4)) {
+				bool update;
+				if (cachedCascade) {
+					const unsigned period = i == MapMiddle ? 4 : 8;
+					const unsigned phase = i == MapMiddle ? 1 : i == MapFar ? 3 : 7;
+					update = SunCascadeFrame % period == phase || CascadeHadMover[i] || MoversInCascade(i, ShadowMap, innerDepth);
+				}
+				else
+					update = !Shadows->Settings.ShadowMaps.LimitFrequency || i != MapLod || !(FrameCounter % 4);
+
+				if (update) {
+					updatedCascades |= 1u << i;
 					Shadows->Constants.ShadowViewProj = Shadows->GetCascadeViewProj(ShadowMap, &SunDir);
 					RenderShadowMap(ShadowMap, &Shadows->Constants.ShadowViewProj);
+					CascadeRefreshCamera[i] = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
+					CascadeHadMover[i] = cachedCascade && MoversInCascade(i, ShadowMap, innerDepth);
 				}
 				else {
-					// We need to update the shadowprojmatrix of MapLod by the camera translation between frames to avoid jumps in the shadows.
+					// A kept cascade's matrix and its selection sphere are camera-relative: moved by the
+					// camera's translation since last frame so the map stays put in the world.
 					D3DXVECTOR3 newCameraTranslation = WorldSceneGraph->camera->m_worldTransform.pos.toD3DXVEC3();
 					D3DXVECTOR3 difference = newCameraTranslation - ShadowMap->CameraTranslation;
 					D3DXMATRIX translationMatrix;
 					D3DXMatrixTranslation(&translationMatrix, difference.x, difference.y, difference.z);
 					ShadowMap->ShadowCameraToLight = translationMatrix * ShadowMap->ShadowCameraToLight;
 					ShadowMap->CameraTranslation = newCameraTranslation;
-					
-					Shadows->Constants.ShadowBlur.y = Shadows->ShadowAtlasSurfaceMSAA ? 1.0f : 0.0f; // Disable blur for last cascade if MSAA is off.
+					ShadowMap->ShadowMapCascadeCenterRadius.x -= difference.x;
+					ShadowMap->ShadowMapCascadeCenterRadius.y -= difference.y;
+					ShadowMap->ShadowMapCascadeCenterRadius.z -= difference.z;
 				}
 
 				std::string message = "ShadowManager::RenderShadowMap ";
@@ -1194,11 +1292,26 @@ void ShadowManager::RenderShadowMaps() {
 				shadowMapTimer.LogTime(message.c_str());
 			}
 
-			// Resolve MSAA.
-			if (Shadows->ShadowAtlasSurfaceMSAA)
-				Device->StretchRect(Shadows->ShadowAtlasSurfaceMSAA, NULL, Shadows->ShadowAtlasSurface, NULL, D3DTEXF_NONE);
+			// Resolve MSAA, and prefilter, only the cascades drawn this frame: a kept cascade's atlas
+			// region already holds its resolved, blurred map, which a resolve would replace with the
+			// unblurred one and a second blur would soften further. If a partial resolve fails, all
+			// of it is resolved and blurred again, as before.
+			if (Shadows->ShadowAtlasSurfaceMSAA) {
+				bool resolved = true;
+				for (int i = MapNear; i < MapOrtho && resolved; i++) {
+					if (!(updatedCascades & (1u << i))) continue;
+					const D3DVIEWPORT9& viewport = Shadows->ShadowMaps[i].ShadowMapViewPort;
+					RECT region = { (LONG)viewport.X, (LONG)viewport.Y, (LONG)(viewport.X + viewport.Width), (LONG)(viewport.Y + viewport.Height) };
+					resolved = SUCCEEDED(Device->StretchRect(Shadows->ShadowAtlasSurfaceMSAA, &region, Shadows->ShadowAtlasSurface, &region, D3DTEXF_NONE));
+				}
+				if (!resolved) {
+					Device->StretchRect(Shadows->ShadowAtlasSurfaceMSAA, NULL, Shadows->ShadowAtlasSurface, NULL, D3DTEXF_NONE);
+					updatedCascades = (1u << MapOrtho) - 1;
+				}
+			}
 
-			if (Shadows->Settings.ShadowMaps.Prefilter) BlurShadowAtlas();
+			Shadows->Constants.ShadowBlur.y = 1.0f;   // the LOD cascade is blurred when it is in the mask
+			if (Shadows->Settings.ShadowMaps.Prefilter) BlurShadowAtlas(updatedCascades);
 
 			if (Shadows->Settings.ShadowMaps.Mipmaps)
 				Shadows->ShadowAtlasTexture->GenerateMipSubLevels();
@@ -1234,6 +1347,10 @@ void ShadowManager::RenderShadowMaps() {
 	
 			shadowMapTimer.LogTime("ShadowManager::RenderShadowMap Ortho");
 		}
+
+		// [ShadowsExteriors.TerrainShadows]: the xLODGen height map loaded and swept toward the sun on
+		// worker threads (effects/TerrainShadows.cpp).
+		Shadows->TerrainShadows.Update(Device, SunDir);
 	}
 
 	// Render shadow maps for point lights
@@ -1334,6 +1451,7 @@ void ShadowManager::RenderShadowMaps() {
 	Device->EndScene();
 
 	FrameCounter = (FrameCounter + 1) % 4;
+	SunCascadeFrame = (SunCascadeFrame + 1) % 8;
 	shadowMapsRenderTime = timer.LogTime("ShadowManager::RenderShadowMaps");
 }
 
@@ -1379,7 +1497,7 @@ void ShadowManager::ClearShadowCascade(D3DVIEWPORT9* ViewPort, D3DXVECTOR4* Clea
 /*
 * Filters the Shadow Map of given index using a 2 pass gaussian blur
 */
-void ShadowManager::BlurShadowAtlas() {
+void ShadowManager::BlurShadowAtlas(unsigned CascadeMask) {
 	ShadowsExteriorEffect* Shadows = TheShaderManager->Effects.ShadowsExteriors;
 	
 	IDirect3DDevice9* Device = TheRenderManager->device;
@@ -1392,7 +1510,13 @@ void ShadowManager::BlurShadowAtlas() {
 	// D3D9 and a read/write feedback loop on Vulkan under DXVK. This Gaussian is the only
 	// filtering the shadow maps get (the cascade lookup is a single tap), so anything that
 	// compromises it shows up directly as hard, unfiltered texels along every shadow edge.
-	if (!Shadows->ShadowAtlasBlurTexture || !Shadows->ShadowAtlasBlurSurface) return;
+	if (!CascadeMask || !Shadows->ShadowAtlasBlurTexture || !Shadows->ShadowAtlasBlurSurface) return;
+
+	// Only the masked cascades' regions are drawn (scissored), the rest of the atlas is left as it is.
+	DWORD oldScissorEnabled = FALSE;
+	RECT oldScissor = {};
+	if (FAILED(Device->GetRenderState(D3DRS_SCISSORTESTENABLE, &oldScissorEnabled)) ||
+		FAILED(Device->GetScissorRect(&oldScissor))) return;
 
     Device->SetDepthStencilSurface(NULL);
     RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE, RenderStateArgs);
@@ -1423,10 +1547,19 @@ void ShadowManager::BlurShadowAtlas() {
 		// set blur direction shader constants
 		ShadowMapBlurPixel->SetShaderConstantF(1, &Blur[i], 1);
 
-		Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2); // draw call to execute the shader
+		RenderState->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE, RenderStateArgs);
+		for (int cascade = MapNear; cascade < MapOrtho; ++cascade) {
+			if (!(CascadeMask & (1u << cascade))) continue;
+			const D3DVIEWPORT9& viewport = Shadows->ShadowMaps[cascade].ShadowMapViewPort;
+			RECT region = { (LONG)viewport.X, (LONG)viewport.Y, (LONG)(viewport.X + viewport.Width), (LONG)(viewport.Y + viewport.Height) };
+			Device->SetScissorRect(&region);
+			Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2); // draw call to execute the shader
+		}
 	}
 
 	RenderState->SetTexture(0, nullptr);
+	Device->SetScissorRect(&oldScissor);
+	RenderState->SetRenderState(D3DRS_SCISSORTESTENABLE, oldScissorEnabled, RenderStateArgs);
 	RenderState->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE, RenderStateArgs);
     RenderState->SetRenderState(D3DRS_ZWRITEENABLE, D3DZB_TRUE, RenderStateArgs);
 }

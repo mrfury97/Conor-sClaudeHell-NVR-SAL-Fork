@@ -34,6 +34,41 @@ sampler2D TESR_ShadowAtlas : register(s4) = sampler_state { ADDRESSU = CLAMP; AD
 // The skin shaders' second target (effects/SkinScattering.h): a the camera distance where skin was drawn, 0 elsewhere.
 sampler2D TESR_SkinScatterBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
+// [Shaders.ShadowsExteriors.TerrainShadows] (effects/TerrainShadows.h): per texel of the worldspace's height
+// map, the heights below which the sun is hidden by land (r a little above the sun's elevation, g a little
+// below: the soft edge) and the map's own ground (b), encoded over Range.xy; the shadow heights are lowered
+// by the bias.
+float4 TESR_TerrainShadowData;    // x west edge, y north edge, z 1 / width, w strength (0 off)
+float4 TESR_TerrainShadowRange;   // x lowest encoded height, y encoded range, z bias, w blur
+float4 TESR_TerrainShadowParams;  // x 1 / height, y DebugView, z Darkness, w Contrast
+sampler2D TESR_TerrainShadowBuffer : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+
+// Where the height map covers (DebugView 2): 1 inside, 0 outside or off.
+float TerrainShadowCoverage(float3 worldPos) {
+	if (TESR_TerrainShadowData.w <= 0.0f) return 0.0f;
+	float2 uv = float2((worldPos.x - TESR_TerrainShadowData.x) * TESR_TerrainShadowData.z, (TESR_TerrainShadowData.y - worldPos.y) * TESR_TerrainShadowParams.x);
+	return all(uv >= 0.0f) && all(uv <= 1.0f) ? 1.0f : 0.0f;
+}
+
+// 1 lit, 0 in the land's shadow. As CS's GetTerrainShadow, faded out toward the map's edge.
+float TerrainShadow(float3 worldPos) {
+	[branch] if (TESR_TerrainShadowData.w <= 0.0f) return 1.0f;
+	float2 uv = float2((worldPos.x - TESR_TerrainShadowData.x) * TESR_TerrainShadowData.z, (TESR_TerrainShadowData.y - worldPos.y) * TESR_TerrainShadowParams.x);
+	float2 edge = min(uv, 1.0f - uv);
+	float inside = saturate(min(edge.x, edge.y) * 20.0f);
+	[branch] if (inside <= 0.0f) return 1.0f;
+	float3 encoded = tex2Dlod(TESR_TerrainShadowBuffer, float4(uv, 0.0f, 0.0f)).rgb * TESR_TerrainShadowRange.y + TESR_TerrainShadowRange.x;
+	float2 heights = encoded.xy - TESR_TerrainShadowRange.z;
+	// Never below the map's ground: the simplified LOD land on screen dips under it in places, and those
+	// pixels would be shadowed by their own slope (flickering with TAA's jitter). Objects keep their height.
+	float z = max(worldPos.z, encoded.z);
+	float lower = heights.y - TESR_TerrainShadowRange.w;
+	float transition = heights.x + TESR_TerrainShadowRange.w - lower;
+	float lit = transition <= 0.0f ? (z >= heights.x ? 1.0f : 0.0f) : saturate((z - lower) / transition);
+	lit = saturate((lit - 0.5f) * TESR_TerrainShadowParams.w + 0.5f);   // Contrast: a steeper edge
+	return lerp(1.0f, lit, TESR_TerrainShadowData.w * inside);
+}
+
 // Skin, as SkinScattering.fx tests it: the skin shaders wrote this pixel's distance and nothing was drawn
 // over it since (the same distance, or the brow strip just in front).
 bool ContactSkinHere(float2 uv, float distance) {
@@ -133,11 +168,19 @@ float4 Shadow(VSOUT IN) : COLOR0
 	// whenever the sun lights the surface.
 	[branch] if (!TESR_ShadowForwardData.x && !TESR_ShadowFade.z) {
 		float contactVisibility = saturate(Shadow.r);
+		// The land's shadow (TerrainShadow), faded at sunrise and sunset as the cascades are.
+		// Not on the sky, which CombineDepth puts on the near plane (nor on the far plane): its depth rebuilds a
+		// point beside the camera, which would take the shadow of the camera's own spot. As SunShadows.fx skips them.
+		float terrainVisibility = 1.0f;
+		[branch] if (TESR_TerrainShadowData.w > 0.0f) {
+			float rawDepth = tex2Dlod(TESR_DepthBuffer, float4(IN.UVCoord, 0.0f, 0.0f)).y;
+			if (rawDepth > 0.0f && rawDepth < 0.99999f) terrainVisibility = saturate(lerp(TerrainShadow(world_pos.xyz), 1.0f, TESR_ShadowFade.x));
+		}
 		// On skin in the lighting (above): nothing to take here, but the debug view still shows the mask.
 
 		// Debug view. The scene in grey, the contact shadow mask in red, and in blue whatever the
 		// cascades had already shaded, which the contact shadows must leave alone.
-		[branch] if (TESR_ShadowContactDebug.x) {
+		[branch] if (TESR_ShadowContactDebug.x || TESR_TerrainShadowParams.y > 0.0f) {
 			float debugCascade = 1.0f;
 			[branch] if (TESR_ShadowFade.y) {
 				float debugDepth;
@@ -146,10 +189,19 @@ float4 Shadow(VSOUT IN) : COLOR0
 			float3 debugColor = luma(color.rgb).xxx * 0.6f;
 			debugColor = lerp(debugColor, float3(0.1f, 0.2f, 0.9f), (1.0f - debugCascade) * 0.6f);
 			debugColor = lerp(debugColor, float3(1.0f, 0.05f, 0.05f), 1.0f - contactVisibility);
+			debugColor = lerp(debugColor, float3(0.1f, 0.85f, 0.2f), (1.0f - terrainVisibility) * 0.8f);   // the land's shadow in green
+			if (TESR_TerrainShadowParams.y > 1.5f) debugColor = lerp(debugColor, float3(0.2f, 0.5f, 1.0f), TerrainShadowCoverage(world_pos.xyz) * 0.25f);   // the height map's area
 			return float4(debugColor, 1.0f);
 		}
 
-		if (contactInLighting || contactVisibility >= 1.0f) return float4(color.rgb, 1.0f);   // most of the screen
+		// What is taken from the sun: the contact shadow (unless skin has it in its lighting) and the land's
+		// shadow, multiplied as CS multiplies its world shadow in.
+		float takenVisibility = (contactInLighting ? 1.0f : contactVisibility) * terrainVisibility;
+		// [TerrainShadows] Darkness: in the land's shadow, a share of the ambient and sky light goes too
+		// (a valley under a mountain sees less of the sky). Taken inside the shadow maps' range as well,
+		// so their edge leaves no lighter ring.
+		float terrainShade = (1.0f - terrainVisibility) * TESR_TerrainShadowParams.z;
+		if (takenVisibility >= 1.0f && terrainShade <= 0.0f) return float4(color.rgb, 1.0f);   // most of the screen
 
 		float cascadeVisibility = 1.0f;
 		[branch] if (TESR_ShadowFade.y) {
@@ -157,8 +209,8 @@ float4 Shadow(VSOUT IN) : COLOR0
 			cascadeVisibility = GetLightAmount(reconstructWorldPosition(IN.UVCoord, cascadeDepth), world_normal);
 			cascadeVisibility = saturate(lerp(cascadeVisibility, 1.0f, TESR_ShadowFade.x));   // faded as GetSunShadow fades it
 		}
-		float sunTaken = cascadeVisibility * (1.0f - contactVisibility);
-		if (sunTaken <= 0.0f) return float4(color.rgb, 1.0f);   // already in the cascades' shade
+		float sunTaken = cascadeVisibility * (1.0f - takenVisibility);
+		if (sunTaken <= 0.0f && terrainShade <= 0.0f) return float4(color.rgb, 1.0f);   // already in the cascades' shade
 
 		// Terrain lights with its own [Shaders.Terrain.*] scales, and nothing in the frame says
 		// which pixels are terrain. Contact shadows are mostly seen where things meet the ground,
@@ -173,7 +225,7 @@ float4 Shadow(VSOUT IN) : COLOR0
 		float3 ambientLight = TESR_ShadowAmbientLight.rgb * scales.y + SkyIrradiance(world_normal) * scales.z;
 		float3 litNow = ambientLight + sunLight * cascadeVisibility;
 
-		return float4(color.rgb * (1.0f - sunLight * sunTaken / max(litNow, 0.0001f)), 1.0f);
+		return float4(color.rgb * (1.0f - (sunLight * sunTaken + ambientLight * terrainShade) / max(litNow, 0.0001f)), 1.0f);
 	}
 	// Point light shadows on: this path, but on skin the contact shadows (all the red holds with the
 	// forward shadows running) are already in the lighting.

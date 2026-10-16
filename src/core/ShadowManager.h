@@ -28,7 +28,9 @@ public:
 	void					RenderShadowSpotlight(NiSpotLight** Lights, UInt32 LightIndex);
 	void					RenderShadowMaps();
 	void					ClearShadowCascade(D3DVIEWPORT9* ViewPort, D3DXVECTOR4* ClearColor);
-	void                    BlurShadowAtlas();
+	void                    BlurShadowAtlas(unsigned CascadeMask);   // the sun cascades (1 << Map*) to blur
+	void					CollectMovers(const D3DXVECTOR3& SunDir);
+	bool					MoversInCascade(int Cascade, ShadowsExteriorEffect::ShadowMapSettings* ShadowMap, float InnerDepth);
 
 	ShadowRenderPass*				geometryPass;
 	AlphaShadowRenderPass*			alphaPass;
@@ -59,6 +61,15 @@ public:
 	float					shadowMapsRenderTime;
 	bool					ShadowShadersLoaded;
 	int						FrameCounter;
+
+	// CachedDistantShadows (RenderShadowMaps): the frame in the 8-frame cascade schedule, this frame's
+	// characters (bound centre and radius), how far a shadow stretches from them with this sun, and
+	// per cascade where the camera was at its last redraw and whether a character was in it then.
+	unsigned				SunCascadeFrame = 0;
+	std::vector<D3DXVECTOR4>	FrameMovers;
+	float					MoverShadowStretch = 0.0f;
+	D3DXVECTOR3				CascadeRefreshCamera[4] = {};
+	bool					CascadeHadMover[4] = {};
 
 	// The point light cubemap of each slot, kept while nothing it sees changes (RenderShadowCubeMap).
 	// A face is redrawn only when its light moved (past 6 units from its anchor) or changed, or the

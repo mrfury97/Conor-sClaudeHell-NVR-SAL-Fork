@@ -14,6 +14,90 @@ float AutoExposureScale() {
     return scale;
 }
 
+// Colour grading ([Shaders.ColorGrading.*], TonemappingShaders::UpdateConstants), in two halves around
+// the curve, as engines do it: the white balance, contrast and saturation on the scene's linear light
+// before it (so they act on what the camera saw, highlights included, and the curve still rolls off
+// whatever they push), lift / gamma / gain and the highlight saturation on the display image after it
+// (where "shadows" and "highlights" mean what they look like). Neutral settings skip both (x = 0).
+float4 TESR_GradingBalanceR : register(c33);   // white balance: rows of a 3 x 3 linear RGB matrix (w unused)
+float4 TESR_GradingBalanceG : register(c34);
+float4 TESR_GradingBalanceB : register(c35);
+float4 TESR_GradingScene : register(c36);      // x contrast, y its pivot (linear), z saturation, w vibrance
+float4 TESR_GradingLift : register(c37);       // rgb lift, w highlight saturation
+float4 TESR_GradingGamma : register(c38);      // rgb 1 / gamma
+float4 TESR_GradingGain : register(c39);       // rgb gain
+float4 TESR_GradingControl : register(c40);    // x 1 grading on, y 1 white balance on, z [Shaders.Tonemapping.Main] DebugView
+
+// Before the curve, on linear scene light (exposure already applied).
+float3 GradeScene(float3 color) {
+    [branch] if (TESR_GradingControl.x <= 0.0f) return color;
+    color = max(color, 0.0f);
+    [branch] if (TESR_GradingControl.y > 0.0f)
+        color = max(float3(dot(TESR_GradingBalanceR.rgb, color), dot(TESR_GradingBalanceG.rgb, color), dot(TESR_GradingBalanceB.rgb, color)), 0.0f);
+
+    // Contrast in stops: a straight line in log2 around the pivot, so the pivot stays put and every
+    // stop away from it is stretched (above 1) or squeezed. Per channel, as a film stock's gamma is.
+    float pivot = TESR_GradingScene.y;
+    color = pivot * pow(max(color, 1e-7f) / pivot, TESR_GradingScene.x);
+
+    // Saturation around the luminance (which it keeps), then vibrance: the same, weighted toward
+    // colours that are not saturated yet, so skin and already vivid colours are left mostly alone.
+    float lum = luma(color);
+    color = max(lerp(lum.xxx, color, TESR_GradingScene.z), 0.0f);
+    float peak = max(color.r, max(color.g, color.b));
+    float chroma = peak > 1e-6f ? (peak - min(color.r, min(color.g, color.b))) / peak : 0.0f;
+    return max(lerp(lum.xxx, color, 1.0f + TESR_GradingScene.w * (1.0f - chroma)), 0.0f);
+}
+
+// After the curve, on the display image: linear in, linear out, graded as encoded with the output
+// gamma (1 when it already is encoded), the way grading tools' lift, gamma and gain work.
+float3 GradeDisplay(float3 color, float gamma) {
+    [branch] if (TESR_GradingControl.x <= 0.0f) return color;
+    color = pow(max(color, 0.0f), 1.0f / gamma);
+
+    // Gain scales; lift raises (or lowers) the blacks and fades out toward white; gamma bends the
+    // midtones (above 1 brighter) and leaves black and white where they are.
+    color = TESR_GradingGain.rgb * (color + TESR_GradingLift.rgb * (1.0f - saturate(color)));
+    color = pow(max(color, 0.0f), TESR_GradingGamma.rgb);
+
+    // Highlight saturation: the brightest part of the picture only, from half brightness up.
+    float lum = luma(color);
+    color = max(lerp(lum.xxx, color, lerp(1.0f, TESR_GradingLift.w, smoothstep(0.5f, 1.0f, lum))), 0.0f);
+    return pow(color, gamma);
+}
+
+// [Shaders.Tonemapping.Main] DebugView, over the finished (encoded) output:
+//   1  false colour: each pixel's stops from middle grey before the curve (exposure and auto exposure
+//      included). Green is middle grey; blue / cyan under, yellow / orange / red over; grey within one
+//      stop shows the picture.
+//   2  clipping: channels at white red, black (all channels) blue, over the picture.
+//   3  split: left the scene untonemapped (exposed and clipped), right the tonemapped output.
+//   4  the bloom alone (NVR bloom), as the composite adds it.
+float3 TonemapDebug(float view, float3 output, float3 exposed, float3 bloom, float2 uv) {
+    const float encode = 1.0f / 2.2f;
+    if (view < 1.5f) {
+        float ev = log2(max(luma(exposed), 1e-6f) / 0.18f);
+        if (abs(ev) < 0.25f) return float3(0.1f, 0.8f, 0.1f);
+        if (ev < -5.0f) return float3(0.2f, 0.0f, 0.3f);
+        if (ev < -3.0f) return float3(0.0f, 0.15f, 0.8f);
+        if (ev < -1.0f) return float3(0.0f, 0.6f, 0.75f);
+        if (ev <= 1.0f) return luma(saturate(output)).xxx;
+        if (ev <= 3.0f) return float3(0.95f, 0.85f, 0.1f);
+        if (ev <= 5.0f) return float3(1.0f, 0.5f, 0.0f);
+        return float3(1.0f, 0.0f, 0.0f);
+    }
+    if (view < 2.5f) {
+        if (max(output.r, max(output.g, output.b)) >= 0.995f) return float3(1.0f, 0.0f, 0.0f);
+        if (max(output.r, max(output.g, output.b)) <= 0.004f) return float3(0.0f, 0.0f, 1.0f);
+        return output;
+    }
+    if (view < 3.5f) {
+        if (abs(uv.x - 0.5f) < 0.001f) return 1.0f;
+        return uv.x < 0.5f ? pow(saturate(exposed), encode) : output;
+    }
+    return pow(max(bloom, 0.0f), encode);
+}
+
 // Khronos PBR Neutral (https://github.com/KhronosGroup/ToneMapping): keeps colours as they are up to
 // near white and only compresses the highlights, desaturating them a little as film does -- for
 // materials that should look as authored. Linear in, linear (display) out.

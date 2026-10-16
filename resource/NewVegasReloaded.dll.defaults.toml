@@ -256,6 +256,61 @@ LetterBoxDepth = 0.0                    # Depth of the letter box bars
 [_Shaders.Cinema.Status]
 Enabled = true                           # A collection of tweaks to give a more cinematic post processing feel.
 
+[_Shaders.ColorGrading.Main]
+Enabled = true                        # Colour grading in the tonemapping pass (needs Tonemapping on). All values below at their defaults are neutral and cost nothing.
+Temperature = 0.0                     # [-100-100] White balance: negative cooler (bluer), positive warmer. Keeps the brightness of white.
+Tint = 0.0                            # [-100-100] White balance across: negative greener, positive more magenta.
+Contrast = 1.0                        # [0.25-4] Contrast in stops around ContrastPivot, before the tone curve (the curve still rolls off highlights it pushes). 1 neutral.
+ContrastPivot = 0.18                  # [0.01-1] The brightness Contrast leaves where it is (linear; 0.18 middle grey).
+Saturation = 1.0                      # [0-3] Saturation before the tone curve. 1 neutral.
+Vibrance = 0.0                        # [-1-2] Saturation weighted toward dull colours, sparing skin and already vivid ones. 0 neutral.
+HighlightSaturation = 1.0             # [0-3] Saturation of the brightest part of the picture only, after the curve: below 1 for filmic white highlights. 1 neutral.
+LiftR = 0.0                           # [-0.5-0.5] Lift (shadows): raises (or lowers) the blacks of this channel, fading out toward white. 0 neutral.
+LiftG = 0.0
+LiftB = 0.0
+GammaR = 1.0                          # [0.2-5] Gamma (midtones) of this channel: above 1 brighter, black and white stay. 1 neutral.
+GammaG = 1.0
+GammaB = 1.0
+GainR = 1.0                           # [0-4] Gain (highlights) of this channel: scales it. 1 neutral.
+GainG = 1.0
+GainB = 1.0
+
+[_Shaders.ColorGrading.Night]
+Temperature = 0.0                     # [-100-100] White balance: negative cooler (bluer), positive warmer. Keeps the brightness of white.
+Tint = 0.0                            # [-100-100] White balance across: negative greener, positive more magenta.
+Contrast = 1.0                        # [0.25-4] Contrast in stops around ContrastPivot, before the tone curve (the curve still rolls off highlights it pushes). 1 neutral.
+ContrastPivot = 0.18                  # [0.01-1] The brightness Contrast leaves where it is (linear; 0.18 middle grey).
+Saturation = 1.0                      # [0-3] Saturation before the tone curve. 1 neutral.
+Vibrance = 0.0                        # [-1-2] Saturation weighted toward dull colours, sparing skin and already vivid ones. 0 neutral.
+HighlightSaturation = 1.0             # [0-3] Saturation of the brightest part of the picture only, after the curve: below 1 for filmic white highlights. 1 neutral.
+LiftR = 0.0                           # [-0.5-0.5] Lift (shadows): raises (or lowers) the blacks of this channel, fading out toward white. 0 neutral.
+LiftG = 0.0
+LiftB = 0.0
+GammaR = 1.0                          # [0.2-5] Gamma (midtones) of this channel: above 1 brighter, black and white stay. 1 neutral.
+GammaG = 1.0
+GammaB = 1.0
+GainR = 1.0                           # [0-4] Gain (highlights) of this channel: scales it. 1 neutral.
+GainG = 1.0
+GainB = 1.0
+
+[_Shaders.ColorGrading.Interiors]
+Temperature = 0.0                     # [-100-100] White balance: negative cooler (bluer), positive warmer. Keeps the brightness of white.
+Tint = 0.0                            # [-100-100] White balance across: negative greener, positive more magenta.
+Contrast = 1.0                        # [0.25-4] Contrast in stops around ContrastPivot, before the tone curve (the curve still rolls off highlights it pushes). 1 neutral.
+ContrastPivot = 0.18                  # [0.01-1] The brightness Contrast leaves where it is (linear; 0.18 middle grey).
+Saturation = 1.0                      # [0-3] Saturation before the tone curve. 1 neutral.
+Vibrance = 0.0                        # [-1-2] Saturation weighted toward dull colours, sparing skin and already vivid ones. 0 neutral.
+HighlightSaturation = 1.0             # [0-3] Saturation of the brightest part of the picture only, after the curve: below 1 for filmic white highlights. 1 neutral.
+LiftR = 0.0                           # [-0.5-0.5] Lift (shadows): raises (or lowers) the blacks of this channel, fading out toward white. 0 neutral.
+LiftG = 0.0
+LiftB = 0.0
+GammaR = 1.0                          # [0.2-5] Gamma (midtones) of this channel: above 1 brighter, black and white stay. 1 neutral.
+GammaG = 1.0
+GammaB = 1.0
+GainR = 1.0                           # [0-4] Gain (highlights) of this channel: scales it. 1 neutral.
+GainG = 1.0
+GainB = 1.0
+
 [_Shaders.Coloring.Default]
 BaseGamma = 1.6
 Bleach = 0.1
@@ -464,6 +519,8 @@ Enabled = true                        # Screenspace godrays/volumetric rays.
 
 
 [_Shaders.Tonemapping.Main]
+DebugView = 0                         # [0-4] 0 off, 1 false colour exposure (green middle grey, blue under, yellow-red over), 2 clipped whites red / crushed blacks blue, 3 split: untonemapped left, tonemapped right, 4 the bloom alone.
+ExposureEV = 0.0                      # [-8-8] Exposure compensation in stops (each +1 doubles the light), on top of Exposure and auto exposure.
 TonemappingMode = 10                  # Tonemapping Algorithm -  0:None (vanilla - DXVK HDR), 1:VTLottes, 2:NVRLottes, 3:Reinhard, 4:Reinhard Jodie, 5:ACES Filmic, 6:ACES Fitted, 7:Uncharted 2, 8:Uchimura (GT), 9:AGX (TonemapContrast and HighlightSaturation set its look: about 1.35 and 1.4 for its punchy look), 10:DICE (default, most neutral/accurate), 11:Khronos PBR Neutral (keeps material colours as authored, compresses only the highlights)
 Exposure = 1.5                        # Scales the engine lighting strength/brightness range before tonemap, useful for HDR rendering
 Gamma = 2.2                           # Gamma modifier to be applied after tonemapping, delinearises output. If placed at 1.0, outputs at linear space for HDR (UI unaffected)
@@ -483,6 +540,7 @@ PointLightMultiplier = 1.0            # Experimental - modifies the strength of 
 
 
 [_Shaders.Tonemapping.Interiors]
+ExposureEV = 0.0                      # [-8-8] Exposure compensation in stops (each +1 doubles the light), on top of Exposure and auto exposure.
 TonemappingMode = 10                  # Tonemapping Algorithm -  0:None (vanilla - DXVK HDR), 1:VTLottes, 2:NVRLottes, 3:Reinhard, 4:Reinhard Jodie, 5:ACES Filmic, 6:ACES Fitted, 7:Uncharted 2, 8:Uchimura (GT), 9:AGX (TonemapContrast and HighlightSaturation set its look: about 1.35 and 1.4 for its punchy look), 10:DICE (default, most neutral/accurate), 11:Khronos PBR Neutral (keeps material colours as authored, compresses only the highlights)
 Exposure = 1.3                        # Scales the engine lighting strength/brightness range before tonemap, useful for HDR rendering
 Gamma = 2.2                           # Gamma modifier to be applied after tonemapping, delinearises output. If placed at 1.0, outputs at linear space for HDR (UI unaffected)
@@ -502,6 +560,7 @@ PointLightMultiplier = 1.0            # Experimental - modifies the strength of 
 
 
 [_Shaders.Tonemapping.Night]
+ExposureEV = 0.0                      # [-8-8] Exposure compensation in stops (each +1 doubles the light), on top of Exposure and auto exposure.
 Exposure = 1.5                        # Scales the engine lighting strength/brightness range before tonemap, useful for HDR rendering
 Gamma = 2.2                           # Gamma modifier to be applied after tonemapping, delinearises output. If placed at 1.0, outputs at linear space for HDR (UI unaffected)
 Linearization = 2.2                   # Converts image to corrected linear space before tonemapping. 1.0 is non-linear, if so place Gamma at 1.0 as well
@@ -857,6 +916,16 @@ ContactDebug = false                 # Debug view: the scene in grey, contact sh
 ContactWeaponDepth = 40.0            # [0-200] Pixels nearer than this (game units) are the first-person weapon and arms, which get the settings below. 0 treats them as the world.
 ContactWeaponOnWorld = false         # Whether the first-person weapon casts contact shadows onto the world. Off, the world's rays pass through it, so the gun throws no screen-space shadow onto the ground below it.
 
+[_Shaders.ShadowsExteriors.TerrainShadows]
+Enabled = false                      # Shadows of hills and mountains on the land far past the sun-shadow maps, after Community Shaders' Terrain Shadows. Needs an xLODGen height map for the worldspace (FNVLODGen: Terrain LOD > Height maps, in Data\Textures\Terrain\<Worldspace>\) and ForwardShadows. Shadows are worked out on a spare CPU core when the sun moves; about 0.1 ms a frame.
+MaxResolution = 1                    # [0-2] The height map is shrunk to at most 0: 1024, 1: 2048, 2: 4096 texels on its longer side (needs a worldspace change or restart). Larger: sharper edges, more video memory (16 MB at 2048) and CPU per update.
+Bias = 64.0                          # [0-4096] Shadow heights are lowered by this many units, so slopes do not shadow themselves. Higher: fewer, deeper shadows only; lower: more shadow on gentle slopes.
+Softness = 1.0                       # [0.1-10] Degrees either side of the sun's height over which the shadow's edge fades.
+Strength = 1.0                       # [0-1] How much of the sun the land's shadow takes.
+Darkness = 0.5                       # [0-0.95] How much of the sky and ambient light the land's shadow also takes. 0: only the sun (physically, valleys still see the sky); higher: darker, more contrasted shadows.
+Contrast = 1.5                       # [0.5-8] Sharpens the shadow's edge: 1 as worked out, higher a harder line between lit and shaded land.
+DebugView = 0                        # 1: the land's shadow in green over a grey picture (contact shadows in red, the shadow maps' in blue). 2: also tints the area the height map covers.
+
 [_Shaders.ShadowsExteriors.ShadowMaps]
 Mode = 2							 # Shadow mode, higher means higher quality, but higher computational cost. 0: VSM, 1: EVSM2, 2: EVSM4
 Format = 0							 # Texture format, higher means higher quality, but higher bandwidth cost. 0: 16 bit, 1: 32 bit
@@ -873,6 +942,8 @@ Anisotropy = 0						 # DISABLED. Anisotropic filteric for mipmaps, 0: disabled, 
 Distance = 6000                      # Distance to render shadows for. The unit is the same as the game uses for i.e. fog values. 
 CascadeLambda = 0.9					 # [0.0-1.0] Controls how cascades are split, higher value means nearer cascades get higher resolution.
 LimitFrequency = true				 # Limit the update frequency of the furthest cascade (once per four frames).
+LodSkipLoaded = true                 # Distant-object LOD inside the loaded cells casts no sun shadow: the full objects there already do. Removes doubled shadows and ghost shadows of swapped or removed objects, and saves drawing them twice. false: the old behaviour. From NVR UNOFFICIAL Optimized.
+CachedDistantShadows = false         # Faster (up to about 1 ms where no one is around): the middle sun-shadow cascade is redrawn every 4th frame and the far and most distant ones every 8th, but a cascade with a person or creature's shadow in it is redrawn every frame, so moving characters keep correct shadows. Still things look the same; doors or objects knocked around far away can lag a few frames. Overrides LimitFrequency. From NVR UNOFFICIAL Optimized.
 
 [_Shaders.ShadowsExteriors.Ortho]
 Resolution = 2						 # Resolution of the texture used to store the ortho map. 0: 128, 1: 256, 2: 512, 3: 1024, 4: 2048

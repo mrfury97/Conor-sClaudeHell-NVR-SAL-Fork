@@ -1,5 +1,7 @@
 #pragma once
 
+#include "TerrainShadows.h"
+
 typedef struct frustum {
 	enum PLANE {
 		PLANENEAR = 0,
@@ -16,6 +18,8 @@ typedef struct frustum {
 class ShadowsExteriorEffect : public EffectRecord
 {
 public:
+	TerrainShadowMap	TerrainShadows;   // [Shaders.ShadowsExteriors.TerrainShadows], updated in ShadowManager::RenderShadowMaps
+
 	ShadowsExteriorEffect() : EffectRecord("ShadowsExteriors") {};
 
 	static const int Modes = 3;
@@ -123,6 +127,8 @@ public:
 		bool				MSAA;
 		bool				Mipmaps;
 		bool				LimitFrequency;
+		bool				LodSkipLoaded;     // distant LOD inside the loaded cells casts no sun shadow (ShadowManager::AccumChildren)
+		bool				CachedDistant;     // CachedDistantShadows: middle/far/LOD cascades redrawn less often (ShadowManager::RenderShadowMaps)
 		int					Anisotropy;
 		float				Distance;
 		float				CascadeLambda;
