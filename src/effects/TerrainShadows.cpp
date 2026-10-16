@@ -36,8 +36,15 @@ void TerrainShadowMap::RegisterTextures() {
 	TheTextureManager->RegisterTexture("TESR_TerrainShadowBuffer", (IDirect3DBaseTexture9**)&Texture);
 }
 
+// Each shader keeps its own raw pointer to a TESR_ texture and only looks it up again while that is
+// null, so they are all cleared here: after a worldspace with another map size the composite went on
+// sampling the freed texture (the last map's heights read with the new map's range).
 void TerrainShadowMap::ReleaseTexture() {
-	if (Texture) { Texture->Release(); Texture = nullptr; }
+	if (Texture) {
+		TheShaderManager->ClearShaderSamplers("TESR_TerrainShadowBuffer", sizeof("TESR_TerrainShadowBuffer"));
+		Texture->Release();
+		Texture = nullptr;
+	}
 	TextureWidth = TextureHeight = 0;
 	Uploaded = false;
 }
@@ -216,7 +223,7 @@ TerrainShadowMap::HeightMap TerrainShadowMap::Load(void* WorldSpace, std::string
 // The sweep, on a worker thread (see the header). A line of texels at a time across the light's path:
 // each line only needs the one before it, so only two lines of shadow heights are kept, and each is
 // encoded straight into the result.
-TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const HeightMap> Map, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation) {
+TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const HeightMap> Map, std::vector<UINT64>* Packed, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation) {
 	SweepResult Out;
 	Out.Generation = Generation;
 	Out.SunDir = SunDir;
@@ -255,7 +262,7 @@ TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const Heig
 		const float Scale = 65535.0f / Out.Range;
 		auto Encode = [&](float h) { return (UINT32)std::clamp((h - Out.Low) * Scale + 0.5f, 0.0f, 65535.0f); };
 
-		Out.Packed.resize(H.size());
+		Packed->resize(H.size());   // the same size as the last sweep's: no allocation
 		std::vector<float> PreviousUpper(AcrossCount), PreviousLower(AcrossCount), CurrentUpper(AcrossCount), CurrentLower(AcrossCount);
 		size_t ShadowedCount = 0;
 		const int First = Step > 0 ? 0 : AlongCount - 1;
@@ -280,16 +287,16 @@ TerrainShadowMap::SweepResult TerrainShadowMap::Sweep(std::shared_ptr<const Heig
 				CurrentUpper[j] = (std::max)(P[k], CastUpper);
 				CurrentLower[j] = (std::max)(P[k], CastLower);
 				// A16B16G16R16: r upper, g lower shadow height, b the ground, a unused
-				Out.Packed[k] = (UINT64)Encode(Upper) | ((UINT64)Encode(Lower) << 16) | ((UINT64)Encode(H[k]) << 32) | (0xFFFFull << 48);
+				(*Packed)[k] = (UINT64)Encode(Upper) | ((UINT64)Encode(Lower) << 16) | ((UINT64)Encode(H[k]) << 32) | (0xFFFFull << 48);
 			}
 			PreviousUpper.swap(CurrentUpper);
 			PreviousLower.swap(CurrentLower);
 		}
 		Out.Shadowed = H.empty() ? 0.0f : (float)ShadowedCount / (float)H.size();
+		Out.Count = H.size();
 	}
 	catch (const std::exception& e) {
-		Out.Packed.clear();
-		Out.Packed.shrink_to_fit();
+		Out.Count = 0;
 		Out.Error = std::string("[ERROR] Terrain shadows: the shadow sweep failed (") + e.what() + ")";
 	}
 	return Out;
@@ -305,6 +312,7 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 			ReleaseTexture();
 			PendingUpload = SweepResult();
 			Uploading = false;
+			std::vector<UINT64>().swap(SweepBuffer);
 			RequestedWorldSpace = nullptr;
 			UploadedGeneration = ~0u;
 		}
@@ -335,6 +343,13 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 		Loading = true;
 	}
 
+	// Neither should take more than a second or two: say so (once) if one has, as that leaves the shadows still.
+	if ((Sweeping || Uploading) && !StallLogged && GetTickCount64() - BusySince > 15000) {
+		StallLogged = true;
+		Logger::Log("[WARNING] Terrain shadows: the %s has run for %.0f s; the shadows will not follow the sun until it ends",
+			Sweeping ? "shadow sweep" : "texture upload", (GetTickCount64() - BusySince) / 1000.0);
+	}
+
 	// 3. A finished sweep, uploaded if it is of the heights still current.
 	if (Sweeping && SweepJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
 		SweepResult Result = SweepJob.get();
@@ -349,13 +364,15 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 				Azimuth < 0.0f ? Azimuth + 360.0f : Azimuth, Elevation, TheShaderManager->GameState.dayLight > 0.5f ? "the sun" : "the moon",
 				LastFade, Settings.Strength, Result.Shadowed * 100.0f, Result.Blur, SweptBias);
 		}
-		const bool Valid = Map && Result.Generation == Generation && Result.Packed.size() == (size_t)Map->Width * Map->Height;
+		const bool Valid = Map && Result.Generation == Generation && Result.Count == (size_t)Map->Width * Map->Height && SweepBuffer.size() == Result.Count;
 		const bool SameEncoding = Valid && Uploaded && Texture && TextureWidth == Map->Width && TextureHeight == Map->Height &&
 			UploadedGeneration == Result.Generation && Constants.Range.x == Result.Low && Constants.Range.y == Result.Range;
 		if (Valid && SameEncoding) {   // the sun moved: copied in strips, from the next lines on
 			PendingUpload = std::move(Result);
 			PendingRow = 0;
 			Uploading = true;
+			BusySince = GetTickCount64();
+			StallLogged = false;
 		}
 		else if (Valid) {   // a new map or encoding: all of it now, with its constants
 			if (!Texture || TextureWidth != Map->Width || TextureHeight != Map->Height) {
@@ -373,7 +390,7 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 			D3DLOCKED_RECT Rect;
 			if (SUCCEEDED(Texture->LockRect(0, &Rect, NULL, 0))) {
 				for (UINT r = 0; r < Map->Height; r++)
-					memcpy((BYTE*)Rect.pBits + (size_t)r * Rect.Pitch, &Result.Packed[(size_t)r * Map->Width], (size_t)Map->Width * sizeof(UINT64));
+					memcpy((BYTE*)Rect.pBits + (size_t)r * Rect.Pitch, &SweepBuffer[(size_t)r * Map->Width], (size_t)Map->Width * sizeof(UINT64));
 				Texture->UnlockRect(0);
 				// Edges (not texel centres), so uv = distance in from the west / north edge over the size.
 				Constants.Data = D3DXVECTOR4(Map->West - 0.5f * Map->Texel, Map->North + 0.5f * Map->Texel, 1.0f / (Map->Width * Map->Texel), 0.0f);
@@ -382,14 +399,16 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 				Uploaded = true;
 				UploadedWorldSpace = Map->WorldSpace;
 				UploadedGeneration = Result.Generation;
+				SweepsUploaded++;
 			}
+			else LockFailures++;
 			Uploading = false;
 		}
 	}
 
 	// A strip of the pending sweep (128 rows, about 1.4 MB at the default size) a frame.
 	if (Uploading) {
-		if (!Map || !Texture || PendingUpload.Generation != UploadedGeneration || PendingUpload.Packed.size() != (size_t)TextureWidth * TextureHeight) {
+		if (!Map || !Texture || PendingUpload.Generation != UploadedGeneration || SweepBuffer.size() != (size_t)TextureWidth * TextureHeight) {
 			Uploading = false;   // the map changed under it: a new full sweep follows
 			PendingUpload = SweepResult();
 		}
@@ -399,14 +418,16 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 			D3DLOCKED_RECT Rect;
 			if (SUCCEEDED(Texture->LockRect(0, &Rect, &Strip, 0))) {
 				for (UINT r = 0; r < Rows; r++)
-					memcpy((BYTE*)Rect.pBits + (size_t)r * Rect.Pitch, &PendingUpload.Packed[(size_t)(PendingRow + r) * TextureWidth], (size_t)TextureWidth * sizeof(UINT64));
+					memcpy((BYTE*)Rect.pBits + (size_t)r * Rect.Pitch, &SweepBuffer[(size_t)(PendingRow + r) * TextureWidth], (size_t)TextureWidth * sizeof(UINT64));
 				Texture->UnlockRect(0);
 			}
+			else LockFailures++;
 			PendingRow += Rows;
 			if (PendingRow >= TextureHeight) {
 				Constants.Range.w = PendingUpload.Blur;
 				Uploading = false;
-				PendingUpload = SweepResult();   // freed
+				SweepsUploaded++;
+				PendingUpload = SweepResult();
 			}
 		}
 	}
@@ -417,8 +438,17 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 	const bool NewSettings = Settled && (Settings.Bias != SweptBias || Settings.Softness != SweptSoftness);
 	if (Map && !Map->Heights.empty() && !Sweeping && !Uploading && Sun.z > 0.0f &&
 		(SweptGeneration != Generation || NewSettings || D3DXVec3Dot(&Sun, &SweptSunDir) < 0.99999048f)) {
-		SweepJob = std::async(std::launch::async, &TerrainShadowMap::Sweep, Map, Sun, Settings.Softness, Settings.Bias, Generation);
-		Sweeping = true;
+		if (SweepBuffer.size() != Map->Heights.size()) std::vector<UINT64>().swap(SweepBuffer);   // another map's size: the old block freed first
+		try {
+			SweepJob = std::async(std::launch::async, &TerrainShadowMap::Sweep, Map, &SweepBuffer, Sun, Settings.Softness, Settings.Bias, Generation);
+			Sweeping = true;
+			SweepsStarted++;
+			BusySince = GetTickCount64();
+			StallLogged = false;
+		}
+		catch (const std::exception& e) {   // no thread to be had: tried again when the sun next moves
+			Logger::Log("[ERROR] Terrain shadows: could not start the shadow sweep (%s)", e.what());
+		}
 		SweptSunDir = Sun;
 		SweptGeneration = Generation;
 		SweptBias = Settings.Bias;
@@ -438,4 +468,21 @@ void TerrainShadowMap::Update(IDirect3DDevice9* Device, const D3DXVECTOR3& SunDi
 		Fade *= 1.0f - std::clamp(TheShaderManager->Effects.ShadowsExteriors->Constants.ShadowFade.x, 0.0f, 1.0f);
 	LastFade = Fade;
 	Constants.Data.w = (Uploaded && UploadedWorldSpace == World && Sun.z > 0.0f) ? Settings.Strength * Fade : 0.0f;
+
+	static ULONGLONG LastStatus = 0;
+	if (TheSettingManager->SettingsMain.Develop.DebugMode && GetTickCount64() - LastStatus > 10000) {
+		LastStatus = GetTickCount64();
+		auto Angles = [](const D3DXVECTOR3& L, float& Az, float& El) {
+			Az = atan2f(L.x, L.y) * 57.2958f; if (Az < 0.0f) Az += 360.0f;
+			El = asinf(std::clamp(L.z, -1.0f, 1.0f)) * 57.2958f;
+		};
+		float Az, El, SweptAz, SweptEl;
+		Angles(Sun, Az, El);
+		Angles(SweptSunDir, SweptAz, SweptEl);
+		Logger::Log("[TerrainShadows] status: hour %.2f, dayLight %.2f; light az %.1f el %.1f, last swept az %.1f el %.1f; %s%s%s; sweeps started %u, uploaded %u, lock failures %u; on screen %.2f (fade %.2f)%s",
+			TheShaderManager->ShaderConst.GameTime.y, TheShaderManager->GameState.dayLight, Az, El, SweptAz, SweptEl,
+			Sweeping ? "sweeping " : "", Uploading ? "uploading " : "", (!Sweeping && !Uploading) ? "idle" : "",
+			SweepsStarted, SweepsUploaded, LockFailures, Constants.Data.w, Fade,
+			!Uploaded ? ", nothing uploaded" : UploadedWorldSpace != World ? ", texture is another worldspace's" : "");
+	}
 }

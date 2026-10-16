@@ -62,7 +62,7 @@ private:
 		std::string	Message;                 // logged when done
 	};
 	struct SweepResult {
-		std::vector<UINT64>	Packed;
+		size_t	Count = 0;   // texels written to SweepBuffer (0: failed)
 		float	Low = 0.0f, Range = 1.0f, Blur = 0.0f;
 		UINT	Generation = 0;
 		std::string	Error;   // set if it failed (out of memory), logged
@@ -72,7 +72,7 @@ private:
 
 	// Both run on worker threads and never throw: a failure comes back as an empty result and a message.
 	static HeightMap	Load(void* WorldSpace, std::string Name, UINT MaxResolution);
-	static SweepResult	Sweep(std::shared_ptr<const HeightMap> Map, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation);
+	static SweepResult	Sweep(std::shared_ptr<const HeightMap> Map, std::vector<UINT64>* Packed, D3DXVECTOR3 SunDir, float Softness, float Bias, UINT Generation);
 	void	ReleaseTexture();
 
 	void*				RequestedWorldSpace = nullptr;   // the land worldspace a load was started for
@@ -84,6 +84,15 @@ private:
 
 	std::future<SweepResult>	SweepJob;
 	bool				Sweeping = false;
+	// The packed sweep, written by the worker while Sweeping and read by the strip upload while Uploading
+	// (never both: a sweep starts only once the last upload is done). Kept from sweep to sweep: a new
+	// block of this size every couple of seconds fragments the game's 32-bit address space over hours of
+	// play until the allocation fails, and the shadows stay where the last good sweep left them.
+	std::vector<UINT64>	SweepBuffer;
+	ULONGLONG			BusySince = 0;   // GetTickCount64 when the running sweep or upload began (stall log)
+	bool				StallLogged = false;
+	UINT				LockFailures = 0;   // texture locks that failed (DebugMode status line)
+	UINT				SweepsStarted = 0, SweepsUploaded = 0;
 	D3DXVECTOR3			SweptSunDir = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 	UINT				SweptGeneration = ~0u;
 	float				SweptBias = -1.0f, SweptSoftness = -1.0f;
