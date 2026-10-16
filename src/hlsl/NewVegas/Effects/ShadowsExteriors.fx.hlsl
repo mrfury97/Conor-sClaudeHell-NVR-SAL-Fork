@@ -12,6 +12,8 @@ float4 TESR_ShadowScreenSpaceData;
 float4 TESR_ShadowForwardData; // x: 1 when the forward path is SUPPRESSED
 float4 TESR_ShadowSunLight;     // the sun and ambient colours as the object shaders receive them,
 float4 TESR_ShadowAmbientLight; // see ShadowsExteriorEffect::UpdateLightColors
+float4 TESR_ContactInject;   // x 1 while the sun's contact shadows are applied in the skin's lighting (ShadowsExteriorEffect)
+float4 TESR_ContactSkinMask; // x 1 when TESR_SkinScatterBuffer holds this frame's skin (set by ShaderManager)
 float4 TESR_ShadowContactDebug; // x: [Shaders.ShadowsExteriors.ScreenSpace] ContactDebug
 float4 TESR_PBRData;           // z: LightingScale, w: AmbientScale, as the object shaders apply them
 float4 TESR_PBRExtraData;      // y: SkylightingScale
@@ -29,6 +31,16 @@ sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; AD
 sampler2D TESR_PointShadowBuffer : register(s2)  = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_NormalsBuffer : register(s3) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_ShadowAtlas : register(s4) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
+// The skin shaders' second target (effects/SkinScattering.h): a the camera distance where skin was drawn, 0 elsewhere.
+sampler2D TESR_SkinScatterBuffer : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
+
+// Skin, as SkinScattering.fx tests it: the skin shaders wrote this pixel's distance and nothing was drawn
+// over it since (the same distance, or the brow strip just in front).
+bool ContactSkinHere(float2 uv, float distance) {
+	float skinDistance = TESR_ContactSkinMask.x > 0.5f ? tex2Dlod(TESR_SkinScatterBuffer, float4(uv, 0.0f, 0.0f)).a : 0.0f;
+	float gap = skinDistance - distance;
+	return skinDistance > 0.0f && (abs(gap) < distance * 0.002f + 0.02f || (gap > 0.0f && gap < 1.5f));
+}
 
 
 static const float DARKNESS = max(0.0,1-TESR_ShadowData.y);
@@ -99,6 +111,9 @@ float4 Shadow(VSOUT IN) : COLOR0
 	float2 Shadow = tex2D(TESR_PointShadowBuffer, IN.UVCoord).rg;
 
 #if FORWARD_SHADOWS
+	// Skin has the contact shadows in its lighting (TESR_ContactInject, Shaders/Includes/Shadow.hlsl, where the
+	// skin scattering softens them): nothing left to take there. Everything else takes them here.
+	bool contactInLighting = TESR_ContactInject.x > 0.5f && ContactSkinHere(IN.UVCoord, uniformDepth);
 	// With forward shadows running, the object shaders shadow the sun term alone: a surface in
 	// shadow keeps its ambient and sky light, and so keeps their colour. The red channel here
 	// then holds only the contact shadows, and they get the same treatment, so the two read as
@@ -110,12 +125,15 @@ float4 Shadow(VSOUT IN) : COLOR0
 	// they light in, so scaling the pixel by (ambient + sky) / (sun + ambient + sky) is what the
 	// forward path would have written. Point light shadows still take the path below.
 	//
-	// The object shaders have already applied the cascades, so the contact shadow only takes what
-	// they left: sun visibility goes from the cascade's c to min(c, k), k being the contact
-	// shadow's, and the pixel scales by (ambient + sun * min(c, k)) / (ambient + sun * c).
-	// c comes from the same cascade lookup, done here only where a contact shadow exists.
+	// The object shaders have already applied the cascades, so the contact shadow takes its share of
+	// what they left, as CS multiplies the two (dirDetailedShadow *= the screen-space shadow): sun
+	// visibility goes from the cascade's c to c * k, k being the contact shadow's, and the pixel
+	// scales by (ambient + sun * c * k) / (ambient + sun * c). c comes from the same cascade lookup,
+	// done here only where a contact shadow exists. Not faded at sunrise and sunset: CS applies it
+	// whenever the sun lights the surface.
 	[branch] if (!TESR_ShadowForwardData.x && !TESR_ShadowFade.z) {
-		float contactVisibility = saturate(lerp(TESR_ShadowFade.x, 1.0f, Shadow.r));
+		float contactVisibility = saturate(Shadow.r);
+		// On skin in the lighting (above): nothing to take here, but the debug view still shows the mask.
 
 		// Debug view. The scene in grey, the contact shadow mask in red, and in blue whatever the
 		// cascades had already shaded, which the contact shadows must leave alone.
@@ -131,7 +149,7 @@ float4 Shadow(VSOUT IN) : COLOR0
 			return float4(debugColor, 1.0f);
 		}
 
-		if (contactVisibility >= 1.0f) return float4(color.rgb, 1.0f);   // most of the screen
+		if (contactInLighting || contactVisibility >= 1.0f) return float4(color.rgb, 1.0f);   // most of the screen
 
 		float cascadeVisibility = 1.0f;
 		[branch] if (TESR_ShadowFade.y) {
@@ -139,7 +157,7 @@ float4 Shadow(VSOUT IN) : COLOR0
 			cascadeVisibility = GetLightAmount(reconstructWorldPosition(IN.UVCoord, cascadeDepth), world_normal);
 			cascadeVisibility = saturate(lerp(cascadeVisibility, 1.0f, TESR_ShadowFade.x));   // faded as GetSunShadow fades it
 		}
-		float sunTaken = cascadeVisibility - min(cascadeVisibility, contactVisibility);
+		float sunTaken = cascadeVisibility * (1.0f - contactVisibility);
 		if (sunTaken <= 0.0f) return float4(color.rgb, 1.0f);   // already in the cascades' shade
 
 		// Terrain lights with its own [Shaders.Terrain.*] scales, and nothing in the frame says
@@ -157,6 +175,9 @@ float4 Shadow(VSOUT IN) : COLOR0
 
 		return float4(color.rgb * (1.0f - sunLight * sunTaken / max(litNow, 0.0001f)), 1.0f);
 	}
+	// Point light shadows on: this path, but on skin the contact shadows (all the red holds with the
+	// forward shadows running) are already in the lighting.
+	if (!TESR_ShadowForwardData.x && contactInLighting) Shadow.r = 1.0f;
 #endif
 	Shadow.r = lerp(TESR_ShadowFade.x, 1.0f, Shadow.r); // fade shadows to light when sun is low
 

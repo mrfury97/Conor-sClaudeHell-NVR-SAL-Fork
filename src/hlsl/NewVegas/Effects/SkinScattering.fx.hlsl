@@ -22,11 +22,13 @@
 // Pass 1 blurs horizontally and writes the blurred light for skin pixels; pass 2 blurs that
 // vertically, multiplies the albedo back and adds the highlights. Other pixels pass through.
 
-#define SAMPLES 17   // SkinScatteringEffect::KernelSamples
+#define SAMPLES 21   // SkinScatteringEffect::KernelSamples (Community Shaders' SSSS_N_SAMPLES)
 
 float4 TESR_SkinScatterData;                 // x game units per kernel unit, y depth follow, z distance tolerance, w albedo detail
 float4 TESR_SkinScatterKernel[SAMPLES];      // rgb weight, a offset; [0] is the centre
-float4 TESR_SkinScatterDebug;                // x [Shaders.Skin.Debug] DebugView 8-10 as 1-3: the skin test, scene / drawn brightness, what the blur changed
+float4 TESR_ReciprocalResolution;             // xy 1 / screen size
+float4 TESR_SkinScatterDebug;                // x [Shaders.Skin.Debug] DebugView 8-10 as 1-3: the skin test, scene / drawn brightness, what the blur changed;
+                                             // y 1 to turn the kernel per pixel (TAA on), z this frame's turn (0-63)
 
 sampler2D TESR_RenderedBuffer : register(s0) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 sampler2D TESR_DepthBuffer : register(s1) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
@@ -133,7 +135,18 @@ float4 SkinBlur(float2 uv, float2 dir, bool firstPass) {
 
     float3 lightM = firstPass ? ToLight(colorM.rgb, scatterM.rgb, albedoM.rgb) : Unpack(colorM.rgb);
 
-    // One kernel unit on screen: the projection of TESR_SkinScatterData.x game units at this depth.
+    // As Community Shaders, the kernel turned by a random angle per pixel (interleaved gradient noise,
+    // moving each frame), the same in both passes so they stay at right angles: no axis-aligned rows
+    // of taps, only noise for TAA to average. Off without TAA.
+    [flatten] if (TESR_SkinScatterDebug.y > 0.5f) {
+        float2 pixel = floor(uv / TESR_ReciprocalResolution.xy) + 5.588238f * TESR_SkinScatterDebug.z;
+        float angle = frac(52.9829189f * frac(dot(pixel, float2(0.06711056f, 0.00583715f)))) * 6.2831853f;
+        float c = cos(angle), s = sin(angle);
+        dir = float2(dir.x * c - dir.y * s, dir.x * s + dir.y * c);
+    }
+
+    // One kernel unit on screen: the projection of TESR_SkinScatterData.x game units at this depth
+    // (the same number of pixels across and down, so the turned kernel stays round).
     float2 stepUV = dir * float2(TESR_ProjectionTransform[0][0], TESR_ProjectionTransform[1][1]) * (0.5f * TESR_SkinScatterData.x / max(depthM, 1.0f));
 
     float3 blurred = lightM * TESR_SkinScatterKernel[0].rgb;
@@ -150,7 +163,7 @@ float4 SkinBlur(float2 uv, float2 dir, bool firstPass) {
 
         // Light does not scatter across a depth jump (Jimenez: lerp back to the centre), nor
         // in from anything that is not skin.
-        float follow = saturate(TESR_SkinScatterData.y * abs(depthM - depth));
+        float follow = saturate(TESR_SkinScatterData.y * TESR_ProjectionTransform[1][1] * abs(depthM - depth));   // x 1 / tan(fov / 2), as CS
         light = lerp(light, lightM, follow * follow);
         light = IsSkin(scatter, albedo.a, scene, depth, sampleUV.xy) ? light : lightM;
 

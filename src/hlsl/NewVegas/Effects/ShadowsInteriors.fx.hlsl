@@ -67,8 +67,17 @@ float4 CombineShadow( VSOUT IN ) : COLOR0 {
 // The lamps' contact shadows (SunShadows.fx, technique 1), with ForwardPointShadows: the buffer's
 // red holds the fraction of each pixel's light they leave. The frame is lit in linear and stored
 // as its square root (PBR LinearLighting), so the stored colour scales by the square root of it.
+float4 TESR_LampContactWeapon;   // z: 1 for the contact shadows' debug view ([Shaders.ShadowsInteriors.Main] ContactDebug)
+
 float4 LampContactComposite(VSOUT IN) : COLOR0 {
 	float4 color = tex2D(TESR_SourceBuffer, IN.UVCoord);
+	// Debug view: the scene in grey, the strongest lamp's raw contact shadow in red (SunShadows.fx wrote
+	// its visibility in place of the share-weighted result).
+	[branch] if (TESR_LampContactWeapon.z > 0.5f) {
+		float marched = saturate(tex2D(TESR_PointShadowBuffer, IN.UVCoord).r);
+		float3 mono = dot(color.rgb, float3(0.3f, 0.59f, 0.11f)).xxx * 0.6f;
+		return float4(lerp(mono, float3(1.0f, 0.05f, 0.05f), 1.0f - marched), 1.0f);
+	}
 	float left = saturate(tex2D(TESR_PointShadowBuffer, IN.UVCoord).r);
 	return float4(color.rgb * sqrt(left), 1.0f);
 }

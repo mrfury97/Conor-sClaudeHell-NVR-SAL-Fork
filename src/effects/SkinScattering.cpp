@@ -74,6 +74,14 @@ void SkinScatteringEffect::UpdateConstants() {
 	Constants.Data.y = Profile.DepthFollow;
 	Constants.Data.z = 0.002f;                                 // relative distance tolerance of the skin test
 	Constants.Data.w = Profile.AlbedoDetail;
+	// As Community Shaders: the kernel turned by a random angle per pixel, the two passes staying at
+	// right angles, which breaks the blur's axis-aligned rows of taps up into noise. Only with TAA,
+	// which averages the noise away (CS always has its own temporal AA); the angle moves each frame.
+	static UInt32 Frame = 0;
+	Frame++;
+	const bool TAAOn = TheShaderManager->Effects.TAA && TheShaderManager->Effects.TAA->Enabled;
+	Constants.Debug.y = TAAOn ? 1.0f : 0.0f;
+	Constants.Debug.z = (float)(Frame % 64);
 }
 
 // Ported from Community Shaders' SubsurfaceScattering::CalculateKernel (after Jimenez's

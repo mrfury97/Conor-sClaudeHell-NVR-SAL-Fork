@@ -213,6 +213,7 @@
     <ClCompile Include="..\src\NewVegas\Hooks\Game.cpp" />
     <ClCompile Include="..\src\NewVegas\Hooks\Hooks.cpp" />
     <ClCompile Include="..\src\NewVegas\Hooks\MaterialPass.cpp" />
+    <ClCompile Include="..\src\NewVegas\Hooks\GrassNormals.cpp" />
     <ClCompile Include="..\src\NewVegas\Hooks\Render.cpp" />
     <ClCompile Include="..\src\NewVegas\Hooks\Settings.cpp" />
     <ClCompile Include="..\src\NewVegas\Hooks\ShaderIO.cpp" />
@@ -318,6 +319,7 @@
     <ClInclude Include="..\src\NewVegas\Hooks\Game.h" />
     <ClInclude Include="..\src\NewVegas\Hooks\Hooks.h" />
     <ClInclude Include="..\src\NewVegas\Hooks\MaterialPass.h" />
+    <ClInclude Include="..\src\NewVegas\Hooks\GrassNormals.h" />
     <ClInclude Include="..\src\NewVegas\Hooks\Render.h" />
     <ClInclude Include="..\src\NewVegas\Hooks\Settings.h" />
     <ClInclude Include="..\src\NewVegas\Hooks\ShaderIO.h" />

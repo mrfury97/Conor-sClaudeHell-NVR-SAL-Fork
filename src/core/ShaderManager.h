@@ -174,6 +174,11 @@ public:
 		InverseSquareLightingShaders*	InverseSquareLighting;
 	};
 
+	// Counts frames, once each, at the start of the frame's render (Hooks/Render.cpp, RenderHook).
+	// UpdateConstants runs more than once a frame (frame start, then again before the effects), so
+	// per-frame state that must advance once keys on this instead of counting its own calls.
+	UInt32					FrameIndex = 0;
+
 	struct GameStateStruct {
 		float					isDayTime;
 		bool					isDayTimeChanged;

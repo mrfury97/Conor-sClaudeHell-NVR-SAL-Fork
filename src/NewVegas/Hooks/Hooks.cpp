@@ -38,6 +38,7 @@ void AttachHooks() {
 
 	// Vanilla shader specific hooks.
 	kSkyShaderConstantsDetour.ReplaceVirtualFunc(0x10AFE94, SkyShader__UpdateConstants);
+	GrassNormals::Install();	// after the sky hook: it checks its vtable against the same slot
 	kSkinPrepareGeometryDetour.ReplaceVirtualFunc(0x10BB980 + 27 * 4, SkinShader__PrepareGeometryForRendering);
 	kSkinPostGeometryDetour.ReplaceVirtualFunc(0x10BB980 + 35 * 4, SkinShader__PostGeometry);
 	InstallFaceGenInteriorPatch();   // interior faces get SkinShader's own passes (Hooks/Shaders.cpp)

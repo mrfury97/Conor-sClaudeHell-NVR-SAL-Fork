@@ -2565,6 +2565,9 @@ static void RenderContent() {
 		std::string key(s.Key);
 		if (handled.count(key)) continue;
 		if (ShouldHideKey(s.Key)) continue;
+		// Grass ScaleX/Y/Z feed TESR_GrassScale, which only the Oblivion grass shaders read: in FNV they
+		// do nothing, so they stay in the TOML but not in the menu.
+		if (SelectedSection == "Shaders.Grass.Main" && (!strcmp(s.Key, "ScaleX") || !strcmp(s.Key, "ScaleY") || !strcmp(s.Key, "ScaleZ"))) continue;
 
 		// Hide HDRCompat when PreTonemapping is off — it's meaningless in post-tonemapping mode
 		if (strcmp(s.Key, "HDRCompat") == 0 && SelectedSection == "Shaders.LUT.Main") {

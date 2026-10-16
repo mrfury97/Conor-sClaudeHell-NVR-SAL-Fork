@@ -104,6 +104,14 @@ static const float SHADOW_FORMAT = TESR_ShadowFormatData.y;
     #define SHADOW_FILTER_SPREAD 1.0f
 #endif
 
+// Cross-fade between cascades over the outer 10% of each (a second atlas fetch and light-space
+// transform there). 0 takes the nearer cascade alone up to its edge: a step where the resolution
+// changes, which grass, all noise and overdraw, hides, and saves the second fetch on every blade in
+// those rings.
+#ifndef SHADOW_CASCADE_BLEND
+    #define SHADOW_CASCADE_BLEND 1
+#endif
+
 // VS presence sentinel. NVR replaces many more pixel than vertex shaders (objects ~134 vs 51,
 // terrain 29 vs 2) and the game pairs them independently, so an NVR PS often runs against a
 // vanilla VS whose interpolator holds undefined data. NVR vertex shaders stamp this; the PS
@@ -249,7 +257,60 @@ float3 GetShadowGeometricNormal(float3 worldPos) {
 // ---------------------------------------------------------------------------
 // 1.0 in full light, towards 0 in shadow. Multiply the SUN term by it, before ambient.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// The sun's contact shadows, in the lighting (Community Shaders' way): CS multiplies its screen-space
+// shadow into the sun's shadow term (dirDetailedShadow) before any light is summed, so a contact
+// shadow is the sun's light taken away -- the same colour as a shadow-map shadow, the sun's highlight
+// gone with it, the ambient and lamps untouched. FNV draws no depth before it lights, so NVR's march
+// (Bend's, Effects/SunShadows.fx) runs after the frame; its result and depth are kept
+// (ShadowsExteriorEffect::StoreContactHistory, TESR_ContactHistory) and read here the next frame at
+// where this point was then (TESR_ContactReprojection: camera-relative world now -> clip last frame,
+// the camera's move folded in). Where last frame's depth there is not this point's (it was hidden,
+// or off screen), no contact shadow. One frame late on things that move.
+// c94-c98: past every host's own constants (TerrainTemplate's PS reaches c93).
+// ---------------------------------------------------------------------------
+// Only the skin shaders take them in the lighting (SkinTemplate.hlsl defines CONTACT_IN_LIGHTING), where
+// the skin scattering softens them; everything else gets them from the composite after the frame
+// (Effects/ShadowsExteriors.fx), which leaves skin alone while it has them here.
+#if !defined(CONTACT_IN_LIGHTING) && !defined(CONTACT_HISTORY_NONE)
+    #define CONTACT_HISTORY_NONE
+#endif
+#ifndef CONTACT_HISTORY_SAMPLER_REG
+    #define CONTACT_HISTORY_SAMPLER_REG s8
+#endif
+row_major float4x4 TESR_ContactReprojection : register(c94);
+float4 TESR_ContactInject : register(c98);   // x 1 while the contact shadows are applied in the lighting, y the depth match (fraction), zw 1 / screen size
+#ifndef CONTACT_HISTORY_NONE
+// MUST stay on ONE line (ShaderTextureValue::GetSamplerStateString). LINEAR, read at texel centres: the
+// object templates' POINT macro (point-light variants) would empty a POINT filter here.
+sampler2D TESR_ContactHistory : register(CONTACT_HISTORY_SAMPLER_REG) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+#endif
+
+float GetContactShadow(float3 worldPos) {
+#ifdef CONTACT_HISTORY_NONE
+    return 1.0f;
+#else
+    [branch] if (TESR_ContactInject.x < 0.5f) return 1.0f;
+    float4 clip = mul(float4(worldPos, 1.0f), TESR_ContactReprojection);
+    if (clip.w <= 0.0f) return 1.0f;
+    float2 uv = clip.xy / clip.w * float2(0.5f, -0.5f) + 0.5f;
+    if (any(uv < 0.0f) || any(uv > 1.0f)) return 1.0f;
+    uv = (floor(uv / TESR_ContactInject.zw) + 0.5f) * TESR_ContactInject.zw;   // the texel it falls in, unfiltered
+    float2 history = tex2Dlod(TESR_ContactHistory, float4(uv, 0.0f, 0.0f)).rg;   // r visibility, g depth (TESR_DepthBuffer.y)
+    float expected = clip.z / clip.w;
+    return abs(history.g - expected) <= abs(expected) * TESR_ContactInject.y ? history.r : 1.0f;
+#endif
+}
+
+float GetSunShadowMaps(float3 worldPos, float3 worldNormal);
+
+// The sun's shadow: the cascades', times its contact shadow.
 float GetSunShadow(float3 worldPos, float3 worldNormal) {
+    return GetSunShadowMaps(worldPos, worldNormal) * GetContactShadow(worldPos);
+}
+
+// The cascades alone.
+float GetSunShadowMaps(float3 worldPos, float3 worldNormal) {
     // Nonzero SUPPRESSES the forward path; SunShadows.fx reads the same constant and takes
     // over deferred. A missing constant reads zero and leaves forward running.
     if (TESR_ShadowForwardData.x) return 1.0f;
@@ -323,19 +384,19 @@ float GetSunShadow(float3 worldPos, float3 worldNormal) {
     // Initialised: a point beyond the last cascade falls through every branch.
     float shadow = 1.0f;
     [branch] if (distances.x < radii.x) {
-        [branch] if (distances.x < radii.x * blend)
+        [branch] if (!SHADOW_CASCADE_BLEND || distances.x < radii.x * blend)
             shadow = SHADOW_TAP_NEAR;
         else
             shadow = lerp(SHADOW_TAP_NEAR, SHADOW_TAP_MIDDLE, smoothstep(radii.x * blend, radii.x, distances.x));
     }
     else if (distances.y < radii.y) {
-        [branch] if (distances.y < radii.y * blend)
+        [branch] if (!SHADOW_CASCADE_BLEND || distances.y < radii.y * blend)
             shadow = SHADOW_TAP_MIDDLE;
         else
             shadow = lerp(SHADOW_TAP_MIDDLE, SHADOW_TAP_FAR, smoothstep(radii.y * blend, radii.y, distances.y));
     }
     else if (distances.z < radii.z) {
-        [branch] if (distances.z < radii.z * blend)
+        [branch] if (!SHADOW_CASCADE_BLEND || distances.z < radii.z * blend)
             shadow = SHADOW_TAP_FAR;
         else
             shadow = lerp(SHADOW_TAP_FAR, SHADOW_TAP_LOD, smoothstep(radii.z * blend, radii.z, distances.z));

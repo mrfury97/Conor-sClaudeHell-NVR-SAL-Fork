@@ -509,6 +509,7 @@ void ShaderManager::UpdateConstants() {
 	// Underwater effect uses constants from the water shader
 	if (Effects.Underwater->Enabled && !Shaders.Water->Enabled) Shaders.Water->UpdateConstants();
 	if (!Effects.ShadowsExteriors->Enabled && Effects.ShadowsInteriors->Enabled) Effects.ShadowsExteriors->UpdateConstants(); // Interior and exterior shadows share settings
+	if (!Effects.ShadowsExteriors->Enabled) Effects.ShadowsExteriors->Constants.ContactInject.x = 0.0f;   // no contact pass, no history: none in the lighting
 
 	TheSettingManager->SettingsChanged = false;
 	timer.LogTime("ShaderManager::UpdateConstants");
@@ -1141,7 +1142,11 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// separate lights in 2 batches
 		RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows, true);
 		if (Effects.ShadowsExteriors->Settings.Interiors.LightPoints > 6) RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.PointShadows2, false);
-		if (GameState.isExterior) RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.SunShadows, false);
+		if (GameState.isExterior) {
+			Effects.ShadowsExteriors->UpdateContactLight();   // with this frame's smoothed sun (the cascades')
+			RenderEffectToRT(Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.SunShadows, false);
+			Effects.ShadowsExteriors->StoreContactHistory();   // for next frame's lighting (ContactInLighting)
+		}
 	}
 	else {
 		// Nothing above ran this frame, so ShadowPassSurface keeps whatever it last
@@ -1156,10 +1161,16 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 		// Lamps' contact shadows (Effects/SunShadows.fx, technique 1): their share of each pixel's
 		// light into the buffer's red channel, composited below (ShadowsInteriors.fx, technique 1).
 		if (ForwardPointShadows && Effects.ShadowsExteriors->Constants.LampContactData.x > 0.0f) {
+			// Skin skips the lamps' shadow maps (SkinTemplate.hlsl); the pass finds it in the skin
+			// shaders' target, only when they drew into it this frame (it is cleared on the first skin
+			// draw), resolved first when multisampled (SkinScattering resolves it again later).
+			SkinScatteringEffect* Skin = Effects.SkinScattering;
+			const bool SkinValid = Skin && Skin->SkinDrawn && Skin->Texture && Skin->TextureSurface;
+			if (SkinValid && Skin->MSAASurface) Device->StretchRect(Skin->MSAASurface, NULL, Skin->TextureSurface, NULL, D3DTEXF_NONE);
+			Effects.ShadowsExteriors->Constants.LampContactWeapon.w = SkinValid ? 1.0f : 0.0f;
 			GpuProfiler::Begin(GpuProfiler::LampContact);
 			Device->SetRenderTarget(0, Effects.ShadowsExteriors->Textures.ShadowPassSurface);
-			Effects.SunShadows->Render(Device, Effects.ShadowsExteriors->Textures.ShadowPassSurface, Effects.ShadowsExteriors->Textures.ShadowPassSurface,
-				Effects.ShadowsExteriors->Settings.Interiors.ContactBlur ? 2 : 1, false, nullptr);   // sharp, or blurred too
+			Effects.SunShadows->Render(Device, Effects.ShadowsExteriors->Textures.ShadowPassSurface, nullptr, 1, false, nullptr);   // drawn in place, no copy
 			GpuProfiler::End(GpuProfiler::LampContact);
 		}
 	}
@@ -1180,7 +1191,16 @@ void ShaderManager::RenderEffectsPreTonemapping(IDirect3DSurface9* RenderTarget)
 	Effects.DynamicCubemaps->RenderCubemaps(Device, RenderTarget);
 
 	if (GameState.isExterior)
+	{
+		// The composite leaves skin alone while it has the contact shadows in its lighting: it finds skin in
+		// the skin shaders' target, only when they drew into it this frame (cleared on the first skin draw),
+		// resolved when multisampled (SkinScattering's ShouldRender did, unless it stepped aside).
+		SkinScatteringEffect* Skin = Effects.SkinScattering;
+		const bool SkinValid = Skin && Skin->SkinDrawn && Skin->Texture && Skin->TextureSurface;
+		if (SkinValid && Skin->MSAASurface) Device->StretchRect(Skin->MSAASurface, NULL, Skin->TextureSurface, NULL, D3DTEXF_NONE);
+		Effects.ShadowsExteriors->Constants.ContactSkinMask.x = SkinValid ? 1.0f : 0.0f;
 		Effects.ShadowsExteriors->Render(Device, RenderTarget, RenderedSurface, 0, false, SourceSurface);
+	}
 	else if (!ForwardPointShadows)
 		Effects.ShadowsInteriors->Render(Device, RenderTarget, RenderedSurface, 0, true, SourceSurface);
 	else if (Effects.ShadowsExteriors->Constants.LampContactData.x > 0.0f)

@@ -47,6 +47,12 @@ public:
 		D3DXVECTOR4		SunLight;			// rgb: the sun colour the object shaders receive
 		D3DXVECTOR4		AmbientLight;		// rgb: the ambient colour the object shaders receive
 		D3DXVECTOR4		ContactDebug;		// x: debug view of the contact shadows, 0 off
+		D3DXVECTOR4		ContactLight;		// Bend's light coordinate: xy the sun on screen (pixels), z its depth (TESR_DepthBuffer.y), w +1 in front of the camera, -1 behind, 0 off
+		D3DXVECTOR4		ContactLightDir;	// toward the sun in view space, the direction the coordinate is made from (the cascades' smoothed one); w the fade after a transition
+		D3DXVECTOR4		ContactBend;		// x SurfaceThickness, y BilinearThreshold, z ShadowContrast, w samples per ray
+		D3DXMATRIX		ContactReprojection;	// camera-relative world now -> clip space last frame (Shaders/Includes/Shadow.hlsl, GetContactShadow)
+		D3DXVECTOR4		ContactSkinMask;	// x 1 when the skin target holds this frame's skin (ShaderManager, before the composite)
+		D3DXVECTOR4		ContactInject;		// x 1 while the contact shadows are applied in the skin's lighting, y the depth match
 		D3DXVECTOR4		OrthoData;
 		D3DXVECTOR4		ShadowFade;
 		D3DXMATRIXA16	ShadowWorld;
@@ -57,9 +63,9 @@ public:
 		D3DXVECTOR4		ShadowLightFade[ShadowCubeMapsMax / 4];   // slot i's shadow strength in component i % 4 of [i / 4]: 0 none, 1 full (fading as clusters trade slots)
 		D3DXVECTOR4		PointShadowData;   // Shaders/Includes/PointShadow.hlsl: x 1 when lamps are shadowed in the object shaders, y 1 / atlas width, z 1 / atlas height, w a face's size
 		D3DXVECTOR4		PointShadowParams; // Shaders/Includes/PointShadow.hlsl: x NearFade, y the atlas's tiles per row, z ShadowNormalOffset x 2 / face size, w ShadowSoftness
-		D3DXVECTOR4		LampContactData;   // lamps' contact shadows indoors (Effects/SunShadows.fx, technique 1): x strength (0 off), y ray length, z thickness, w max distance
-		D3DXVECTOR4		LampContactExtra;  // x samples per ray, y lamps marched per pixel, z the longest ray on screen
-		D3DXVECTOR4		LampContactShape;  // x the rays' start off the surface, y the lamps' radius for their softening
+		D3DXVECTOR4		LampContactData;   // lamps' contact shadows indoors (Effects/SunShadows.fx, technique 1): x strength (0 off)
+		D3DXVECTOR4		LampContactBend;   // the lamps' Bend settings, as ContactBend: x SurfaceThickness, y BilinearThreshold, z ShadowContrast, w samples per ray
+		D3DXVECTOR4		LampContactWeapon; // x the first-person weapon's depth (nearer is the weapon), y 1 when it casts onto the world, z 1 for the debug view, w 1 when the skin target is this frame's (set by ShaderManager)
 		D3DXVECTOR4		PointShadowPCSS;   // Shaders/Includes/PointShadow.hlsl: x 1 PCSS, y PCSSLightSize, z PCSSMaxSpread (texels), w this frame's turn of the sample pattern
 		D3DXVECTOR4		ShadowMapRadius;
 		D3DXVECTOR4		ShadowBlur;
@@ -166,15 +172,13 @@ public:
 		float				PCSSMaxSpread;        // the widest edge, in shadow map texels
 		int					PCSSFilter;           // 0 auto (smooth without TAA, dithered with it), 1 smooth, 2 dithered
 		float				ContactStrength;      // lamps' screen-space contact shadows (with ForwardPointShadows), 0 off
-		float				ContactLength;
-		float				ContactThickness;
-		float				ContactDistance;
-		int					ContactSamples;       // samples per lamp's contact ray
-		int					ContactLamps;         // lamps marched per pixel, the strongest first
-		float				ContactScreenLength;  // the longest contact ray on screen, pixels at 1080 lines
-		float				ContactNormalOffset;  // the rays' start off the surface, units (at the camera)
-		float				ContactSoftness;      // their softening away from contact, x PCSSLightSize
-		bool				ContactBlur;          // blur them as well (softer, the old look)
+		int					ContactLamps;         // lamps per pixel that cast them (1-2)
+		float				ContactFade;          // how fast they fade along the shadow (0 not at all, 1 by the ray's end, 2 by its middle)
+		float				ContactAmbient;       // how much of the ambient and cell light they also take (grounding)
+		D3DXVECTOR4			ContactBend;          // their Bend settings (ContactSampleCount, ContactSurfaceThickness, ContactBilinearThreshold, ContactShadowContrast)
+		float				ContactWeaponDepth;   // nearer is the first-person weapon
+		bool				ContactWeaponOnWorld; // whether the weapon casts onto the world
+		int					ContactDebug;         // debug view: 1 the strongest lamp's raw contact shadow, 2 where that lamp is on screen
 		bool				UseCastShadowFlag;
 		bool				PlayerShadowThirdPerson;
 		bool				PlayerShadowFirstPerson;
@@ -210,6 +214,8 @@ public:
 	struct ShadowTextures {
 		IDirect3DTexture9* ShadowPassTexture;
 		IDirect3DSurface9* ShadowPassSurface;
+		IDirect3DTexture9* ContactHistoryTexture;   // last frame's contact shadow (r) and depth (g), for the lighting
+		IDirect3DSurface9* ContactHistorySurface;
 		IDirect3DCubeTexture9* ShadowCubeMapTexture[ShadowSlotsMax];   // past ShadowCubeMapsMax made when first needed (EnsureShadowCube)
 		IDirect3DSurface9* ShadowCubeMapSurface[ShadowSlotsMax][6];
 		IDirect3DTexture9* ShadowSpotlightTexture[SpotLightsMax];
@@ -251,6 +257,24 @@ public:
 	IDirect3DSurface9* ShadowMapOrthoDepthSurface;
 
 	void		clearShadowsBuffer();
+	void		StoreContactHistory();   // after the contact pass: its result and the camera, for next frame's lighting
+	// The camera the contact history was made with: last frame's, rotation-only view times unjittered projection.
+	D3DXMATRIX	ContactHistoryViewProj;
+	D3DXVECTOR3	ContactHistoryCamera = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+	UInt32		ContactHistoryFrame = 0;   // frame it was stored in (0: none)
+	UInt32		ContactFrame = 0;
+	void		UpdateContactLight();      // right before the contact pass: the sun's light coordinate
+	// Frames left before contact shadows return after a change of cell (the sun, the sky and the lamp
+	// lists settle first), and the cell it was counted from.
+	// After a transition: off for the first ContactOffFrames, then faded back in over ContactFadeFrames.
+	static constexpr UInt32 ContactOffFrames = 10, ContactFadeFrames = 10;
+	UInt32		ContactSettleFrames = 0;
+	float		ContactWeaponDepthSetting = 0.0f;   // [Shaders.ShadowsExteriors.ScreenSpace] ContactWeaponDepth; applied in first person only
+	float		ContactFade() const { return ContactSettleFrames > ContactFadeFrames ? 0.0f : 1.0f - (float)ContactSettleFrames / (float)(ContactFadeFrames + 1); }
+	void*		ContactCell = nullptr;
+	bool		ContactWasExterior = false;
+	D3DXVECTOR3	ContactCamera = D3DXVECTOR3(0.0f, 0.0f, 0.0f);   // last frame's, for a jump
+	UInt32		ContactFrameIndex = 0;   // ShaderManager::FrameIndex the contact state was last advanced in
 	void		UpdateConstants();
 	void		UpdateLightColors();
 	void		UpdateSettings();

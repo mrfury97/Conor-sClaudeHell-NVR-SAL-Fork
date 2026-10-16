@@ -1,6 +1,96 @@
 #include "ShadowsExterior.h"
 
+// Community Shaders' Screen-Space Shadows settings (Bend Studio's), for the sun's contact shadows
+// and, from their own section, the lamps': x SurfaceThickness, y BilinearThreshold, z ShadowContrast,
+// w samples per ray as CS sizes them -- 60 x SampleCount at 1920x1080, scaled with the square root of
+// the screen area, rounded up to a multiple of 8 (ScreenSpaceShadows::GetScaledSampleCount), and
+// capped for the shader's loop (ps_3_0 loops end at 255). A missing key reads 0: CS's defaults.
+static D3DXVECTOR4 ReadBendSettings(const char* Section) {
+	const int Multiplier = TheSettingManager->GetSettingI(Section, "ContactSampleCount");
+	const float AreaScale = sqrtf(((float)TheRenderManager->width * (float)TheRenderManager->height) / (1920.0f * 1080.0f));
+	UInt32 Samples = (UInt32)floorf((float)std::clamp(Multiplier > 0 ? Multiplier : 1, 1, 4) * 60.0f * AreaScale + 0.5f);
+	Samples = max(((Samples + 7u) / 8u) * 8u, 8u);
+	const float Thickness = TheSettingManager->GetSettingF(Section, "ContactSurfaceThickness");
+	const float Threshold = TheSettingManager->GetSettingF(Section, "ContactBilinearThreshold");
+	return D3DXVECTOR4(
+		Thickness > 0.0f ? std::clamp(Thickness, 0.005f, 0.05f) : 0.02f,
+		Threshold > 0.0f ? std::clamp(Threshold, 0.02f, 1.0f) : 0.02f,
+		std::clamp(TheSettingManager->GetSettingF(Section, "ContactShadowContrast"), 0.0f, 4.0f),
+		(float)min(Samples, 248u));
+}
+
+// After the sun's contact pass (Effects/SunShadows.fx, technique 0): its result and this frame's depth into
+// TESR_ContactHistory (technique 2), and the camera they were made with, for the next frame's lighting.
+void ShadowsExteriorEffect::StoreContactHistory() {
+	ContactHistoryFrame = 0;
+	if (!Constants.ContactInject.y || Constants.ContactLight.w == 0.0f || !Textures.ContactHistorySurface || !TheShaderManager->Effects.SunShadows) return;
+	IDirect3DDevice9* Device = TheRenderManager->device;
+	// The lit shaders read it on s8 (s13 on the land) and leave it bound: off those stages before it is
+	// drawn into.
+	TheRenderManager->renderState->SetTexture(8, nullptr);
+	TheRenderManager->renderState->SetTexture(13, nullptr);
+	Device->SetRenderTarget(0, Textures.ContactHistorySurface);
+	TheShaderManager->Effects.SunShadows->Render(Device, Textures.ContactHistorySurface, nullptr, 2, false, nullptr);   // no copy of the result elsewhere
+	D3DXMATRIX View = TheRenderManager->viewMatrix;
+	View._41 = View._42 = View._43 = 0.0f;
+	ContactHistoryViewProj = View * TheRenderManager->projMatrix;
+	ContactHistoryCamera = D3DXVECTOR3(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+	ContactHistoryFrame = ContactFrame;
+}
+
 void ShadowsExteriorEffect::UpdateConstants() {
+	// The contact state below advances once a frame, at its first UpdateConstants (frame start, before
+	// the world is drawn). The second call, before the effects, must leave it as the world saw it:
+	// counting it as a frame made ContactInject.x 0 there, and the composite (ShadowsExteriors.fx)
+	// then applied the contact shadows a second time over the lighting that already had them.
+	const bool NewFrame = TheShaderManager->FrameIndex != ContactFrameIndex;
+	ContactFrameIndex = TheShaderManager->FrameIndex;
+
+	// A transition (a door, a load, fast travel): contact shadows and their history wait a few frames. The
+	// sun's direction jumps between the cell light and the sky's sun, the sky's sun may not be placed yet,
+	// the cascades' smoothed direction is still easing from the last time outdoors, and the lamp lists are
+	// rebuilt; the history is from another place entirely. A transition: indoors to outdoors or back, a
+	// change of interior cell, or the camera jumping further in a frame than anything walks (a door
+	// between exteriors). Not an exterior cell border: the player crosses those walking.
+	if (NewFrame) {
+		const bool Exterior = TheShaderManager->GameState.isExterior;
+		void* Cell = (Player && Player->parentCell) ? (void*)Player->parentCell : nullptr;
+		const D3DXVECTOR3 Camera(TheRenderManager->CameraPosition.x, TheRenderManager->CameraPosition.y, TheRenderManager->CameraPosition.z);
+		const D3DXVECTOR3 Moved = Camera - ContactCamera;
+		const bool Jumped = D3DXVec3LengthSq(&Moved) > 1000.0f * 1000.0f;
+		const bool Transition = Exterior != ContactWasExterior || (!Exterior && Cell != ContactCell);
+		ContactWasExterior = Exterior;
+		ContactCell = Cell;
+		ContactCamera = Camera;
+		if (Transition || Jumped) ContactHistoryFrame = 0;   // a jump (VATS, a door between exteriors): only the history is from elsewhere
+		if (Transition) ContactSettleFrames = ContactOffFrames + ContactFadeFrames;
+		else if (ContactSettleFrames > 0) ContactSettleFrames--;
+	}
+
+	// The sun's contact shadows in the lighting ([Shaders.ShadowsExteriors.ScreenSpace] ContactInLighting):
+	// outdoors, with the forward shadows running and the contact pass on, from a history stored last frame
+	// (once a frame, as above).
+	// The matrix takes a camera-relative position now to last frame's clip space: the camera's move, then
+	// last frame's rotation-only view and unjittered projection. y (the depth match) is also the switch the
+	// store reads, so the history is only kept while it can be used.
+	if (NewFrame) {
+		ContactFrame++;
+		// Skin only (Shaders/Includes/Shadow.hlsl), and only while the skin shaders write their target: the
+		// composite finds skin there to leave it alone. Without it, skin takes them from the composite too.
+		SkinScatteringEffect* Skin = TheShaderManager->Effects.SkinScattering;
+		const bool SkinTarget = Skin && Skin->Enabled && Skin->ScreenSpace && Skin->Supported && TheShaderManager->Shaders.Skin && TheShaderManager->Shaders.Skin->Enabled;
+		const bool Wanted = TheShaderManager->GameState.isExterior && Constants.ScreenSpaceData.x && Constants.ContactData.x > 0.0f && SkinTarget
+			&& Settings.Exteriors.ForwardShadows && TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "ContactInLighting") != 0;
+		const bool Ready = Wanted && ContactFade() > 0.0f && ContactHistoryFrame != 0 && ContactHistoryFrame + 1 == ContactFrame;
+		Constants.ContactInject = D3DXVECTOR4(Ready ? 1.0f : 0.0f, Wanted ? 0.02f : 0.0f, 1.0f / (float)TheRenderManager->width, 1.0f / (float)TheRenderManager->height);
+		if (Ready) {
+			D3DXMATRIX Offset;
+			D3DXMatrixTranslation(&Offset, TheRenderManager->CameraPosition.x - ContactHistoryCamera.x,
+				TheRenderManager->CameraPosition.y - ContactHistoryCamera.y, TheRenderManager->CameraPosition.z - ContactHistoryCamera.z);
+			Constants.ContactReprojection = Offset * ContactHistoryViewProj;
+		}
+	}
+
 
 	Constants.ShadowFade.x = 0; // Fade 1.0 == no shadows
 	if (TheShaderManager->GameState.isExterior) {
@@ -23,11 +113,11 @@ void ShadowsExteriorEffect::UpdateConstants() {
 			Constants.ShadowFade.x = std::lerp(MoonVisibility, (float)1.0, Constants.ShadowFade.x);
 		}
 
-		if (TheShaderManager->GameState.isDayTimeChanged) {
-			// pass the enabled/disabled property of the pointlight shadows to the shadowfade constant
-			bool usePointLights = (TheShaderManager->GameState.isDayTime > 0.5) ? Settings.Exteriors.UsePointShadowsDay: Settings.Exteriors.UsePointShadowsNight;
-			Constants.ShadowFade.z = usePointLights;
-		}
+		// pass the enabled/disabled property of the pointlight shadows to the shadowfade constant. Every
+		// frame: indoors sets it to 1, and refreshed only when dayLight changed it stayed 1 outdoors for
+		// the rest of the day, sending ShadowsExteriors.fx down the point light path.
+		bool usePointLights = (TheShaderManager->GameState.isDayTime > 0.5) ? Settings.Exteriors.UsePointShadowsDay: Settings.Exteriors.UsePointShadowsNight;
+		Constants.ShadowFade.z = usePointLights;
 		Constants.ShadowFade.y = Settings.Exteriors.Enabled && Enabled;
 
 		// Fade shadows out as the light nears the horizon, reaching none at all where it sets.
@@ -101,10 +191,15 @@ void ShadowsExteriorEffect::UpdateConstants() {
 	Constants.PointShadowParams = D3DXVECTOR4(Settings.Interiors.NearFade, Columns, Settings.Interiors.ShadowNormalOffset * 2.0f / FaceSize, Settings.Interiors.ShadowSoftness);
 	// Lamps' contact shadows: only with the lamps' cube shadows in the object shaders, which keep
 	// each lamp's light apart (the contact pass takes away what they left).
-	Constants.LampContactData = D3DXVECTOR4(ForwardPoint ? Settings.Interiors.ContactStrength : 0.0f, Settings.Interiors.ContactLength,
-		Settings.Interiors.ContactThickness, Settings.Interiors.ContactDistance);
-	Constants.LampContactExtra = D3DXVECTOR4((float)Settings.Interiors.ContactSamples, (float)Settings.Interiors.ContactLamps, Settings.Interiors.ContactScreenLength, 0.0f);
-	Constants.LampContactShape = D3DXVECTOR4(Settings.Interiors.ContactNormalOffset, Settings.Interiors.PCSSLightSize * Settings.Interiors.ContactSoftness, 0.0f, 0.0f);
+	Constants.LampContactData = D3DXVECTOR4(ForwardPoint ? Settings.Interiors.ContactStrength * ContactFade() : 0.0f, (float)Settings.Interiors.ContactLamps,
+		Settings.Interiors.ContactFade, Settings.Interiors.ContactAmbient);
+	Constants.LampContactBend = Settings.Interiors.ContactBend;
+	// The weapon rule (nothing nearer than ContactWeaponDepth casts onto the world) is for the first-person
+	// weapon and arms. Out of first person nothing is drawn there, and the rule would only take away real
+	// casters: a character close to the camera, cut off part way across at that depth.
+	const bool FirstPerson = TheCameraManager->IsFirstPerson();
+	Constants.ContactWeapon.w = FirstPerson ? ContactWeaponDepthSetting : 0.0f;
+	Constants.LampContactWeapon = D3DXVECTOR4(FirstPerson ? Settings.Interiors.ContactWeaponDepth : 0.0f, Settings.Interiors.ContactWeaponOnWorld ? 1.0f : 0.0f, (float)Settings.Interiors.ContactDebug, 0.0f);
 	// PCSS: its filter dithered (1: cheap, grainy unless TAA averages it) or smooth (2: no grain, no
 	// TAA needed); PCSSFilter 0 picks smooth without TAA, dithered with it. The dithered pattern turns
 	// by the golden ratio each frame while TAA is on, so it averages many patterns; without TAA a
@@ -150,6 +245,38 @@ void ShadowsExteriorEffect::UpdateConstants() {
 // by the HDR sunlight dimmer outdoors, and the ambient floored at fMinAmbient. Left out are the
 // per-object factors SetLight also applies -- forced darkness and the LOD dimmers -- which a
 // screen-space pass cannot know and which are 1 on almost everything.
+// Right before the sun's contact pass (ShaderManager, after the cascades have smoothed this frame's
+// direction): Bend's light coordinate (bend_sss_cpu.h, BuildDispatchList) -- the direction toward the
+// sun, w 0, through the view and projection, divided on screen, in pixels. The direction is the one the
+// cascades use (SmoothedSunDir, while they are drawn), so the contact shadows always lean the way the
+// shadow-map shadows do, also while that direction eases after a change. w 0 turns the pass off.
+void ShadowsExteriorEffect::UpdateContactLight() {
+	// z is that point's depth, z / w through the projection, the space TESR_DepthBuffer.y is in
+	// (CombineDepth.fx gives back the hardware depth there): for a direction, the projection's _33,
+	// whichever way the depth runs (reversed: -near / (far - near)).
+	{
+		const bool Smoothed = Constants.ShadowFade.y > 0.0f && D3DXVec3LengthSq((D3DXVECTOR3*)&Constants.SmoothedSunDir) > 0.5f;
+		const D3DXVECTOR4& Source = Smoothed ? Constants.SmoothedSunDir : TheShaderManager->ShaderConst.SunDir;
+		const D3DXVECTOR4 TowardSun(Source.x, Source.y, Source.z, 0.0f);
+		D3DXVECTOR4 View, Clip;
+		D3DXVec4Transform(&View, &TowardSun, &TheRenderManager->ViewMatrix);
+		D3DXVec4Transform(&Clip, &View, &TheRenderManager->projMatrix);
+		const float Limit = 0.000002f * 64.0f;   // Bend's FP_limit, for a wave of 64
+		float w = Clip.w;
+		if (w >= 0.0f && w < Limit) w = Limit;
+		else if (w < 0.0f && w > -Limit) w = -Limit;
+		Constants.ContactLight.x = ((Clip.x / w) * 0.5f + 0.5f) * (float)TheRenderManager->width;
+		Constants.ContactLight.y = ((Clip.y / w) * -0.5f + 0.5f) * (float)TheRenderManager->height;
+		Constants.ContactLight.z = Clip.w != 0.0f ? Clip.z / Clip.w : 0.0f;   // as BuildDispatchList, without the w limit
+		Constants.ContactLight.w = Clip.w > 0.0f ? 1.0f : -1.0f;
+		D3DXVec4Normalize(&Constants.ContactLightDir, &View);
+		Constants.ContactLightDir.w = ContactFade();   // fading back in after a transition
+		const bool Valid = ContactFade() > 0.0f && D3DXVec4LengthSq(&View) > 0.25f
+			&& _finite(Constants.ContactLight.x) && _finite(Constants.ContactLight.y) && _finite(Constants.ContactLight.z);
+		if (!Valid) Constants.ContactLight.w = 0.0f;
+	}
+}
+
 void ShadowsExteriorEffect::UpdateLightColors() {
 	static const bool* bHDR = (const bool*)0x11F941E;				// BSShaderManager::bHDR
 	static const bool* bInterior = (const bool*)0x11F9427;			// BSShaderManager::bInterior
@@ -392,22 +519,20 @@ bool ShadowsExteriorEffect::UpdateSettingsFromQuality(int quality) {
 void ShadowsExteriorEffect::UpdateSettings() {
 
 	Constants.ScreenSpaceData.x = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "Enabled") && Enabled;
-	Constants.ScreenSpaceData.y = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "BlurRadius");
-	Constants.ScreenSpaceData.z = TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "RenderDistance");
+	Constants.ScreenSpaceData.y = Constants.ScreenSpaceData.z = 0.0f;   // were the old contact march's blur radius and distance
 	Constants.ScreenSpaceData.w = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "Intensity"), 0.0f);
 
 	// Contact shadows ride on the screen space pass, so they are off whenever it is.
 	Constants.ContactData.x = Constants.ScreenSpaceData.x ? max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactStrength"), 0.0f) : 0.0f;
-	Constants.ContactData.y = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactLength"), 1.0f);
-	Constants.ContactData.z = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactThickness"), 0.1f);
-	Constants.ContactData.w = max(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactDistance"), 1.0f);
+	// The sun's contact shadows are Community Shaders' (features/Screen-Space Shadows): Bend Studio's
+	// screen-space shadows, with CS's settings and defaults.
+	Constants.ContactBend = ReadBendSettings("Shaders.ShadowsExteriors.ScreenSpace");
+	Constants.ContactData.y = Constants.ContactData.z = Constants.ContactData.w = 0.0f;
 	// After Screen Space Shaders (STALKER Anomaly): the first-person weapon marched at its own scale, and the
 	// shadow summed along the ray with a hardness (Effects/SunShadows.fx).
-	Constants.ContactWeapon.x = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponLength"), 0.1f, 50.0f);
-	Constants.ContactWeapon.y = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponThickness"), 0.05f, 20.0f);
-	Constants.ContactWeapon.z = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponHardness"), 0.0f, 20.0f);
-	Constants.ContactWeapon.w = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponDepth"), 0.0f, 200.0f);
-	Constants.ContactExtra.x = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactHardness"), 0.0f, 20.0f);
+	Constants.ContactWeapon.x = Constants.ContactWeapon.y = Constants.ContactWeapon.z = 0.0f;
+	ContactWeaponDepthSetting = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponDepth"), 0.0f, 200.0f);
+	Constants.ContactExtra.x = 0.0f;
 	Constants.ContactExtra.y = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "ContactWeaponOnWorld") ? 1.0f : 0.0f;
 	Constants.ContactDebug.x = TheSettingManager->GetSettingI("Shaders.ShadowsExteriors.ScreenSpace", "ContactDebug");
 
@@ -514,15 +639,13 @@ void ShadowsExteriorEffect::UpdateSettings() {
 	Settings.Interiors.PCSSMaxSpread = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PCSSMaxSpread"), 1.0f, 8.0f);
 	Settings.Interiors.PCSSFilter = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "PCSSFilter"), 0, 2);
 	Settings.Interiors.ContactStrength = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactStrength"), 0.0f, 1.0f);
-	Settings.Interiors.ContactLength = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactLength"), 1.0f, 100.0f);
-	Settings.Interiors.ContactThickness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactThickness"), 0.5f, 50.0f);
-	Settings.Interiors.ContactDistance = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactDistance"), 100.0f, 10000.0f);
-	Settings.Interiors.ContactSamples = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactSamples"), 8, 64);
-	Settings.Interiors.ContactLamps = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactLamps"), 1, 4);
-	Settings.Interiors.ContactScreenLength = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactScreenLength"), 8.0f, 400.0f);
-	Settings.Interiors.ContactNormalOffset = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactNormalOffset"), 0.0f, 4.0f);
-	Settings.Interiors.ContactSoftness = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactSoftness"), 0.0f, 4.0f);
-	Settings.Interiors.ContactBlur = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactBlur");
+	Settings.Interiors.ContactLamps = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactLamps"), 1, 2);
+	Settings.Interiors.ContactFade = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactFade"), 0.0f, 2.0f);
+	Settings.Interiors.ContactAmbient = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactAmbient"), 0.0f, 1.0f);
+	Settings.Interiors.ContactBend = ReadBendSettings("Shaders.ShadowsInteriors.Main");
+	Settings.Interiors.ContactWeaponDepth = std::clamp(TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "ContactWeaponDepth"), 0.0f, 200.0f);
+	Settings.Interiors.ContactWeaponOnWorld = TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactWeaponOnWorld") != 0;
+	Settings.Interiors.ContactDebug = std::clamp(TheSettingManager->GetSettingI("Shaders.ShadowsInteriors.Main", "ContactDebug"), 0, 5);
 	Settings.Interiors.DrawDistance = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "DrawDistance");
 	Settings.Interiors.UseCastShadowFlag = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "UseCastShadowFlag");
 	Settings.Interiors.PlayerShadowFirstPerson = TheSettingManager->GetSettingF("Shaders.ShadowsInteriors.Main", "PlayerShadowFirstPerson");
@@ -564,6 +687,12 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_ShadowSunLight", &Constants.SunLight);
 	TheShaderManager->RegisterConstant("TESR_ShadowAmbientLight", &Constants.AmbientLight);
 	TheShaderManager->RegisterConstant("TESR_ShadowContactDebug", &Constants.ContactDebug);
+	TheShaderManager->RegisterConstant("TESR_ShadowContactLight", &Constants.ContactLight);
+	TheShaderManager->RegisterConstant("TESR_ShadowContactLightDir", &Constants.ContactLightDir);
+	TheShaderManager->RegisterConstant("TESR_ShadowContactBend", &Constants.ContactBend);
+	TheShaderManager->RegisterConstant("TESR_ContactReprojection", (D3DXVECTOR4*)&Constants.ContactReprojection);
+	TheShaderManager->RegisterConstant("TESR_ContactInject", &Constants.ContactInject);
+	TheShaderManager->RegisterConstant("TESR_ContactSkinMask", &Constants.ContactSkinMask);
 	TheShaderManager->RegisterConstant("TESR_OrthoData", &Constants.OrthoData);
 	TheShaderManager->RegisterConstant("TESR_ShadowFade", &Constants.ShadowFade);
 	TheShaderManager->RegisterConstant("TESR_ShadowRadius", &Constants.ShadowMapRadius);
@@ -583,8 +712,8 @@ void ShadowsExteriorEffect::RegisterConstants() {
 	TheShaderManager->RegisterConstant("TESR_PointShadowData", &Constants.PointShadowData);
 	TheShaderManager->RegisterConstant("TESR_PointShadowParams", &Constants.PointShadowParams);
 	TheShaderManager->RegisterConstant("TESR_LampContactData", &Constants.LampContactData);
-	TheShaderManager->RegisterConstant("TESR_LampContactExtra", &Constants.LampContactExtra);
-	TheShaderManager->RegisterConstant("TESR_LampContactShape", &Constants.LampContactShape);
+	TheShaderManager->RegisterConstant("TESR_LampContactBend", &Constants.LampContactBend);
+	TheShaderManager->RegisterConstant("TESR_LampContactWeapon", &Constants.LampContactWeapon);
 	TheShaderManager->RegisterConstant("TESR_PointShadowPCSS", &Constants.PointShadowPCSS);
 }
 
@@ -699,6 +828,8 @@ void ShadowsExteriorEffect::RegisterTextures() {
 
 	// Initialize shadow buffer
 	TheTextureManager->InitTexture("TESR_PointShadowBuffer", &Textures.ShadowPassTexture, &Textures.ShadowPassSurface, TheRenderManager->width, TheRenderManager->height, D3DFMT_G16R16);
+	// Last frame's contact shadow and its depth, for the lighting (StoreContactHistory, Shaders/Includes/Shadow.hlsl).
+	TheTextureManager->InitTexture("TESR_ContactHistory", &Textures.ContactHistoryTexture, &Textures.ContactHistorySurface, TheRenderManager->width, TheRenderManager->height, D3DFMT_G32R32F);
 
 	texturesInitialized = true;
 }

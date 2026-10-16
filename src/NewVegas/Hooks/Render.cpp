@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include <cfloat>
+#include <d3dx9shader.h>
 
 // See ReflectionPassScope: the next shader bind re-uploads NVR's constants.
 static bool ForcePixelConstants = false;
@@ -14,6 +15,7 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	TheRenderManager->UpdateSceneCameraData();
 	TheRenderManager->SetupSceneCamera();
 
+	TheShaderManager->FrameIndex++;   // once a frame, before the frame's first UpdateConstants
 	TheShaderManager->UpdateConstants();
 
 	// Reset the material pass queue for the frame. Passing false when the flashlight is
@@ -29,6 +31,43 @@ void __fastcall RenderHook(Main* This, UInt32 edx, BSRenderedTexture* RenderedTe
 	//if (SettingsMain->Develop.TraceShaders && InterfaceManager->IsActive(Menu::MenuType::kMenuType_None) && Global->OnKeyDown(SettingsMain->Develop.TraceShaders) && DWNode::Get() == NULL) DWNode::Create();
 	(*Render)(This, RenderedTexture, Arg2, Arg3);
 
+}
+
+// DebugMode: the vanilla grass pixel shaders' disassembly, once per shader, so the log shows exactly
+// what the replacements have to match (alpha handling of the TMS and non-TMS variants). Taken when
+// grass is first drawn with it, where the vanilla D3D shader certainly exists; every way it can fail
+// says so. The pass and vertex shader it was first drawn with are logged too: a grass pixel shader
+// can only be replaced safely alongside the vertex shaders it is paired with.
+static void DumpVanillaGrassPixelShader(NiD3DPixelShaderEx* apShader, NiD3DVertexShaderEx* apVertexShader, UInt32 auiPassIndex) {
+	static std::vector<std::string> dumped;
+	if (!apShader || !apShader->Name || strncmp(apShader->Name, "GRASS", 5)) return;
+	if (std::find(dumped.begin(), dumped.end(), apShader->Name) != dumped.end()) return;
+	dumped.push_back(apShader->Name);
+
+	const char* vertexName = apVertexShader && apVertexShader->Name ? apVertexShader->Name : "(no vertex shader)";
+	Logger::Log("Grass pixel shader %s (%s) first drawn by pass %i %s with %s (%s)", apShader->Name,
+		apShader->ShaderHandle == apShader->ShaderHandleBackup ? "vanilla" : "replaced",
+		auiPassIndex, Pointers::Functions::GetPassDescription(auiPassIndex), vertexName,
+		!apVertexShader ? "-" : apVertexShader->ShaderHandle == apVertexShader->ShaderHandleBackup ? "vanilla" : "replaced");
+
+	IDirect3DPixelShader9* vanilla = (IDirect3DPixelShader9*)apShader->ShaderHandleBackup;
+	if (!vanilla) {
+		Logger::Log("Vanilla %s disassembly: no vanilla shader object", apShader->Name);
+		return;
+	}
+	UINT size = 0;
+	if (FAILED(vanilla->GetFunction(nullptr, &size)) || !size) {
+		Logger::Log("Vanilla %s disassembly: GetFunction gave no bytecode", apShader->Name);
+		return;
+	}
+	std::vector<DWORD> code((size + 3) / 4);
+	ID3DXBuffer* listing = nullptr;
+	if (FAILED(vanilla->GetFunction(code.data(), &size)) || FAILED(D3DXDisassembleShader(code.data(), FALSE, nullptr, &listing)) || !listing) {
+		Logger::Log("Vanilla %s disassembly: could not disassemble", apShader->Name);
+		return;
+	}
+	Logger::Log("Vanilla %s disassembly:\n%s", apShader->Name, (const char*)listing->GetBufferPointer());
+	listing->Release();
 }
 
 void (__thiscall* SetShaders)(BSShader*, UInt32) = (void (__thiscall*)(BSShader*, UInt32))Hooks::SetShaders;
@@ -67,6 +106,10 @@ void __fastcall SetShadersHook(BSShader* This, UInt32 edx, UInt32 PassIndex) {
 		//DWNode::AddNode(Name, Geometry->m_parent, Geometry);
 	}
 	(*SetShaders)(This, PassIndex);
+
+	// A new pass: whatever GrassNormals last left on the device may since have been overwritten.
+	GrassNormals::InvalidateState();
+	if (TheSettingManager->SettingsMain.Develop.DebugMode) DumpVanillaGrassPixelShader(PixelShader, VertexShader, PassIndex);
 
 	// Per-object material data for the PBR object shaders: ObjectMaterial, pixel register c150
 	// (Shaders/Includes/Object.hlsl). Set directly, per draw: the TESR_ constant table only
@@ -122,6 +165,7 @@ void __fastcall RenderWorldSceneGraphHook(Main* This, UInt32 edx, Sun* SkySun, U
 	TheTextureManager->TerrainBlendLogScene = TheSettingManager->SettingsMain.Develop.DebugMode && TheShaderManager->GameState.isExterior && (++sceneCount % 2000) == 300;
 	TheTextureManager->TerrainBlendLog.clear();
 
+	if (TheShaderManager->Shaders.Grass) TheShaderManager->Shaders.Grass->UpdateLights();   // after the nearby lights are gathered (shadow maps)
 	GpuProfiler::Begin(GpuProfiler::WorldScene);
 	(*RenderWorldSceneGraph)(This, SkySun, IsFirstPerson, WireFrame, Arg4);
 	GpuProfiler::End(GpuProfiler::WorldScene);

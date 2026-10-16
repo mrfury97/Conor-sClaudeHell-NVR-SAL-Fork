@@ -67,6 +67,7 @@
     #define SHADOW_INVPROJ_REG c240
     #define SHADOW_INVVIEW_REG c244
 #endif
+#define CONTACT_IN_LIGHTING   // the sun's contact shadows in the lighting (Includes/Shadow.hlsl): skin only
 #include "Includes/Shadow.hlsl"
 #include "Includes/InverseSquare.hlsl"   // the lamps' falloff (pixel shaders)
 
@@ -226,6 +227,14 @@ VS_OUTPUT main(VS_INPUT IN) {
 
 #include "Includes/SkinLighting.hlsl"
 #include "Includes/HudRaindrops.hlsl"   // rain on the first-person arms
+// The lamps' shadow maps on skin: for far occluders only (a hat brim, a wall, another actor), at least
+// POINT_SHADOW_MIN_GAP units in front of the skin. The face's own relief (nose, lips, brows, a fringe on
+// the forehead), where the maps' texels show as blocks, is left to the lamps' contact shadows
+// (Effects/SunShadows.fx, technique 1, which finds skin in TESR_SkinScatterBuffer and takes the same gap,
+// LAMP_SKIN_SHADOW_GAP: keep the two equal). 0 turns the maps off on skin altogether.
+#define SKIN_LAMP_SHADOW_MAPS 1
+#define POINT_SHADOW_MIN_GAP 4.0f   // units (about 6 cm)
+
 // Every pass with lamps (but the diffuse-only ones) packs their shadows first (SkinPackShadows below):
 // the lookups do not fit among the lighting's values.
 #if POINTS > 3
@@ -312,7 +321,7 @@ float4 PSLightColor[10] : register(c3);
     void SkinPackShadows(float3 worldPos, float3 worldNormal) {
         pointShadowPackA = 0.0f;
         pointShadowPackB = 0.0f;
-        [branch] if (TESR_PointShadowData.x > 0.0f) {
+        [branch] if (SKIN_LAMP_SHADOW_MAPS && TESR_PointShadowData.x > 0.0f) {
             #if POINTS > 0
                 SkinPackValue(0.0f, PointShadowBase(FIRST_POINT + 0, worldPos, worldNormal, 1.0f));
             #endif
@@ -348,7 +357,7 @@ float3 PointLight(int i, float3 d, float3 albedo, float3 N, float3 Nsoft, float3
     #ifdef SKIN_PACKED_SHADOWS
         float visibility = SkinPackedVisibility(i);
     #else
-        float visibility = PointShadowBase(FIRST_POINT + i, worldPos, worldNormal, 1.0f);   // this template always sends the world position
+        float visibility = SKIN_LAMP_SHADOW_MAPS ? PointShadowBase(FIRST_POINT + i, worldPos, worldNormal, 1.0f) : 1.0f;   // this template always sends the world position
     #endif
     #ifdef MANY
         // Unused slots (EmittanceColor.a lights are live) can hold anything, NaN included, so
@@ -497,7 +506,7 @@ PS_OUTPUT main(PS_INPUT IN) {
             // ShadowScatter on: anywhere else it changes nothing, and the lookup is skipped.
             float sunShadowBeyond = 1.0f;
             [branch] if (sunShadow < 1.0f && normalize(float3(IN.uv.zw, IN.tangent.w)).z < 0.05f && TESR_SkinExtraData.z > 0.0f)
-                sunShadowBeyond = GetSunShadow(worldPos + TESR_SmoothedSunDir.xyz * SKIN_SELF_SHADOW_REACH, shadowNormal);
+                sunShadowBeyond = GetSunShadowMaps(worldPos + TESR_SmoothedSunDir.xyz * SKIN_SELF_SHADOW_REACH, shadowNormal);
         #else
             float sunShadow = 1.0f;
             float sunShadowBeyond = 1.0f;

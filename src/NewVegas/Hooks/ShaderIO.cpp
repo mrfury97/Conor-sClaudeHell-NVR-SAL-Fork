@@ -20,6 +20,10 @@ NiD3DVertexShader* __fastcall CreateVertexShaderHook(BSShader* This, UInt32 edx,
 		TheShaderManager->WaterVertexShaders[1] = VertexShader;
 	}
 	TheShaderManager->LoadShader(VertexShader);
+	// A grass vertex shader without a replacement pairs vanilla outputs with the replacement grass
+	// pixel shaders: they detect it (no grass data) and fall back to plain lighting, but say so once.
+	if (!strncmp(ShaderName, "GRASS", 5) && !VertexShader->ShaderProg[ShaderRecordType::Default] && !VertexShader->ShaderProg[ShaderRecordType::Exterior] && !VertexShader->ShaderProg[ShaderRecordType::Interior])
+		Logger::Log("Grass vertex shader %s has no NVR replacement: grass it draws gets no grass lighting (magenta in the grass debug views)", ShaderName);
 	return (NiD3DVertexShader*)VertexShader;
 
 }
@@ -44,6 +48,12 @@ NiD3DPixelShader* __fastcall CreatePixelShaderHook(BSShader* This, UInt32 edx, c
 		TheShaderManager->WaterPixelShaders[1] = PixelShader;
 	}
 	TheShaderManager->LoadShader(PixelShader);
+	// A grass pixel shader without a replacement is drawn with the replacement grass vertex shaders,
+	// whose outputs do not match what vanilla reads (GRASS23x001.pso read attenuation coordinates
+	// where they write the shadow position). Every grass pixel shader needs routing through
+	// GRASS23x000TMS.pso (GrassShaders::Templates); flag any that is not.
+	if (!strncmp(ShaderName, "GRASS", 5) && !PixelShader->ShaderProg[ShaderRecordType::Default] && !PixelShader->ShaderProg[ShaderRecordType::Exterior] && !PixelShader->ShaderProg[ShaderRecordType::Interior])
+		Logger::Log("WARNING: grass pixel shader %s has no NVR replacement; with the replaced grass vertex shaders it may draw wrongly. Add it to GrassShaders::Templates.", ShaderName);
 	return (NiD3DPixelShader*)PixelShader;
 
 }

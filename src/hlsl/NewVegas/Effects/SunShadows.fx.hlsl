@@ -4,10 +4,14 @@ float4x4 TESR_WorldViewProjectionTransform;
 float4 TESR_ReciprocalResolution;
 float4 TESR_ViewSpaceLightDir;
 float4 TESR_ShadowData; // x: quality, y: darkness, z: texel size
-float4 TESR_ShadowScreenSpaceData; // x: Enabled, y: blurRadius, z: renderDistance, w: intensity
-float4 TESR_ShadowContactData; // x: strength, y: ray length, z: thickness, w: max distance
-float4 TESR_ShadowContactWeapon; // the first-person weapon's: x ray length, y thickness, z hardness, w depth (nearer is the weapon)
-float4 TESR_ShadowContactExtra;  // x the world's hardness (0: the strongest hit only), y 1 when the weapon casts onto the world
+float4 TESR_ShadowScreenSpaceData; // x: Enabled, w: intensity
+float4 TESR_ShadowContactData; // x: strength
+float4 TESR_ShadowContactWeapon; // w: the first-person weapon's depth (nearer is the weapon)
+float4 TESR_ShadowContactExtra;  // y: 1 when the weapon casts onto the world
+float4 TESR_ShadowContactLight;  // Bend's light coordinate: xy the sun on screen (pixels), z its depth (TESR_DepthBuffer.y), w +1 in front of the camera, -1 behind, 0 off (settling after a change of cell)
+float4 TESR_ShadowContactLightDir; // toward the sun in view space: the cascades' smoothed direction the coordinate is made from; w the fade after a transition
+float4 TESR_ShadowContactBend;   // x SurfaceThickness, y BilinearThreshold, z ShadowContrast, w samples per ray
+// TESR_CameraData (x near, y far) comes with Includes/Depth.hlsl.
 float4 TESR_SunAmbient;
 float4 TESR_ShadowFade; // x: sunset attenuation, y: shadows maps active, z: point lights shadows active
 // Injected as a D3DXMACRO by EffectRecord from [Shaders.ShadowsExteriors.Main] ForwardShadows,
@@ -25,11 +29,13 @@ sampler2D TESR_NormalsBuffer : register(s2) = sampler_state { ADDRESSU = CLAMP; 
 sampler2D TESR_PointShadowBuffer : register(s3)  = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_NoiseSampler : register(s4) < string ResourceName = "Effects\bluenoise256.dds"; > = sampler_state { ADDRESSU = WRAP; ADDRESSV = WRAP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = LINEAR; };
 sampler2D TESR_PointShadowAtlas : register(s5) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = LINEAR; MINFILTER = LINEAR; MIPFILTER = NONE; };
+// The skin shaders' second target (effects/SkinScattering.h): a the camera distance where skin was drawn, 0 elsewhere.
+sampler2D TESR_SkinScatterBuffer : register(s6) = sampler_state { ADDRESSU = CLAMP; ADDRESSV = CLAMP; MAGFILTER = POINT; MINFILTER = POINT; MIPFILTER = NONE; };
 
 // Lamps' contact shadows indoors (technique 1). ShaderManager::GetNearbyLights fills the lamps.
-float4 TESR_LampContactData;        // x strength (0 off), y ray length, z thickness, w max distance
-float4 TESR_LampContactExtra;       // x samples per ray (ContactSamples), y lamps marched per pixel (ContactLamps), z the longest ray on screen (ContactScreenLength, pixels at 1080 lines)
-float4 TESR_LampContactShape;       // x the rays' start off the surface (ContactNormalOffset, units), y the lamps' radius for their softening (PCSSLightSize x ContactSoftness)
+float4 TESR_LampContactData;        // x strength (0 off), y lamps that cast (1-2), z fade along the shadow (ContactFade), w ambient grounding (ContactAmbient)
+float4 TESR_LampContactBend;        // the lamps' Bend settings, as TESR_ShadowContactBend ([Shaders.ShadowsInteriors.Main])
+float4 TESR_LampContactWeapon;      // x the first-person weapon's depth, y 1 when it casts onto the world, z 1 for the debug view, w 1 when TESR_SkinScatterBuffer holds this frame's skin
 float4 TESR_ContactLampPosition[24]; // the nearest point lights: xyz world position, w radius (0 past the last); ContactLampsMax
 float4 TESR_ContactLampColor[24];    // rgb colour x dimmer, w shadow info: slot * 2 + fade, -1 none (Shaders/Includes/PointShadow.hlsl)
 float4 TESR_ContactLampAnchor[24];   // its slot's anchor (world), w the slot's radius
@@ -39,20 +45,7 @@ float4 TESR_InverseSquare;           // as Shaders/Includes/InverseSquare.hlsl: 
 float4 TESR_ShadowAmbientLight;      // the ambient and the cell's directional light, as the object shaders get them
 float4 TESR_ShadowSunLight;
 
-#define CONTACT_STEPNUM 12
-// Growth of the ray with depth, capped. Contact shadows are for detail the shadow maps are too
-// coarse to catch, which only exists close up; a ray that kept growing with distance shadowed
-// whole slopes and trees far off that the maps already cover, as a soft halo around their
-// shadows.
-#define CONTACT_GROWTH (1.0f / 2000.0f)
-#define CONTACT_MAX_SCALE 3.0f
-
 static const float DARKNESS = 1-TESR_ShadowData.y;
-static const float SSS_MAXDEPTH = TESR_ShadowScreenSpaceData.z * TESR_ShadowScreenSpaceData.x;
-// Where the denoising blur stops: no further than RenderDistance, and no further than contact
-// shadows reach, since past that the buffer is uniformly lit and blurring it does nothing.
-// 0 when contact shadows are off, which clips every pixel and skips both blur passes' work.
-static const float CONTACT_BLUR_END = (TESR_ShadowContactData.x > 0.0f) ? min(SSS_MAXDEPTH, TESR_ShadowContactData.w) : 0.0f;
 
 
 struct VSOUT
@@ -91,104 +84,187 @@ float3 random(float2 seed)
 	return tex2D(TESR_NoiseSampler, (seed/256 + 0.5) / TESR_ReciprocalResolution.xy).xyz;
 }
 
+// --- The sun's contact shadows: Community Shaders' (Bend Studio's screen-space shadows) -----------
+//
+// CS (features/Screen-Space Shadows) runs Bend Studio's bend_sss_gpu.hlsli as a compute shader, with
+// its own settings and defaults, and multiplies the sun's light by the result. D3D9 has no compute
+// shaders, so this is the same algorithm per pixel: a ray from the pixel toward the sun's point on
+// screen (away from it when the sun is behind the camera), one sample per pixel along its major axis,
+// SAMPLE_COUNT of them. Bend's compute version shares those samples across a wavefront in groupshared
+// memory; each pixel here reads its own, which costs more reads and gives the same result.
+//
+// All in non-linear depth, as Bend works: TESR_DepthBuffer.y, near 1 and far 0. Per sample:
+//   - two reads, the pixel the ray crosses and its neighbour on the minor axis, and the sample's
+//     shadowing depth pushed back toward the neighbour, unless the two differ by more than
+//     BilinearThreshold of the depth left to the far plane (an edge: the pixel's own depth);
+//   - perspective-corrected by its distance to the light on screen, so every ray is parallel.
+// The pixel is shadowed by the sample nearest to lying exactly one SurfaceThickness in front of it,
+// the thickness again a fraction of the depth left to the far plane. Four running minimums,
+// contrast, and their average, exactly as Bend.
+//
+// The first-person weapon is not a caster for the world unless ContactWeaponOnWorld: the one thing
+// kept from NVR's own contact shadows (otherwise the gun throws a shadow on the ground that moves
+// with the camera).
+
+// TESR_DepthBuffer.y is the hardware depth (CombineDepth.fx converts it to view depth and back):
+// reversed (TESR_DepthConstants.z, RenderManager::IsReversedDepth), near 1 and far 0, else near 0
+// and far 1. Bend's FarDepthValue and z_sign follow it.
+static const float BEND_FAR = TESR_DepthConstants.z > 0.5f ? 0.0f : 1.0f;
+static const float BEND_Z_SIGN = TESR_DepthConstants.z > 0.5f ? -1.0f : 1.0f;   // near > far: -1
+
+// View depth to TESR_DepthBuffer.y's space: z / w through the projection, whichever way it runs.
+float BendDepthOf(float viewZ) {
+	float4 clip = mul(float4(0.0f, 0.0f, viewZ, 1.0f), TESR_ProjectionTransform);
+	return clip.w != 0.0f ? clip.z / clip.w : 0.0f;
+}
+
+// The first-person weapon (nearer than ContactWeaponDepth) does not cast onto the world. Returned as
+// the weapon's depth turned so that nearer is larger (BendNearer), or 2 for none; a weapon pixel
+// itself takes shadows as anything else.
+float BendNearer(float depth) { return BEND_Z_SIGN < 0.0f ? depth : -depth; }
+float BendWeaponDepth(float depth0, float weaponDepth, float onWorld) {
+	float weaponY = (weaponDepth > 0.0f && onWorld < 0.5f) ? BendNearer(BendDepthOf(weaponDepth)) : 2.0f;
+	return BendNearer(depth0) > weaponY ? 2.0f : weaponY;
+}
+
+float BendDepth(float2 pixel) {
+	// Off screen reads the far depth, as Bend's border sampler does: nothing there casts.
+	float2 uv = pixel * TESR_ReciprocalResolution.xy;
+	if (any(uv < 0.0f) || any(uv > 1.0f)) return BEND_FAR;
+	return tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).y;
+}
+
+// One ray sample, as WriteScreenSpaceShadow's read loop makes it: its shadowing depth, perspective
+// corrected (1e10 for a sample past the light, or a weapon pixel that does not cast).
+float BendSample(float2 position, bool xMajor, float distance, float weaponY, float bilinearThreshold, float lightDepth) {
+	float2 readXY = floor(position) + 0.5f;   // USE_HALF_PIXEL_OFFSET
+	float minorAxis = xMajor ? position.y : position.x;
+	float bias = (frac(minorAxis) - 0.5f) > 0.0f ? 1.0f : -1.0f;
+	float2 depths = float2(BendDepth(readXY), BendDepth(readXY + (xMajor ? float2(0.0f, bias) : float2(bias, 0.0f))));
+	float thicknessScale = max(abs(BEND_FAR - depths.x), 1e-4f);
+	bool pointFilter = abs(depths.x - depths.y) > thicknessScale * bilinearThreshold;
+	float shadowing = pointFilter ? depths.x : depths.x + abs(depths.x - depths.y) * BEND_Z_SIGN;
+	bool weapon = BendNearer(depths.x) > weaponY;
+	return (distance > 0.0f && !weapon) ? (shadowing - lightDepth) / distance : 1e10f;   // the ray's own light (the sun's or a lamp's)
+}
+
+float BendVisibility(float2 pixel, float depth0, float4 light, float weaponY, float4 bend);
+
 float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 {
-	// Contact shadows: many samples along a short ray toward the sun, for the shadow a prop
-	// leaves where it meets the ground, in a crease or at a character's feet. The shadow maps
-	// are too coarse for those; anything larger is theirs. Result in the red channel, point
-	// light attenuation passes through in green.
+	// Result in the red channel; point light attenuation passes through in green.
 	float2 uv = IN.UVCoord;
 	float4 color = tex2D(TESR_PointShadowBuffer, uv);
-	// tex2Dlod, not random(): the compiler sinks this sample to where it is used, past the dynamic
-	// returns below, and warns (X4121) about a gradient sample in flow control. The noise has no
-	// use for mips anyway.
-	float3 random3 = tex2Dlod(TESR_NoiseSampler, float4((uv / 256 + 0.5) / TESR_ReciprocalResolution.xy, 0.0f, 0.0f)).xyz;
+	if (!TESR_ShadowScreenSpaceData.x || TESR_ShadowContactData.x <= 0.0f || TESR_ShadowContactLight.w == 0.0f) return float4(1.0, color.g, 0, 1);
 
-	if (!TESR_ShadowScreenSpaceData.x || TESR_ShadowContactData.x <= 0.0f) return float4(1.0, color.g, 0, 1);
+	float2 resolution = 1.0f / TESR_ReciprocalResolution.xy;
+	float2 pixel = floor(uv * resolution) + 0.5f;
+	float depth0 = tex2Dlod(TESR_DepthBuffer, float4(pixel * TESR_ReciprocalResolution.xy, 0.0f, 0.0f)).y;
+	if (depth0 == BEND_FAR || depth0 <= 0.0f || depth0 >= 1.0f) return float4(1.0, color.g, 0, 1);   // sky, or the planes
 
-	// reconstructPosition, sampled with tex2Dlod: it follows a dynamic return.
-	float4 originClip = float4(uv.x * 2.0f - 1.0f, (1.0f - uv.y) * 2.0f - 1.0f, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).y, 1.0f);
-	float4 originView = mul(originClip, TESR_InvProjectionTransform);
-	const float3 origin = originView.xyz / originView.w;
-	if (origin.z > TESR_ShadowContactData.w) return float4(1.0, color.g, 0, 1);
-
-	// A surface facing away from the sun has no sunlight for a contact shadow to take away, and
-	// the composite would scale whatever this found by a sun share of zero. Skipping it spares
-	// the whole march on roughly every surface in the sun's shade. The buffer holds view-space
-	// normals, the space TESR_ViewSpaceLightDir is in.
+	// CS shadows the sun only where it lights the surface (dirLightAngle >= 0): nothing to take away
+	// elsewhere, and the composite would scale it by a sun share of zero anyway. View-space normals,
+	// against the same (smoothed) direction the rays take.
 	float3 viewNormal = tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2.0f - 1.0f;
-	float NdotL = dot(viewNormal, TESR_ViewSpaceLightDir.xyz);
-	if (NdotL <= 0.0f) return float4(1.0, color.g, 0, 1);
-	// Near the terminator the march runs almost along the receiving surface, and bilinear depth
-	// reads there are slightly off its true plane, an error that cycles with the sub-pixel sample
-	// phase: a small fixed bias flips the test on and off in bands across the ray (horizontal black
-	// lines on sun-lit surfaces under a high sun). Fade the term in as the surface turns toward the
-	// sun (ported from NVR UNOFFICIAL Optimized, P8-P26).
-	float facing = saturate(NdotL * 8.0f);
+	if (dot(viewNormal, TESR_ShadowContactLightDir.xyz) < 0.0f) return float4(1.0, color.g, 0, 1);
 
-	// The first-person weapon, after Screen Space Shaders (STALKER Anomaly, Ascii1457): nearer than
-	// ContactWeaponDepth a pixel is the view model's, marched at its own scale (the world's rays, tens of
-	// units long, smeared the gun's own shadows over all of it), blended over the last quarter of that depth.
-	float weaponDepth = TESR_ShadowContactWeapon.w;
-	float worldShare = weaponDepth > 0.0f ? smoothstep(weaponDepth * 0.75f, weaponDepth, origin.z) : 1.0f;   // 0 the weapon, 1 the world
-	// And the world's rays pass through it (unless ContactWeaponOnWorld): the gun threw a screen-space
-	// shadow onto the ground below it that moved with the camera.
-	bool skipWeapon = worldShare >= 0.5f && TESR_ShadowContactExtra.y < 0.5f && weaponDepth > 0.0f;
+	float weaponY = BendWeaponDepth(depth0, TESR_ShadowContactWeapon.w, TESR_ShadowContactExtra.y);
 
-	// The ray grows a little with distance so it keeps a usable size on screen, up to a cap.
-	float scale = min(1.0f + origin.z * CONTACT_GROWTH, CONTACT_MAX_SCALE);
-	float rayLength = lerp(TESR_ShadowContactWeapon.x, TESR_ShadowContactData.y * scale, worldShare);
-	float3 contactStep = TESR_ViewSpaceLightDir.xyz * (rayLength / CONTACT_STEPNUM);
-	float contactThickness = lerp(TESR_ShadowContactWeapon.y, TESR_ShadowContactData.z * scale, worldShare);
-	float hardness = lerp(TESR_ShadowContactWeapon.z, TESR_ShadowContactExtra.x, worldShare);
-	// The self-intersection bias also grows with distance (same port), so grazing lit faces far off do not band.
-	float contactBias = max(contactThickness * 0.05f, origin.z * 0.002f);
-
-	// Marched in clip space. Projection is linear in homogeneous coordinates, so a view-space
-	// ray maps to a straight line there: project the start and one step once, then each sample
-	// costs an add and a divide instead of a full matrix multiply. View depth is linear along
-	// the ray too, so it steps the same way.
-	//
-	// tex2Dlod: the early outs above are dynamic flow, and a gradient sample after them is illegal.
-	float3 startPos = origin + contactStep * random3.g;   // jittered start hides the step pattern
-	float4 clipPos = mul(float4(startPos, 1.0f), TESR_ProjectionTransform);
-	float4 clipStep = mul(float4(contactStep, 0.0f), TESR_ProjectionTransform);
-	float rayDepth = startPos.z;
-
-	// The nearer the occluder along the ray, the darker the shadow, fading to nothing at the
-	// ray's end. A shadow is darkest where an object meets the surface and fades away from it;
-	// a flat-dark mask instead ended in a hard rim around everything that also cast a
-	// shadow-map shadow, which read as a second, softer shadow behind the real one.
-	//
-	// Every hit counts, grass blades included: grass is not in the shadow maps, so this is the
-	// only shadow it casts.
-	//
-	// Hardness 0: the strongest hit alone. Above it, as Screen Space Shaders sums it: every hit counts,
-	// the nearer the more and the last steps fading out, scaled by the hardness -- a shadow that deepens
-	// with how much of the ray is blocked, steadier than one hit deciding it.
-	float contact = 0.0f;
-	float occlusion = 0.0f;
-	[unroll]
-	for (int j = 0; j < CONTACT_STEPNUM; j++) {
-		clipPos += clipStep;
-		rayDepth += contactStep.z;
-		float2 sampleUV = clipPos.xy / clipPos.w * float2(0.5f, -0.5f) + 0.5f;
-		float sceneDepth = tex2Dlod(TESR_DepthBuffer, float4(sampleUV, 0.0f, 0.0f)).x * farZ;
-		float delta = rayDepth - sceneDepth;
-		bool hit = delta > contactBias && delta < contactThickness && !(skipWeapon && sceneDepth < weaponDepth);
-		float nearness = 1.0f - (float)j / CONTACT_STEPNUM;
-		contact = hit ? max(contact, nearness) : contact;
-		occlusion += hit ? nearness * (1.0f - smoothstep(CONTACT_STEPNUM * 0.75f, CONTACT_STEPNUM + 1.0f, (float)j)) : 0.0f;
-	}
-	float shadow = hardness > 0.0f ? saturate(occlusion / CONTACT_STEPNUM * hardness) : contact;
-
-	float fade = 1.0f - smoothstep(TESR_ShadowContactData.w * 0.8f, TESR_ShadowContactData.w, origin.z);
-	color.r = 1.0f - saturate(shadow * TESR_ShadowContactData.x * fade * facing);
+	float visibility = BendVisibility(pixel, depth0, TESR_ShadowContactLight, weaponY, TESR_ShadowContactBend);
+	color.r = lerp(1.0f, visibility, saturate(TESR_ShadowContactData.x) * TESR_ShadowContactLightDir.w);   // ContactStrength (CS: always 1), faded in after a transition
 	return color;
 }
 
+// One Bend ray: how much of the light at the light coordinate (xy on screen in pixels, z its depth in
+// TESR_DepthBuffer.y, w +1 in front of the camera, -1 behind) reaches the pixel, 1 all of it. For a
+// directional light the coordinate is a direction's (the sun's), for a point light its position's
+// (bend_sss_cpu.h: either through the view and projection); samples past a point light are skipped,
+// as Bend skips them. bend: x SurfaceThickness, y BilinearThreshold, z ShadowContrast, w samples.
+float BendVisibility(float2 pixel, float depth0, float4 light, float weaponY, float4 bend)
+{
+	// The ray, as ComputeWavefrontExtents lays it out: integer pixel offsets from the light's pixel,
+	// the major axis the longer, the distance along it to the light's exact position.
+	float2 lightXY = floor(light.xy) + 0.5f;
+	float2 lightFraction = light.xy - lightXY;
+	float2 offset = pixel - lightXY;
+	bool xMajor = abs(offset.x) > abs(offset.y);
+	float majorAxis = xMajor ? offset.x : offset.y;
+	float majorFraction = xMajor ? lightFraction.x : lightFraction.y;
+	majorFraction = majorAxis > 0.0f ? -majorFraction : majorFraction;
+	float distance0 = abs(majorAxis) + majorFraction;
+	float direction = -light.w;   // -1: samples walk toward the light
+	float2 stepXY = (light.xy - pixel) / max(distance0, 1e-4f) * -direction;
+
+	// The pixel's own depth, nudged away from the far plane (UsePrecisionOffset, as CS sets it).
+	float thicknessScale0 = max(abs(BEND_FAR - depth0), 1e-4f);
+	float startDepth = lerp(depth0, BEND_FAR, -1.0f / 65535.0f);
+	startDepth = (startDepth - light.z) / distance0;
+	float depthScale = min(distance0 + direction, 1.0f / bend.x) * distance0 / thicknessScale0;
+	startDepth = startDepth * depthScale - BEND_Z_SIGN;
+
+	// Four running minimums of |start - sample|, sample i into component i & 3. One sample a step, the
+	// four rotated after it, so each still takes every fourth sample (the count is a multiple of 8, so
+	// they end where they began; their average does not care about the order anyway).
+	float4 shadowValue = 1.0f;
+	float count = bend.w;
+	[loop]
+	for (int i = 1; i < 255; i++) {   // ps_3_0 loops end at 255; the count is capped at 248
+		if (i > count) break;
+		float k = (float)i;
+		shadowValue.x = min(shadowValue.x, abs(startDepth - BendSample(pixel + stepXY * k, xMajor, distance0 + k * direction, weaponY, bend.y, light.z) * depthScale));
+		shadowValue = shadowValue.yzwx;
+	}
+
+	// Contrast, then the average of the four.
+	float contrast = bend.z;
+	shadowValue = saturate(shadowValue * contrast + (1.0f - contrast));
+	return dot(shadowValue, 0.25f);
+}
+
+// The lamps' ray: BendVisibility's, with the shadow fading along it ([Shaders.ShadowsInteriors.Main]
+// ContactFade). Bend's own fade-out (its FadeOutSamples, which CS leaves off) weakens only the last
+// samples; here a sample k of the count can take at most 1 - fade x k / count of the light, so the
+// shadow is darkest where it leaves its caster and gives out toward the end of the ray (at its end
+// with fade 1, half way with 2). Per sample after the contrast, so the fade does not depend on it.
+// fade 0 is BendVisibility exactly.
+float LampBendVisibility(float2 pixel, float depth0, float4 light, float weaponY, float4 bend, float fade)
+{
+	float2 lightXY = floor(light.xy) + 0.5f;
+	float2 lightFraction = light.xy - lightXY;
+	float2 offset = pixel - lightXY;
+	bool xMajor = abs(offset.x) > abs(offset.y);
+	float majorAxis = xMajor ? offset.x : offset.y;
+	float majorFraction = xMajor ? lightFraction.x : lightFraction.y;
+	majorFraction = majorAxis > 0.0f ? -majorFraction : majorFraction;
+	float distance0 = abs(majorAxis) + majorFraction;
+	float direction = -light.w;
+	float2 stepXY = (light.xy - pixel) / max(distance0, 1e-4f) * -direction;
+
+	float thicknessScale0 = max(abs(BEND_FAR - depth0), 1e-4f);
+	float startDepth = lerp(depth0, BEND_FAR, -1.0f / 65535.0f);
+	startDepth = (startDepth - light.z) / distance0;
+	float depthScale = min(distance0 + direction, 1.0f / bend.x) * distance0 / thicknessScale0;
+	startDepth = startDepth * depthScale - BEND_Z_SIGN;
+
+	float4 shadowValue = 1.0f;
+	float count = bend.w;
+	float contrast = bend.z;
+	float fadeStep = fade / max(count, 1.0f);
+	[loop]
+	for (int i = 1; i < 255; i++) {
+		if (i > count) break;
+		float k = (float)i;
+		float delta = abs(startDepth - BendSample(pixel + stepXY * k, xMajor, distance0 + k * direction, weaponY, bend.y, light.z) * depthScale);
+		float sampleShadow = saturate(delta * contrast + (1.0f - contrast));
+		shadowValue.x = min(shadowValue.x, lerp(sampleShadow, 1.0f, saturate(fadeStep * (k - 1.0f))));
+		shadowValue = shadowValue.yzwx;
+	}
+	return dot(shadowValue, 0.25f);
+}
+
 // --- Lamps' contact shadows (indoors, with ForwardPointShadows) ---------------------------------
-// A march toward the lamps lighting each pixel most (ContactLamps). The object shaders already
+// Bend's ray (as the sun's, BendVisibility) toward the lamp lighting each pixel most, unblurred, at
+// any distance. The object shaders already
 // took each lamp's cube shadow out of that lamp's own light (Shaders/Includes/PointShadow.hlsl), so
 // this cannot simply darken the pixel: it works out the lamps' shares of the pixel's light -- the
 // ambient and the cell's light, and each lamp's light at the pixel as the shaders light it (linear:
@@ -196,10 +272,6 @@ float4 ScreenSpaceShadow(VSOUT IN) : COLOR0
 // and its cube shadow did not. The result, the fraction of the pixel's light left, goes in red;
 // ShadowsInteriors.fx (technique 1) applies it.
 
-static const float LAMP_CONTACT_END = (TESR_LampContactData.x > 0.0f) ? TESR_LampContactData.w : 0.0f;
-// The first blur pass goes a little farther: the second reads its neighbours from it, and past where
-// the first stopped its target holds whatever an earlier frame left there (a line at that distance).
-static const float LAMP_CONTACT_END_H = LAMP_CONTACT_END * 1.1f;
 
 float LampLuma(float3 c) {
     return dot(c, float3(0.3f, 0.59f, 0.11f));
@@ -232,7 +304,11 @@ float LampShadowTexel(float2 c, float distance, float radius) {
     return blocked;
 }
 
-float LampCubeVisibility(float info, float4 anchor, float3 worldPos, float3 normal) {
+// Skin's lamp shadow maps count only occluders this far in front (SkinTemplate.hlsl, POINT_SHADOW_MIN_GAP:
+// keep the two equal); the contact shadows take the rest.
+#define LAMP_SKIN_SHADOW_GAP 4.0f
+
+float LampCubeVisibility(float info, float4 anchor, float3 worldPos, float3 normal, float gap) {
     float visibility = 1.0f;
     [branch] if (info >= 0.0f && TESR_PointShadowData.x > 0.0f && anchor.w > 0.0f) {
         float3 toLight = anchor.xyz - worldPos;
@@ -244,7 +320,7 @@ float LampCubeVisibility(float info, float4 anchor, float3 worldPos, float3 norm
             float slot = floor(info * 0.5f);
             float cosine = max(abs(facing), 0.2f);
             float tilt = min(sqrt(1.0f - cosine * cosine) / cosine, 4.0f);
-            float compared = distance * (1.0f - 2.0f / TESR_PointShadowData.w * (0.5f + 1.5f * tilt));
+            float compared = distance * (1.0f - 2.0f / TESR_PointShadowData.w * (0.5f + 1.5f * tilt)) - gap / anchor.w;
             float2 corner, inTile;
             LampAtlasTexel(slot, toLight * float3(-1.0f, -1.0f, 1.0f), corner, inTile);
             float2 q = corner + inTile;
@@ -258,107 +334,33 @@ float LampCubeVisibility(float info, float4 anchor, float3 worldPos, float3 norm
     return visibility;
 }
 
-// The depth at uv for a contact ray, as Bend's: the two texels across the ray's direction (its
-// minor axis; along it the nearest), blended -- unless they are farther apart than the thickness,
-// two surfaces rather than one, where the nearer of the two by position is taken. Blending across an
-// object's outline made an in-between depth there, a thin occluder that cast a faint line past every
-// chin, shoulder and table edge.
-float LampContactDepth(float2 uv, bool horizontal, float thickness) {
-    float2 px = uv / TESR_ReciprocalResolution.xy - 0.5f;   // texel centres at whole numbers
-    float2 base = floor(px);
-    float2 f = px - base;
-    float2 t0 = horizontal ? float2(round(px.x), base.y) : float2(base.x, round(px.y));
-    float2 t1 = t0 + (horizontal ? float2(0.0f, 1.0f) : float2(1.0f, 0.0f));
-    float w = horizontal ? f.y : f.x;
-    float d0 = tex2Dlod(TESR_DepthBuffer, float4((t0 + 0.5f) * TESR_ReciprocalResolution.xy, 0.0f, 0.0f)).x * farZ;
-    float d1 = tex2Dlod(TESR_DepthBuffer, float4((t1 + 0.5f) * TESR_ReciprocalResolution.xy, 0.0f, 0.0f)).x * farZ;
-    return abs(d0 - d1) > thickness ? (w < 0.5f ? d0 : d1) : lerp(d0, d1, w);
-}
-
-// How much of the march toward lampView (view space) is blocked: 1 at an occluder right at the
-// pixel, fading to 0 at the ray's end. After Bend Studio's screen-space shadows (as Community
-// Shaders have them): no noise, so nothing to blur away -- the same samples every frame, steady and
-// sharp. The ray is laid out on screen: sample k sits k + growth * k(k-1)/2 pixels out, the first a
-// pixel from the pixel and the spacing widening evenly to reach the ray's end at the last, so where
-// things touch it reads every pixel, and the wider spacing is out where the shadow fades (and does
-// not show). A ray shorter than its samples spaces them evenly. The depth is read filtered.
-// And as Bend's, a ray is no longer on screen than ContactScreenLength: close up, a ray of some units
-// crossed hundreds of pixels, its samples far apart, and every hair and lash cast streaks toward the
-// lamp (each pixel's samples hitting or missing it in turn). What is larger on screen than that is
-// the shadow maps'.
-// The ray starts a little off the surface (ContactNormalOffset): from on it, curved and faceted
-// surfaces (lips, a nose, eyelids) found their own neighbours just in front of it and drew hard lines.
-// And it hardens toward contact: something in front of the ray counts in full only once it is in
-// front by more than the lamp's size would let light round it from that far along the ray -- sharp
-// where things touch, softening farther from what casts the shadow, as the cubes' PCSS.
-float LampContactMarch(float3 origin, float3 lampView, float3 viewNormal) {
-    float scale = min(1.0f + origin.z * CONTACT_GROWTH, CONTACT_MAX_SCALE);
-    origin += viewNormal * (TESR_LampContactShape.x * scale);
-    float3 toLamp = lampView - origin;
-    float distance = length(toLamp);
-    float rayLength = min(TESR_LampContactData.y * scale, distance * 0.9f);   // never past the lamp
-    float3 endPos = origin + toLamp * (rayLength / distance);
-    // A ray toward a lamp behind the camera stops short of the near plane.
-    float nearEnd = nearZ * 1.5f;
-    [flatten] if (endPos.z < nearEnd)
-        endPos = origin + (endPos - origin) * saturate((origin.z - nearEnd) / max(origin.z - endPos.z, 0.0001f));
-    float thickness = TESR_LampContactData.z * scale;
-    float bias = max(thickness * 0.05f, origin.z * 0.002f);
-
-    float4 c0 = mul(float4(origin, 1.0f), TESR_ProjectionTransform);
-    float4 c1 = mul(float4(endPos, 1.0f), TESR_ProjectionTransform);
-    float2 screenDir = c1.xy / c1.w - c0.xy / c0.w;
-    float pixels = length(screenDir * 0.5f / TESR_ReciprocalResolution.xy);
-    bool horizontal = abs(screenDir.x / TESR_ReciprocalResolution.x) > abs(screenDir.y / TESR_ReciprocalResolution.y);
-    float worldLength = length(endPos - origin);
-    float longest = TESR_LampContactExtra.z * max(1.0f / (TESR_ReciprocalResolution.y * 1080.0f), 1.0f);
-    [flatten] if (pixels > longest) {   // the end brought in along the ray, on screen
-        float t = longest / pixels;
-        float cut = t * c0.w / ((1.0f - t) * c1.w + t * c0.w);
-        c1 = lerp(c0, c1, cut);
-        worldLength *= cut;
-        pixels = longest;
-    }
-    float lampAngle = TESR_LampContactShape.y / distance;   // the lamp's angular radius from here
-    float count = TESR_LampContactExtra.x;
-    float growth = max(2.0f * (pixels - count) / (count * (count - 1.0f)), 0.0f);
-    float spacing = min(pixels / count, 1.0f) / max(pixels, 0.001f);   // a sample's place in pixels to its place along the ray
-
-    float contact = 0.0f;
-    [branch] if (pixels >= 0.5f) {   // a ray within its own pixel finds nothing
-        [loop] for (float k = 1.0f; k <= count; k += 1.0f) {
-            float t = (k + growth * k * (k - 1.0f) * 0.5f) * spacing;   // along the ray on screen, 0-1
-            // The same point in clip space (on screen the ray is not spaced as in view space).
-            float u = t * c0.w / ((1.0f - t) * c1.w + t * c0.w);
-            float4 c = lerp(c0, c1, u);
-            float2 sampleUV = c.xy / c.w * float2(0.5f, -0.5f) + 0.5f;
-            if (any(saturate(sampleUV) != sampleUV)) break;   // off the screen, and it does not come back
-            float delta = c.w - LampContactDepth(sampleUV, horizontal, thickness);
-            // Something in front of the ray by more than the bias and less than the thickness: in
-            // full once in front by the bias and what the lamp's size lets light round it from this
-            // far along (u: the clip-space step is the view-space one), and faded out near the ray's end.
-            float soften = bias + u * worldLength * lampAngle;
-            float hit = saturate((delta - bias) / soften) * (delta < thickness ? 1.0f : 0.0f);
-            contact = max(contact, hit * (1.0f - t * t * t));
-            if (contact > 0.99f) break;
-        }
-    }
-    return contact;
+// A lamp's contact shadow: the same Bend ray as the sun's (BendVisibility), toward the lamp's
+// position on screen -- its light coordinate, the position through the view and projection, as
+// bend_sss_cpu.h makes a point light's -- with the interior settings ([Shaders.ShadowsInteriors.Main]
+// ContactSampleCount, ContactSurfaceThickness, ContactBilinearThreshold, ContactShadowContrast,
+// ContactWeaponDepth, ContactWeaponOnWorld). 1 the lamp is hidden.
+float LampContactMarch(float2 pixel, float depth0, float3 lampView, float weaponY) {
+    float4 clip = mul(float4(lampView, 1.0f), TESR_ProjectionTransform);
+    const float limit = 0.000002f * 64.0f;   // Bend's FP_limit
+    float w = clip.w >= 0.0f ? max(clip.w, limit) : min(clip.w, -limit);
+    float2 resolution = 1.0f / TESR_ReciprocalResolution.xy;
+    float4 light = float4((clip.x / w * 0.5f + 0.5f) * resolution.x, (clip.y / w * -0.5f + 0.5f) * resolution.y,
+                          clip.w != 0.0f ? clip.z / clip.w : 0.0f, clip.w > 0.0f ? 1.0f : -1.0f);
+    return 1.0f - LampBendVisibility(pixel, depth0, light, weaponY, TESR_LampContactBend, TESR_LampContactData.z);
 }
 
 // One marched lamp: how much of its share light it loses to its contact shadow (beyond what its
 // cube shadow took), and in shown, its share as the object shaders left it.
-float LampContactLoss(float share, float4 lamp, float4 anchor, float info, float3 origin, float3 viewNormal, float3 worldPos, float3 worldNormal, inout float shown) {
+float LampContactLoss(float share, float4 lamp, float4 anchor, float info, float2 pixel, float depth0, float weaponY, float3 worldPos, float3 worldNormal, bool skin, inout float shown, out float contactOut) {
     float loss = 0.0f;
-    [branch] if (share > 0.0f) {
-        float cube = LampCubeVisibility(info, anchor, worldPos, worldNormal);
+    contactOut = 0.0f;
+    [branch] if (share > 0.0f) {   // a share is 0 where the surface faces away from the lamp
+        float cube = LampCubeVisibility(info, anchor, worldPos, worldNormal, skin ? LAMP_SKIN_SHADOW_GAP : 0.0f);   // skin's maps: far occluders only
         shown -= share * (1.0f - cube);
         float3 lampView = mul(float4(lamp.xyz - TESR_CameraPosition.xyz, 0.0f), TESR_ViewTransform).xyz;
-        // Faded in as the surface turns toward the lamp, as the sun's (banding near the terminator).
-        float facing = saturate(dot(viewNormal, normalize(lampView - origin)) * 8.0f);
-        float fade = 1.0f - smoothstep(TESR_LampContactData.w * 0.8f, TESR_LampContactData.w, origin.z);
-        float contact = LampContactMarch(origin, lampView, viewNormal) * TESR_LampContactData.x * facing * fade;
+        float contact = LampContactMarch(pixel, depth0, lampView, weaponY) * TESR_LampContactData.x;
         loss = share * max(cube - (1.0f - contact), 0.0f);
+        contactOut = contact;
     }
     return loss;
 }
@@ -366,26 +368,40 @@ float LampContactLoss(float share, float4 lamp, float4 anchor, float info, float
 float4 LampContactShadow(VSOUT IN) : COLOR0
 {
     float2 uv = IN.UVCoord;
-    float4 color = tex2D(TESR_PointShadowBuffer, uv);
+    // TESR_PointShadowBuffer as clearShadowsBuffer left it: it is this pass's target (one pass, no
+    // ping-pong), so reading it would be undefined.
+    float4 color = float4(1.0f, 0.0f, 0.0f, 1.0f);
 
     if (TESR_LampContactData.x <= 0.0f) return float4(1.0f, color.g, 0.0f, 1.0f);
-    float4 originClip = float4(uv.x * 2.0f - 1.0f, (1.0f - uv.y) * 2.0f - 1.0f, tex2Dlod(TESR_DepthBuffer, float4(uv, 0.0f, 0.0f)).y, 1.0f);
+    float2 pixel = floor(uv / TESR_ReciprocalResolution.xy) + 0.5f;
+    float depth0 = tex2Dlod(TESR_DepthBuffer, float4(pixel * TESR_ReciprocalResolution.xy, 0.0f, 0.0f)).y;
+    if (depth0 <= 0.0f || depth0 >= 1.0f) return float4(1.0f, color.g, 0.0f, 1.0f);   // sky, or the near plane
+    float weaponY = BendWeaponDepth(depth0, TESR_LampContactWeapon.x, TESR_LampContactWeapon.y);
+    float4 originClip = float4(uv.x * 2.0f - 1.0f, (1.0f - uv.y) * 2.0f - 1.0f, depth0, 1.0f);
     float4 originView = mul(originClip, TESR_InvProjectionTransform);
     const float3 origin = originView.xyz / originView.w;
-    if (origin.z > TESR_LampContactData.w) return float4(1.0f, color.g, 0.0f, 1.0f);
+    // Skin (SkinTemplate.hlsl, which skips the lamps' shadow maps): where the skin shaders wrote their
+    // distance and nothing was drawn over it since (as SkinScattering.fx tests it: the same distance, or
+    // the brow strip just in front).
+    float skinDistance = TESR_LampContactWeapon.w > 0.5f ? tex2Dlod(TESR_SkinScatterBuffer, float4(uv, 0.0f, 0.0f)).a : 0.0f;
+    float skinGap = skinDistance - length(origin);
+    bool skin = skinDistance > 0.0f && (abs(skinGap) < length(origin) * 0.002f + 0.02f || (skinGap > 0.0f && skinGap < 1.5f));
 
     float3 viewNormal = tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2.0f - 1.0f;
     float3 worldNormal = normalize(mul(TESR_ViewTransform, float4(viewNormal, 0.0f)).xyz);   // GetWorldNormal
     float3 worldPos = mul(float4(origin, 0.0f), TESR_InvViewTransform).xyz + TESR_CameraPosition.xyz;
 
     // The pixel's light: the ambient and the cell's light (its direction unknown here: half), then
-    // every lamp, keeping the four that light it most, in order.
+    // every lamp, keeping the two that light it most (ContactLamps: those cast contact shadows) and the
+    // third's weight, for the fade below.
     float ambient = LampLuma(TESR_ShadowAmbientLight.rgb);
     float cellLight = LampLuma(TESR_ShadowSunLight.rgb);
-    float total = ambient * ambient + cellLight * cellLight * 0.5f;
-    float s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f;
-    float4 l1 = 0.0f, l2 = 0.0f, l3 = 0.0f, l4 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
-    float i1 = -1.0f, i2 = -1.0f, i3 = -1.0f, i4 = -1.0f;
+    float base = ambient * ambient + cellLight * cellLight * 0.5f;
+    float total = base;
+    float s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;   // the three strongest lamps' weights (share x eye fade)
+    float share1 = 0.0f, share2 = 0.0f;      // the two strongest's shares
+    float4 l1 = 0.0f, a1 = 0.0f, l2 = 0.0f, a2 = 0.0f;
+    float i1 = -1.0f, i2 = -1.0f;
     [loop]
     for (int i = 0; i < 24; i++) {
         float4 lamp = TESR_ContactLampPosition[i];
@@ -395,37 +411,83 @@ float4 LampContactShadow(VSOUT IN) : COLOR0
         // The lamp's light here, linear, as the object shaders falloff (Shaders/Includes/InverseSquare.hlsl).
         float x = saturate(dot(d, d));
         float luma = LampLuma(TESR_ContactLampColor[i].rgb);
-        float falloff = (TESR_InverseSquare.x > 0.0f && lamp.w <= TESR_InverseSquare.x) ? max(TESR_InverseSquare.y / (TESR_InverseSquare.y + x) - TESR_InverseSquare.z, 0.0f) * TESR_InverseSquare.w
+        float falloff = lamp.w < TESR_InverseSquare.x ? max(TESR_InverseSquare.y / (TESR_InverseSquare.y + x) - TESR_InverseSquare.z, 0.0f) * TESR_InverseSquare.w
                                                     : (1.0f - x) * (1.0f - x);
         float share = luma * luma * falloff * saturate(dot(worldNormal, normalize(toLamp)));
         total += share;
         float4 anchor = TESR_ContactLampAnchor[i];
         float info = TESR_ContactLampColor[i].w;
-        // Into its place among the four, those below moving down one.
-        bool b1 = share > s1, b2 = share > s2, b3 = share > s3, b4 = share > s4;
-        s4 = b3 ? s3 : (b4 ? share : s4);  l4 = b3 ? l3 : (b4 ? lamp : l4);  a4 = b3 ? a3 : (b4 ? anchor : a4);  i4 = b3 ? i3 : (b4 ? info : i4);
-        s3 = b2 ? s2 : (b3 ? share : s3);  l3 = b2 ? l2 : (b3 ? lamp : l3);  a3 = b2 ? a2 : (b3 ? anchor : a3);  i3 = b2 ? i2 : (b3 ? info : i3);
-        s2 = b1 ? s1 : (b2 ? share : s2);  l2 = b1 ? l1 : (b2 ? lamp : l2);  a2 = b1 ? a1 : (b2 ? anchor : a2);  i2 = b1 ? i1 : (b2 ? info : i2);
-        s1 = b1 ? share : s1;              l1 = b1 ? lamp : l1;              a1 = b1 ? anchor : a1;              i1 = b1 ? info : i1;
+        // A lamp at the eye (the Pip-Boy light) hides the shadows it casts behind their casters, and on
+        // the camera plane its position on screen runs off to infinity: lit by, but no contact ray. Faded
+        // out between 96 and 48 units from the eye, so it does not pop.
+        float weight = share * saturate(length(lamp.xyz - TESR_CameraPosition.xyz) / 48.0f - 1.0f);
+        [flatten] if (weight > s1) {
+            s3 = s2;  s2 = s1;  share2 = share1;  l2 = l1;  a2 = a1;  i2 = i1;
+            s1 = weight;  share1 = share;  l1 = lamp;  a1 = anchor;  i1 = info;
+        }
+        else if (weight > s2) {
+            s3 = s2;
+            s2 = weight;  share2 = share;  l2 = lamp;  a2 = anchor;  i2 = info;
+        }
+        else s3 = max(s3, weight);
     }
     if (s1 <= 0.0f || total <= 0.0f) return float4(1.0f, color.g, 0.0f, 1.0f);
+    bool twoLamps = TESR_LampContactData.y > 1.5f && s2 > 0.0f;
 
-    // The ContactLamps strongest, in order; a lamp lighting the pixel far less than the first is not
-    // worth its march (nor, then, are those after it).
-    float shown = total;
-    float loss = 0.0f;
-    [loop]
-    for (int k = 0; k < 4; k++) {
-        if (k >= (int)TESR_LampContactExtra.y) break;
-        float share = k == 0 ? s1 : (k == 1 ? s2 : (k == 2 ? s3 : s4));
-        if (share <= s1 * 0.1f && k > 0) break;
-        float4 lamp = k == 0 ? l1 : (k == 1 ? l2 : (k == 2 ? l3 : l4));
-        float4 anchor = k == 0 ? a1 : (k == 1 ? a2 : (k == 2 ? a3 : a4));
-        float info = k == 0 ? i1 : (k == 1 ? i2 : (k == 2 ? i3 : i4));
-        loss += LampContactLoss(share, lamp, anchor, info, origin, viewNormal, worldPos, worldNormal, shown);
+    // ContactDebug: the strongest lamp's contact shadow as marched, before any share of the light, in
+    // place of the result (ShadowsInteriors.fx shows it in red over the scene in grey).
+    [branch] if (TESR_LampContactWeapon.z > 0.5f && TESR_LampContactWeapon.z < 2.5f) {
+        float3 debugLampView = mul(float4(l1.xyz - TESR_CameraPosition.xyz, 0.0f), TESR_ViewTransform).xyz;
+        // 2: where the strongest lamp lands on screen, as the march takes it -- 0 within 12 pixels of
+        // it (a red disc that should sit on the lamp), and its depth against the pixel's in green.
+        [branch] if (TESR_LampContactWeapon.z > 1.5f) {
+            float4 clip = mul(float4(debugLampView, 1.0f), TESR_ProjectionTransform);
+            float2 lampPixel = (clip.xy / clip.w * float2(0.5f, -0.5f) + 0.5f) / TESR_ReciprocalResolution.xy;
+            float onLamp = (clip.w > 0.0f && length(lampPixel - pixel) < 12.0f) ? 0.0f : 1.0f;
+            return float4(onLamp, saturate(BendDepthOf(debugLampView.z) / max(depth0, 1e-6f) * 0.5f), 0.0f, 1.0f);
+        }
+        return float4(1.0f - LampContactMarch(pixel, depth0, debugLampView, weaponY), color.g, 0.0f, 1.0f);
     }
+
+    // Where lamps light a pixel about equally, which ones are marched changes from one pixel to the next,
+    // and with it the rays: a hard seam. Each marched lamp's shadow fades out as the first lamp left out
+    // comes level with it (gone when equal, whole at half its light), and by the eye fade above.
+    float rival = twoLamps ? s3 : s2;
+    float fade1 = saturate(2.0f - 2.0f * rival / s1) * (s1 / share1);
+    float fade2 = twoLamps ? saturate(2.0f - 2.0f * s3 / s2) * (s2 / max(share2, 1e-6f)) : 0.0f;
+
+    // One ray per marched lamp: each takes away what of its own light its contact shadow covers.
+    float shown = total;
+    float contact1, contact2 = 0.0f;
+    float loss = LampContactLoss(share1, l1, a1, i1, pixel, depth0, weaponY, worldPos, worldNormal, skin, shown, contact1) * fade1;
+    [branch] if (twoLamps)
+        loss += LampContactLoss(share2, l2, a2, i2, pixel, depth0, weaponY, worldPos, worldNormal, skin, shown, contact2) * fade2;
+    // Grounding (ContactAmbient): where a contact shadow falls, the ambient and the cell's light are taken
+    // in that proportion too, so things sit dark on what they stand on even where the lamps are not most
+    // of the light. Not physical (a lamp's caster does not block the ambient); what makes them intense.
+    loss += base * max(contact1 * fade1, contact2 * fade2) * TESR_LampContactData.w;
     float left = 1.0f - loss / max(shown, total * 0.001f);
+
+    // ContactDebug 3-5, red over the scene in grey (ShadowsInteriors.fx shows 1 - this in red):
+    //   3 the light actually taken away (the result)
+    //   4 the marched lamps' share of the pixel's light (what a full contact shadow could take, before grounding)
+    //   5 the fades: lamps coming level, and the lamp at the eye
+    [branch] if (TESR_LampContactWeapon.z > 2.5f) {
+        float view = TESR_LampContactWeapon.z < 3.5f ? left
+                   : (TESR_LampContactWeapon.z < 4.5f ? 1.0f - (share1 + (twoLamps ? share2 : 0.0f)) / max(total, 1e-6f)
+                                                      : 1.0f - fade1);
+        return float4(saturate(view), color.g, 0.0f, 1.0f);
+    }
     return float4(saturate(left), color.g, 0.0f, 1.0f);
+}
+
+// Technique 2: this frame's contact shadow (red, as technique 0 left it) and depth, kept for the lighting
+// of the next (Shaders/Includes/Shadow.hlsl, GetContactShadow).
+float4 StoreContact(VSOUT IN) : COLOR0
+{
+	float contact = tex2Dlod(TESR_PointShadowBuffer, float4(IN.UVCoord, 0.0f, 0.0f)).r;
+	float depth = tex2Dlod(TESR_DepthBuffer, float4(IN.UVCoord, 0.0f, 0.0f)).y;
+	return float4(contact, depth, 0.0f, 1.0f);
 }
 
 // returns a shadow value from darkness setting value (full shadow) to 1 (full light)
@@ -433,9 +495,10 @@ float4 Shadow(VSOUT IN) : COLOR0
 {
 	float2 uv = IN.UVCoord;
 
-	// Sample Screen Space shadows
+	// Sample Screen Space shadows. Intensity reshapes the point lights' attenuation (green) only: the
+	// contact shadows (red) are Bend's as they come, as CS uses them.
 	float4 Shadow = tex2D(TESR_PointShadowBuffer, IN.UVCoord);
-    Shadow = pow(Shadow, TESR_ShadowScreenSpaceData.w);
+    Shadow.g = pow(Shadow.g, TESR_ShadowScreenSpaceData.w);
 
 	if (!TESR_ShadowFade.y) return Shadow; // disable shadow maps if ShadowFade.y == 0 (setting for shadow map disabled)
 
@@ -463,7 +526,7 @@ float4 Shadow(VSOUT IN) : COLOR0
     float viewDepth;
     float4 worldPos = reconstructWorldPosition(uv, viewDepth);
 	float3 normal = mul(TESR_ViewTransform, float4(tex2Dlod(TESR_NormalsBuffer, float4(uv, 0.0f, 0.0f)).xyz * 2.0f - 1.0f, 1.0f)).xyz;   // GetWorldNormal
-	Shadow.r = min(Shadow.r, GetLightAmount(worldPos, normal)); // darkest of screenspace & sun
+	Shadow.r *= GetLightAmount(worldPos, normal); // contact x cascades, as CS multiplies them
 
 	return Shadow;
 }
@@ -471,19 +534,10 @@ float4 Shadow(VSOUT IN) : COLOR0
 
 technique {
 
+	// No blur: CS uses Bend's result as it comes.
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
 		PixelShader = compile ps_3_0 ScreenSpaceShadow();
-	}
-
-	pass {
-		VertexShader = compile vs_3_0 FrameVS();
-	 	PixelShader = compile ps_3_0 DepthBlur(TESR_PointShadowBuffer, OffsetMaskH, TESR_ShadowScreenSpaceData.y, 3500, CONTACT_BLUR_END);
-	}
-
-	pass {
-		VertexShader = compile vs_3_0 FrameVS();
-	 	PixelShader = compile ps_3_0 DepthBlur(TESR_PointShadowBuffer, OffsetMaskV, TESR_ShadowScreenSpaceData.y, 3500, CONTACT_BLUR_END);
 	}
 
     pass {
@@ -494,8 +548,7 @@ technique {
 }
 
 // Lamps' contact shadows (indoors): rendered by ShaderManager into TESR_PointShadowBuffer, through
-// SunShadowsEffect's alternating targets; ShadowsInteriors.fx technique 1 applies them. Technique 1
-// as marched (sharp); technique 2 blurred as well (ContactBlur).
+// SunShadowsEffect's alternating targets; ShadowsInteriors.fx technique 1 applies them.
 technique {
 
 	pass {
@@ -505,21 +558,10 @@ technique {
 
 }
 
+// Technique 2: the contact shadow history (ShadowsExteriorEffect::StoreContactHistory).
 technique {
-
 	pass {
 		VertexShader = compile vs_3_0 FrameVS();
-		PixelShader = compile ps_3_0 LampContactShadow();
+		PixelShader = compile ps_3_0 StoreContact();
 	}
-
-	pass {
-		VertexShader = compile vs_3_0 FrameVS();
-	 	PixelShader = compile ps_3_0 DepthBlur(TESR_PointShadowBuffer, OffsetMaskH, TESR_ShadowScreenSpaceData.y, 3500, LAMP_CONTACT_END_H);
-	}
-
-	pass {
-		VertexShader = compile vs_3_0 FrameVS();
-	 	PixelShader = compile ps_3_0 DepthBlur(TESR_PointShadowBuffer, OffsetMaskV, TESR_ShadowScreenSpaceData.y, 3500, LAMP_CONTACT_END);
-	}
-
 }

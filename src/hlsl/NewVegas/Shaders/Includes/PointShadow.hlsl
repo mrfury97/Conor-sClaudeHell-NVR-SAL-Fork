@@ -223,6 +223,12 @@ float PointShadowLookup(float info, float4 anchor, float3 worldPos, float3 norma
             float texelScale = 2.0f / size;
             float compared = distance * (1.0f - texelScale * (0.5f + (spread + 1.5f) * tilt));
             float d = distance;
+            #ifdef POINT_SHADOW_MIN_GAP
+                // Only occluders at least this many units in front of the surface (toward the lamp)
+                // count: anything nearer is left to the lamps' contact shadows (SkinTemplate.hlsl).
+                compared -= POINT_SHADOW_MIN_GAP / anchor.w;
+                d -= POINT_SHADOW_MIN_GAP / anchor.w;
+            #endif
             float2 corner, inTile;
             PointShadowAtlasTexel(slot, toLight * float3(-1.0f, -1.0f, 1.0f), (pcss ? maxSpread + 1.0f : spread) + 1.0f, corner, inTile);
             float2 q = corner + inTile;
